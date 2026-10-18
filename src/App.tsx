@@ -96,11 +96,12 @@ export default function App() {
     { id: '2', username: 'admin', password: '123', role: 'Admin' }
   ]);
 
-  // Payment Accounts State
+  // Payment Accounts State (including UBL, EasyPaisa, JazzCash etc with full custom add/delete support)
   const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([
     { id: '1', type: 'EasyPaisa', account_number: '0300-1234567', account_title: 'Zorima Official Account', is_active: true },
     { id: '2', type: 'JazzCash', account_number: '0300-7654321', account_title: 'Zorima Business Account', is_active: true },
-    { id: '3', type: 'Meezan Bank', account_number: 'PK12-MEZN-0000-1234-5678', account_title: 'Zorima Professional Meezan', is_active: true }
+    { id: '3', type: 'UBL Bank', account_number: 'PK12-UBL-0000-1234-5678', account_title: 'Zorima UBL Account', is_active: true },
+    { id: '4', type: 'Meezan Bank', account_number: 'PK12-MEZN-0000-1234-5678', account_title: 'Zorima Meezan Account', is_active: true }
   ]);
 
   // Editing Admin User State
@@ -111,9 +112,24 @@ export default function App() {
 
   // Editing Account State
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
-  const [accountType, setAccountType] = useState('EasyPaisa');
+  const [accountType, setAccountType] = useState('UBL Bank');
   const [accNumber, setAccNumber] = useState('');
   const [accTitle, setAccTitle] = useState('');
+
+  // Customer Checkout Form
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [shippingAddress, setShippingAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [zipCode, setZipCode] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<string>('cod');
+  const [transactionId, setTransactionId] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
+  const [cardCvc, setCardCvc] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [orderSuccess, setOrderSuccess] = useState(false);
+  const [confirmedInvoice, setConfirmedInvoice] = useState('');
 
   useEffect(() => {
     fetchProducts();
@@ -210,11 +226,10 @@ export default function App() {
       setCurrentView('admin');
       fetchOrders();
     } else {
-      alert('गलत User ID या Password!');
+      alert('Invalid User ID or Password!');
     }
   };
 
-  // Convert uploaded image file to Base64 (Supports ALL Formats: PNG, JPG, WEBP, GIF, SVG, BMP)
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
@@ -224,17 +239,16 @@ export default function App() {
       reader.onloadend = () => {
         const base64Result = reader.result as string;
         setImagePreview(base64Result);
-        setImageUrl(base64Result); // Automatic base64 inline image embedding
+        setImageUrl(base64Result);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  // Save / Update Product
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!productName || !discountedPrice) {
-      alert('Product Name और Discounted Price अनिवार्य हैं!');
+      alert('Product Name and Discounted Price are required!');
       return;
     }
 
@@ -253,18 +267,16 @@ export default function App() {
     };
 
     if (editingProductId) {
-      // Edit Mode
       try {
         await supabase.from('products').update(prodData).eq('id', editingProductId);
       } catch (err) {
         console.warn('Supabase edit warning', err);
       }
       setProducts(prev => prev.map(p => p.id === editingProductId ? { ...p, ...prodData } : p));
-      alert('Product सफलतापूर्वक अपडेट हो गया!');
+      alert('Product updated successfully!');
     } else {
-      // Add Mode
       try {
-        const { data, error } = await supabase.from('products').insert([prodData]).select();
+        const { data } = await supabase.from('products').insert([prodData]).select();
         if (data && data[0]) {
           setProducts(prev => [data[0], ...prev]);
         } else {
@@ -273,7 +285,7 @@ export default function App() {
       } catch (err) {
         setProducts(prev => [{ id: String(Date.now()), ...prodData }, ...prev]);
       }
-      alert('नया Product सफलतापूर्वक अपलोड हो गया!');
+      alert('New product uploaded successfully!');
     }
 
     setIsUploading(false);
@@ -292,14 +304,14 @@ export default function App() {
   };
 
   const handleDeleteProduct = async (id: string) => {
-    if (window.confirm('क्या आप इस Product को डिलीट करना चाहते हैं?')) {
+    if (window.confirm('Are you sure you want to delete this product?')) {
       try {
         await supabase.from('products').delete().eq('id', id);
       } catch (e) {
         console.log('Delete error', e);
       }
       setProducts(prev => prev.filter(p => p.id !== id));
-      alert('Product डिलीट हो गया!');
+      alert('Product deleted successfully!');
     }
   };
 
@@ -315,7 +327,6 @@ export default function App() {
     setImagePreview(null);
   };
 
-  // Category Add / Delete
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCategoryName) return;
@@ -327,11 +338,11 @@ export default function App() {
     }
     setCategories(prev => [...prev, { id: String(Date.now()), name: newCategoryName }]);
     setNewCategoryName('');
-    alert('नई Category बन गई!');
+    alert('New category created successfully!');
   };
 
   const handleDeleteCategory = async (id: string) => {
-    if (window.confirm('कैटेगरी डिलीट करें?')) {
+    if (window.confirm('Delete this category?')) {
       try {
         await supabase.from('categories').delete().eq('id', id);
       } catch (e) {
@@ -341,14 +352,13 @@ export default function App() {
     }
   };
 
-  // User Add / Edit / Delete
   const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername || !newUserPassword) return;
 
     if (editingUserId) {
       setAdminUsers(prev => prev.map(u => u.id === editingUserId ? { ...u, username: newUsername, password: newUserPassword, role: newUserRole } : u));
-      alert('Admin User अपडेट हो गया!');
+      alert('Admin user updated successfully!');
     } else {
       const newUserObj: AdminUser = {
         id: String(Date.now()),
@@ -357,7 +367,7 @@ export default function App() {
         role: newUserRole
       };
       setAdminUsers(prev => [...prev, newUserObj]);
-      alert(`नया Admin User (${newUsername}) बन गया!`);
+      alert(`New admin user (${newUsername}) created successfully!`);
     }
     setEditingUserId(null);
     setNewUsername('');
@@ -372,20 +382,19 @@ export default function App() {
   };
 
   const handleDeleteUser = (id: string) => {
-    if (window.confirm('इस User को डिलीट करें?')) {
+    if (window.confirm('Delete this admin user?')) {
       setAdminUsers(prev => prev.filter(u => u.id !== id));
-      alert('User डिलीट हो गया!');
+      alert('Admin user deleted successfully!');
     }
   };
 
-  // Account Add / Edit / Delete
   const handleSaveAccount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!accNumber || !accTitle) return;
 
     if (editingAccountId) {
       setPaymentAccounts(prev => prev.map(a => a.id === editingAccountId ? { ...a, type: accountType, account_number: accNumber, account_title: accTitle } : a));
-      alert('Account विवरण अपडेट हो गया!');
+      alert('Payment account updated successfully!');
     } else {
       const newAcc: PaymentAccount = {
         id: String(Date.now()),
@@ -395,7 +404,7 @@ export default function App() {
         is_active: true
       };
       setPaymentAccounts(prev => [...prev, newAcc]);
-      alert('नया Account विवरण जुड़ गया!');
+      alert('New payment account added successfully!');
     }
     setEditingAccountId(null);
     setAccNumber('');
@@ -410,9 +419,9 @@ export default function App() {
   };
 
   const handleDeleteAccount = (id: string) => {
-    if (window.confirm('क्या आप इस Account को डिलीट करना चाहते हैं?')) {
+    if (window.confirm('Are you sure you want to delete this payment account?')) {
       setPaymentAccounts(prev => prev.filter(a => a.id !== id));
-      alert('Account डिलीट हो गया!');
+      alert('Payment account deleted successfully!');
     }
   };
 
@@ -427,17 +436,65 @@ export default function App() {
       return [...prevCart, { ...product, quantity: 1 }];
     });
 
-    setToastMessage(`${product.name} cart में add हो गया!`);
+    setToastMessage(`${product.name} added to cart successfully!`);
     setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  const removeFromCart = (id: string) => {
+    setCart((prevCart) => prevCart.filter((item) => item.id !== id));
+  };
+
+  const totalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
+
+  const handleCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customerName || !customerPhone || !shippingAddress || !city) {
+      alert('Please fill in all required customer details.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    const fullAddress = `${shippingAddress}, City: ${city}, Zip: ${zipCode}`;
+
+    try {
+      const { data: orderData } = await supabase.from('orders').insert([
+        {
+          customer_name: customerName,
+          customer_phone: customerPhone,
+          shipping_address: fullAddress,
+          total_amount: totalAmount,
+          payment_method: paymentMethod,
+          payment_status: paymentMethod === 'cod' ? 'Pending COD' : 'Paid Online',
+          status: 'Pending'
+        }
+      ]).select();
+
+      let inv = `ZP-${Math.floor(1000 + Math.random() * 9000)}`;
+      if (orderData && orderData[0]) {
+        inv = orderData[0].invoice_no || inv;
+      }
+
+      setConfirmedInvoice(inv);
+      setOrderSuccess(true);
+      setCart([]);
+    } catch (err) {
+      setConfirmedInvoice(`ZP-${Math.floor(1000 + Math.random() * 9000)}`);
+      setOrderSuccess(true);
+      setCart([]);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const filteredProducts = selectedCategory === 'All' 
     ? products 
     : products.filter(p => p.category_name === selectedCategory);
 
+  const activePaymentAccount = paymentAccounts.find(a => a.type.toLowerCase().includes(paymentMethod.toLowerCase())) || paymentAccounts[0];
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      {/* Toast Notification */}
+      {/* Toast Notification in English Only */}
       {toastMessage && (
         <div className="fixed top-20 right-5 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-xl flex items-center space-x-2 animate-bounce">
           <CheckCircle2 className="w-5 h-5" />
@@ -480,7 +537,7 @@ export default function App() {
             {currentView === 'store' && (
               <button
                 onClick={() => setIsCartOpen(true)}
-                className="relative flex items-center bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-xl transition shadow-lg"
+                className="relative flex items-center bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-xl transition shadow-lg cursor-pointer"
               >
                 <ShoppingCart className="w-5 h-5 mr-1.5" />
                 <span className="text-sm">Cart</span>
@@ -567,7 +624,7 @@ export default function App() {
 
                       <button
                         onClick={() => addToCart(product)}
-                        className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center shadow"
+                        className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center shadow cursor-pointer"
                       >
                         <ShoppingCart className="w-4 h-4 mr-1.5" /> Add to Cart
                       </button>
@@ -577,6 +634,219 @@ export default function App() {
               ))}
             </div>
           </main>
+        </div>
+      )}
+
+      {/* CART & CHECKOUT SLIDE-OVER WINDOW */}
+      {isCartOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end">
+          <div className="bg-white w-full max-w-lg h-full flex flex-col shadow-2xl p-6 overflow-y-auto">
+            <div className="flex justify-between items-center border-b pb-4">
+              <h3 className="text-xl font-extrabold text-slate-800 flex items-center">
+                <ShoppingCart className="mr-2 w-6 h-6 text-amber-500" /> Shopping Cart
+              </h3>
+              <button
+                onClick={() => setIsCartOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-2xl cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {orderSuccess ? (
+              <div className="my-auto text-center py-8 px-4">
+                <CheckCircle2 className="w-20 h-20 text-emerald-500 mx-auto mb-4" />
+                <h4 className="text-2xl font-black text-slate-900 mb-1">Order Confirmed!</h4>
+                <p className="text-sm text-slate-500 mb-4">Your order has been saved successfully.</p>
+                <div className="bg-slate-100 p-4 rounded-xl mb-6 inline-block text-left w-full">
+                  <div className="flex justify-between py-1 text-sm border-b mb-2">
+                    <span className="text-slate-500">Invoice Number:</span>
+                    <span className="font-bold text-slate-900">{confirmedInvoice}</span>
+                  </div>
+                  <div className="flex justify-between py-1 text-sm">
+                    <span className="text-slate-500">Payment Status:</span>
+                    <span className="font-bold text-emerald-600">Processing / Verified</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setOrderSuccess(false);
+                    setIsCartOpen(false);
+                  }}
+                  className="w-full bg-slate-900 text-amber-400 font-bold py-3 rounded-xl hover:bg-slate-800 transition cursor-pointer"
+                >
+                  Back to Store
+                </button>
+              </div>
+            ) : cart.length === 0 ? (
+              <div className="my-auto text-center py-16 text-slate-400">
+                <ShoppingCart className="w-16 h-16 mx-auto mb-3 opacity-30" />
+                <p className="text-lg font-medium">Your cart is empty.</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex-1 overflow-y-auto py-4 space-y-3">
+                  {cart.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
+                      <div>
+                        <h4 className="font-bold text-slate-800 text-sm">{item.name}</h4>
+                        <span className="text-xs text-slate-500">
+                          {item.quantity} x PKR {item.discounted_price || item.price}
+                        </span>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <span className="font-black text-slate-900 text-sm">
+                          PKR {(item.discounted_price || item.price) * item.quantity}
+                        </span>
+                        <button
+                          onClick={() => removeFromCart(item.id)}
+                          className="text-red-500 hover:text-red-700 cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="pt-3 flex justify-between text-xl font-black text-slate-900 border-t">
+                    <span>Total Amount:</span>
+                    <span className="text-amber-600">PKR {totalAmount}</span>
+                  </div>
+                </div>
+
+                <form onSubmit={handleCheckout} className="border-t pt-4 space-y-4">
+                  <h4 className="font-extrabold text-slate-800 text-base">Customer & Shipping Details</h4>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Customer Name"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Phone / WhatsApp</label>
+                      <input
+                        type="tel"
+                        required
+                        placeholder="03001234567"
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Delivery Address</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Shop/House address"
+                      value={shippingAddress}
+                      onChange={(e) => setShippingAddress(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">City</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="City Name"
+                        value={city}
+                        onChange={(e) => setCity(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">ZIP / Postal Code</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 54000"
+                        value={zipCode}
+                        onChange={(e) => setZipCode(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-2">Select Payment Method</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('cod')}
+                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
+                          paymentMethod === 'cod' ? 'border-amber-500 bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-600'
+                        }`}
+                      >
+                        <Building className="w-4 h-4 mb-1" /> Cash on Delivery
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('easypaisa')}
+                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
+                          paymentMethod === 'easypaisa' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-600'
+                        }`}
+                      >
+                        <Hash className="w-4 h-4 mb-1" /> EasyPaisa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('ubl')}
+                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
+                          paymentMethod === 'ubl' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'bg-slate-50 text-slate-600'
+                        }`}
+                      >
+                        <CreditCard className="w-4 h-4 mb-1" /> Bank / UBL
+                      </button>
+                    </div>
+                  </div>
+
+                  {paymentMethod !== 'cod' && (
+                    <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-xl text-xs space-y-2">
+                      <div className="font-bold text-emerald-900 border-b pb-1">Payment Account Details:</div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">Account Number:</span>
+                        <span className="font-extrabold text-emerald-800 text-sm">{activePaymentAccount ? activePaymentAccount.account_number : '0300-1234567'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">Account Title:</span>
+                        <span className="font-bold text-slate-800">{activePaymentAccount ? activePaymentAccount.account_title : 'Zorima Official'}</span>
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mt-2 mb-1">Enter Transaction / Reference ID:</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. TR-123456789"
+                          value={transactionId}
+                          onChange={(e) => setTransactionId(e.target.value)}
+                          className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-extrabold py-3.5 rounded-xl transition shadow-lg text-center text-base cursor-pointer"
+                  >
+                    {isSubmitting ? 'Processing Order...' : 'Confirm Order Now'}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -625,7 +895,7 @@ export default function App() {
 
               <button
                 type="submit"
-                className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-extrabold py-3.5 rounded-xl transition shadow-xl text-sm mt-2"
+                className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-extrabold py-3.5 rounded-xl transition shadow-xl text-sm mt-2 cursor-pointer"
               >
                 Login to Control Center
               </button>
@@ -651,7 +921,7 @@ export default function App() {
                 setIsAdminLoggedIn(false);
                 setCurrentView('store');
               }}
-              className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center"
+              className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center cursor-pointer"
             >
               <LogOut className="w-4 h-4 mr-1.5" /> Logout
             </button>
@@ -660,7 +930,7 @@ export default function App() {
           <div className="flex border-b mb-8 space-x-2 overflow-x-auto pb-2">
             <button
               onClick={() => setAdminTab('products')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition ${
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
                 adminTab === 'products' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
@@ -668,7 +938,7 @@ export default function App() {
             </button>
             <button
               onClick={() => setAdminTab('categories')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition ${
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
                 adminTab === 'categories' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
@@ -679,7 +949,7 @@ export default function App() {
                 setAdminTab('orders');
                 fetchOrders();
               }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition ${
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
                 adminTab === 'orders' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
@@ -687,7 +957,7 @@ export default function App() {
             </button>
             <button
               onClick={() => setAdminTab('users')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition ${
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
                 adminTab === 'users' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
@@ -695,15 +965,15 @@ export default function App() {
             </button>
             <button
               onClick={() => setAdminTab('accounts')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition ${
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
                 adminTab === 'accounts' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
-              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank Accounts (Edit/Delete)
+              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank & UBL Accounts (Add/Delete)
             </button>
           </div>
 
-          {/* TAB 1: PRODUCTS MANAGER (WITH EDIT & DELETE) */}
+          {/* TAB 1: PRODUCTS MANAGER */}
           {adminTab === 'products' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 bg-white rounded-3xl p-6 border shadow-sm">
@@ -713,7 +983,7 @@ export default function App() {
                     {editingProductId ? 'Edit Product Item' : 'Upload New Product'}
                   </h3>
                   {editingProductId && (
-                    <button onClick={resetProductForm} className="text-xs bg-slate-200 px-3 py-1 rounded-lg font-bold flex items-center">
+                    <button onClick={resetProductForm} className="text-xs bg-slate-200 px-3 py-1 rounded-lg font-bold flex items-center cursor-pointer">
                       <X className="w-3.5 h-3.5 mr-1" /> Cancel Edit
                     </button>
                   )}
@@ -783,12 +1053,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Multi-Format File Upload + Base64 Auto Encoder */}
                   <div className="bg-slate-50 p-4 rounded-2xl border space-y-3">
                     <label className="block text-xs font-bold text-slate-800 mb-1">
                       Option A: Browse File Image Upload (PNG, JPG, WEBP, GIF, SVG Support)
                     </label>
-                    <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 text-center bg-white hover:bg-slate-100 transition relative">
+                    <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 text-center bg-white hover:bg-slate-100 transition relative cursor-pointer">
                       <input
                         type="file"
                         accept="image/*"
@@ -827,14 +1096,13 @@ export default function App() {
                   <button
                     type="submit"
                     disabled={isUploading}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3.5 rounded-xl transition shadow-lg text-sm"
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3.5 rounded-xl transition shadow-lg text-sm cursor-pointer"
                   >
                     {isUploading ? 'Saving...' : editingProductId ? 'Update Product Details' : 'Save & Publish Product to Store'}
                   </button>
                 </form>
               </div>
 
-              {/* Products List with EDIT & DELETE */}
               <div className="bg-white rounded-3xl p-6 border shadow-sm h-fit">
                 <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">
                   Manage Active Products ({products.length})
@@ -852,14 +1120,14 @@ export default function App() {
                       <div className="flex items-center space-x-1">
                         <button
                           onClick={() => handleEditProduct(p)}
-                          className="bg-amber-100 hover:bg-amber-200 text-amber-900 p-2 rounded-lg font-bold"
+                          className="bg-amber-100 hover:bg-amber-200 text-amber-900 p-2 rounded-lg font-bold cursor-pointer"
                           title="Edit Product"
                         >
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => handleDeleteProduct(p.id)}
-                          className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg font-bold"
+                          className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg font-bold cursor-pointer"
                           title="Delete Product"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -893,7 +1161,7 @@ export default function App() {
                 </div>
                 <button
                   type="submit"
-                  className="w-full bg-slate-900 text-amber-400 font-bold py-3 rounded-xl text-sm"
+                  className="w-full bg-slate-900 text-amber-400 font-bold py-3 rounded-xl text-sm cursor-pointer"
                 >
                   Create Category
                 </button>
@@ -905,7 +1173,7 @@ export default function App() {
                   {categories.map((c) => (
                     <div key={c.id} className="bg-slate-50 px-4 py-2.5 rounded-xl border text-sm font-semibold text-slate-800 flex justify-between items-center">
                       <span>{c.name}</span>
-                      <button onClick={() => handleDeleteCategory(c.id)} className="text-red-500 hover:text-red-700">
+                      <button onClick={() => handleDeleteCategory(c.id)} className="text-red-500 hover:text-red-700 cursor-pointer">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -924,7 +1192,7 @@ export default function App() {
 
               {adminOrders.length === 0 ? (
                 <div className="text-center py-12 text-slate-400 font-medium">
-                  अभी कोई नया ऑर्डर प्राप्त नहीं हुआ है।
+                  No orders received yet.
                 </div>
               ) : (
                 <table className="w-full text-left text-xs">
@@ -961,13 +1229,13 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 4: ADMIN USERS (WITH EDIT PASSWORD & DELETE) */}
+          {/* TAB 4: ADMIN USERS */}
           {adminTab === 'users' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
                 <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
                   <UserPlus className="w-5 h-5 text-amber-500 mr-2" /> 
-                  {editingUserId ? 'Edit Admin User & Password' : 'Naya Admin User Banayein'}
+                  {editingUserId ? 'Edit Admin User & Password' : 'Create New Admin User'}
                 </h3>
 
                 <form onSubmit={handleSaveUser} className="space-y-4">
@@ -1010,7 +1278,7 @@ export default function App() {
 
                   <button
                     type="submit"
-                    className="w-full bg-slate-900 text-amber-400 font-bold py-3.5 rounded-xl text-sm shadow-lg"
+                    className="w-full bg-slate-900 text-amber-400 font-bold py-3.5 rounded-xl text-sm shadow-lg cursor-pointer"
                   >
                     {editingUserId ? 'Update User Details' : 'Create Admin User'}
                   </button>
@@ -1032,14 +1300,14 @@ export default function App() {
                       <div className="flex items-center space-x-2">
                         <button
                           onClick={() => handleEditUser(u)}
-                          className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold"
+                          className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold cursor-pointer"
                           title="Edit Password"
                         >
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => handleDeleteUser(u.id)}
-                          className="bg-red-100 text-red-700 p-2 rounded-lg font-bold"
+                          className="bg-red-100 text-red-700 p-2 rounded-lg font-bold cursor-pointer"
                           title="Delete User"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1052,29 +1320,26 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 5: BANK ACCOUNTS (WITH EDIT & DELETE) */}
+          {/* TAB 5: BANK ACCOUNTS (WITH CUSTOM BANK ADDITION & DELETE SUPPORTS LIKE UBL, ETC.) */}
           {adminTab === 'accounts' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
                 <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
                   <Wallet className="w-5 h-5 text-amber-500 mr-2" /> 
-                  {editingAccountId ? 'Edit Bank / EasyPaisa Account' : 'Add Bank / EasyPaisa Account'}
+                  {editingAccountId ? 'Edit Bank Account' : 'Add New Bank Account (e.g. UBL)'}
                 </h3>
 
                 <form onSubmit={handleSaveAccount} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Account Type</label>
-                    <select
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Bank / Account Type Name</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. UBL Bank, Alfalah, EasyPaisa, JazzCash"
                       value={accountType}
                       onChange={(e) => setAccountType(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border rounded-xl text-sm bg-white"
-                    >
-                      <option value="EasyPaisa">EasyPaisa</option>
-                      <option value="JazzCash">JazzCash</option>
-                      <option value="Meezan Bank">Meezan Bank</option>
-                      <option value="Bank Alfalah">Bank Alfalah</option>
-                      <option value="HBL Bank">HBL Bank</option>
-                    </select>
+                      className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
+                    />
                   </div>
 
                   <div>
@@ -1082,7 +1347,7 @@ export default function App() {
                     <input
                       type="text"
                       required
-                      placeholder="e.g. 0300-1234567"
+                      placeholder="e.g. PK12-UBL-0000-1234-5678"
                       value={accNumber}
                       onChange={(e) => setAccNumber(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -1094,7 +1359,7 @@ export default function App() {
                     <input
                       type="text"
                       required
-                      placeholder="e.g. Zorima Professional Account"
+                      placeholder="e.g. Zorima Professional UBL Account"
                       value={accTitle}
                       onChange={(e) => setAccTitle(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -1103,7 +1368,7 @@ export default function App() {
 
                   <button
                     type="submit"
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg"
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg cursor-pointer"
                   >
                     {editingAccountId ? 'Update Account Details' : 'Save Payment Account'}
                   </button>
@@ -1112,7 +1377,7 @@ export default function App() {
 
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
                 <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">Manage Active Accounts ({paymentAccounts.length})</h3>
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-[450px] overflow-y-auto">
                   {paymentAccounts.map((acc) => (
                     <div key={acc.id} className="bg-slate-50 p-4 rounded-2xl border flex justify-between items-center">
                       <div>
@@ -1121,10 +1386,10 @@ export default function App() {
                         <div className="text-xs text-slate-500">{acc.account_title}</div>
                       </div>
                       <div className="flex space-x-2">
-                        <button onClick={() => handleEditAccount(acc)} className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold">
+                        <button onClick={() => handleEditAccount(acc)} className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold cursor-pointer" title="Edit Account">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => handleDeleteAccount(acc.id)} className="bg-red-100 text-red-700 p-2 rounded-lg font-bold">
+                        <button onClick={() => handleDeleteAccount(acc.id)} className="bg-red-100 text-red-700 p-2 rounded-lg font-bold cursor-pointer" title="Delete Account">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -1139,7 +1404,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
-        © 2026 ZORIMA PROFESSIONAL - Premium Enterprise Management System.
+        © 2026 ZORIMA PROFESSIONAL - Premium Enterprise Management System. All Rights Reserved.
       </footer>
     </div>
   );

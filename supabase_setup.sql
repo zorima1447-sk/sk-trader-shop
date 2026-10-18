@@ -1,14 +1,10 @@
 -- SQL Script for Supabase Database & Storage Setup
--- Open Supabase -> SQL Editor -> New Query -> Paste & Run
-
--- 1. Create Categories Table
 CREATE TABLE IF NOT EXISTS public.categories (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 2. Create Products Table
 CREATE TABLE IF NOT EXISTS public.products (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     name TEXT NOT NULL,
@@ -22,7 +18,6 @@ CREATE TABLE IF NOT EXISTS public.products (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 3. Create Orders Table
 CREATE TABLE IF NOT EXISTS public.orders (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     invoice_no TEXT UNIQUE,
@@ -36,7 +31,6 @@ CREATE TABLE IF NOT EXISTS public.orders (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 4. Enable Public Access RLS Policies
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
@@ -44,20 +38,3 @@ ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow All Categories" ON public.categories FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All Products" ON public.products FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All Orders" ON public.orders FOR ALL USING (true) WITH CHECK (true);
-
--- 5. Storage Bucket Setup for Product Images
-INSERT INTO storage.buckets (id, name, public) 
-VALUES ('product-images', 'product-images', true)
-ON CONFLICT (id) DO NOTHING;
-
-CREATE POLICY "Public Read Access" ON storage.objects 
-FOR SELECT USING (bucket_id = 'product-images');
-
-CREATE POLICY "Public Upload Access" ON storage.objects 
-FOR INSERT WITH CHECK (bucket_id = 'product-images');
-
-CREATE POLICY "Public Update Access" ON storage.objects 
-FOR UPDATE USING (bucket_id = 'product-images');
-
-CREATE POLICY "Public Delete Access" ON storage.objects 
-FOR DELETE USING (bucket_id = 'product-images');
