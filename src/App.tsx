@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
+import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
   UserPlus, Shield, Wallet, Save, RefreshCw, X,
-  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star
+  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown
 } from 'lucide-react';
 
 interface Category {
@@ -52,6 +53,8 @@ interface Order {
   delivered_at?: string | null;
   paid_amount?: number | null;
   paid_at?: string | null;
+  customer_id?: string | null;
+  customer_email?: string | null;
   created_at: string;
 }
 
@@ -62,7 +65,49 @@ interface Review {
   customer_name: string;
   rating: number;
   remark: string;
+  customer_email?: string | null;
+  customer_phone?: string | null;
   created_at: string;
+}
+
+interface Customer {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone_iso?: string | null;
+  phone_code?: string | null;
+  phone?: string | null;
+  country_iso?: string | null;
+  country?: string | null;
+  province_iso?: string | null;
+  province?: string | null;
+  city?: string | null;
+  address?: string | null;
+  created_at: string;
+}
+
+interface Payment {
+  id: string;
+  order_id: string;
+  amount: number;
+  method: string;
+  category: string;
+  account_id?: string | null;
+  account_label?: string | null;
+  reference?: string | null;
+  note?: string | null;
+  received_at: string;
+}
+
+interface Slide {
+  id?: string;
+  title: string;
+  text: string;
+  cta: string;
+  bg: string;
+  image_url?: string | null;
+  sort_order?: number;
+  active?: boolean;
 }
 
 interface AdminUser {
@@ -80,21 +125,30 @@ interface PaymentAccount {
   is_active: boolean;
 }
 
-// ====== STORE SETTINGS (yahan apni info likhein) ======
+// ====== STORE SETTINGS (edit your information here) ======
 const STORE = {
   name: 'ZORIMA PROFESSIONAL',
   announcement: 'Original Products  |  Cash on Delivery Available  |  Fast Delivery Across Pakistan',
-  whatsapp: '923000000000', // apna WhatsApp number country code ke saath
+  whatsapp: '923000000000', // your WhatsApp number with country code
   tagline: 'Original salon-grade hair care & beauty products.'
 };
 
-// Yeh tag login page / admin header / footer mein dikhta hai: agar nazar na aaye to Vercel par purana code chal raha hai.
-const BUILD = 'v4 (18-Oct-2026)';
+// Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
+const BUILD = 'v5 (18-Oct-2026)';
 
-const HERO_SLIDES = [
-  { title: 'Summer Sale Is Live Now', text: 'Original salon-grade hair care at discounted prices.', cta: 'Shop Now', bg: 'from-slate-950 via-slate-900 to-amber-900' },
-  { title: 'Trusted by Professionals', text: 'Hair color, masks, shampoos & treatments in one place.', cta: 'Browse Products', bg: 'from-amber-900 via-slate-900 to-slate-950' },
-  { title: 'Cash on Delivery', text: 'Order today and pay when it reaches your door.', cta: 'Order Now', bg: 'from-slate-900 via-emerald-950 to-slate-950' }
+const BG_PRESETS: Record<string, string> = {
+  gold: 'from-slate-950 via-slate-900 to-amber-900',
+  amber: 'from-amber-900 via-slate-900 to-slate-950',
+  green: 'from-slate-900 via-emerald-950 to-slate-950',
+  blue: 'from-slate-950 via-blue-950 to-slate-900',
+  rose: 'from-slate-950 via-rose-950 to-slate-900'
+};
+
+// Default slides, used only when no slide has been created in the admin panel.
+const HERO_SLIDES: Slide[] = [
+  { title: 'Summer Sale Is Live Now', text: 'Original salon-grade hair care at discounted prices.', cta: 'Shop Now', bg: 'gold' },
+  { title: 'Trusted by Professionals', text: 'Hair color, masks, shampoos & treatments in one place.', cta: 'Browse Products', bg: 'amber' },
+  { title: 'Cash on Delivery', text: 'Order today and pay when it reaches your door.', cta: 'Order Now', bg: 'green' }
 ];
 
 export default function App() {
@@ -111,13 +165,48 @@ export default function App() {
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [rvInvoice, setRvInvoice] = useState('');
+  const [rvName, setRvName] = useState('');
+  const [rvEmail, setRvEmail] = useState('');
   const [rvPhone, setRvPhone] = useState('');
+  const [qvQty, setQvQty] = useState(1);
   const [rvRating, setRvRating] = useState(5);
   const [rvRemark, setRvRemark] = useState('');
-  const [rvBusy, setRvBusy] = useState(false);
   const [purchased, setPurchased] = useState<{ order_id: string; customer_name: string; items: { id: string; name: string }[] } | null>(null);
   const [rateDrafts, setRateDrafts] = useState<Record<string, { rating: number; remark: string; done?: boolean }>>({});
+  // checkout customer details
+  const [geo, setGeo] = useState<GeoValue>(emptyGeo());
+  const [customerEmail, setCustomerEmail] = useState('');
+  // customers (admin)
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
+  const [cName, setCName] = useState('');
+  const [cEmail, setCEmail] = useState('');
+  const [cAddress, setCAddress] = useState('');
+  const [cGeo, setCGeo] = useState<GeoValue>(emptyGeo());
+  const [customerSearch, setCustomerSearch] = useState('');
+  // payments (admin)
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payModal, setPayModal] = useState<Order | null>(null);
+  const [pmAmount, setPmAmount] = useState('');
+  const [pmMethod, setPmMethod] = useState('cash');
+  const [pmRef, setPmRef] = useState('');
+  const [pmNote, setPmNote] = useState('');
+  const [pmDate, setPmDate] = useState('');
+  // edit order (admin)
+  const [editOrder, setEditOrder] = useState<Order | null>(null);
+  const [eoName, setEoName] = useState('');
+  const [eoPhone, setEoPhone] = useState('');
+  const [eoEmail, setEoEmail] = useState('');
+  const [eoAddress, setEoAddress] = useState('');
+  // hero slides
+  const [slides, setSlides] = useState<Slide[]>([]);
+  const [editingSlideId, setEditingSlideId] = useState<string | null>(null);
+  const [slTitle, setSlTitle] = useState('');
+  const [slText, setSlText] = useState('');
+  const [slCta, setSlCta] = useState('Shop Now');
+  const [slBg, setSlBg] = useState('gold');
+  const [slImage, setSlImage] = useState('');
+  const [slActive, setSlActive] = useState(true);
   const [paymentFilter, setPaymentFilter] = useState<'All' | 'Unpaid' | 'Partial' | 'Paid'>('All');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -127,7 +216,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides'>('products');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -198,10 +287,11 @@ export default function App() {
     fetchCategories();
     fetchPaymentAccounts();
     fetchReviews();
+    fetchSlides();
   }, []);
 
   useEffect(() => {
-    const t = setInterval(() => setHeroIndex(i => (i + 1) % HERO_SLIDES.length), 5000);
+    const t = setInterval(() => setHeroIndex(i => i + 1), 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -289,46 +379,42 @@ export default function App() {
     </span>
   );
 
-  async function submitReview(product_id: string, order_id: string | null, customer_name: string, rating: number, remark: string) {
+  async function submitReview(
+    product_id: string,
+    order_id: string | null,
+    customer_name: string,
+    rating: number,
+    remark: string,
+    email = '',
+    phone = ''
+  ) {
     if (order_id && reviews.some(r => r.order_id === order_id && r.product_id === product_id)) {
-      alert('Is order ke liye is product ka review pehle se de diya gaya hai.');
+      alert('A review for this product has already been submitted for this order.');
       return false;
     }
     const { data, error } = await supabase
       .from('reviews')
-      .insert([{ product_id, order_id, customer_name, rating, remark: remark.trim() }])
+      .insert([{
+        product_id,
+        order_id,
+        customer_name,
+        rating,
+        remark: remark.trim(),
+        customer_email: email.trim() || null,
+        customer_phone: phone.trim() || null
+      }])
       .select();
     if (reportError('review insert', error)) return false;
     if (data && data[0]) setReviews(prev => [data[0], ...prev]);
     return true;
   }
 
-  const handleVerifiedReview = async (product: Product) => {
-    const inv = rvInvoice.trim();
-    const phoneDigits = rvPhone.replace(/\D/g, '');
-    if (!inv || phoneDigits.length < 7) { alert('Invoice number aur phone number likhein.'); return; }
-    setRvBusy(true);
-    try {
-      const { data: ords, error } = await supabase
-        .from('orders').select('id, customer_name, customer_phone').eq('invoice_no', inv).limit(1);
-      if (reportError('review check', error)) return;
-      const ord = ords && ords[0];
-      const ordDigits = ord ? String(ord.customer_phone || '').replace(/\D/g, '') : '';
-      if (!ord || ordDigits.slice(-10) !== phoneDigits.slice(-10)) {
-        alert('Invoice number ya phone number match nahi hua.');
-        return;
-      }
-      const { data: its, error: itErr } = await supabase
-        .from('order_items').select('id').eq('order_id', ord.id).eq('product_id', product.id).limit(1);
-      if (reportError('review check items', itErr)) return;
-      if (!its || its.length === 0) { alert('Is invoice mein yeh product nahi hai.'); return; }
-      const ok = await submitReview(product.id, ord.id, ord.customer_name, rvRating, rvRemark);
-      if (ok) {
-        alert('Shukriya! Aap ka review save ho gaya.');
-        setRvInvoice(''); setRvPhone(''); setRvRemark(''); setRvRating(5);
-      }
-    } finally {
-      setRvBusy(false);
+  const handleSubmitReview = async (product: Product) => {
+    if (!rvName.trim()) { alert('Please enter your name.'); return; }
+    const ok = await submitReview(product.id, null, rvName.trim(), rvRating, rvRemark, rvEmail, rvPhone);
+    if (ok) {
+      alert('Thank you! Your review has been submitted.');
+      setRvName(''); setRvEmail(''); setRvPhone(''); setRvRemark(''); setRvRating(5);
     }
   };
 
@@ -347,24 +433,279 @@ export default function App() {
     return { total, paid, balance: Math.max(total - paid, 0), status };
   };
 
-  const savePayment = async (o: Order, newPaid: number) => {
-    const total = Number(o.total_amount || 0);
+  const nowLocalInput = () => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  };
+
+  const openPayModal = (o: Order) => {
+    setPayModal(o);
+    setPmAmount(String(payInfo(o).balance));
+    setPmMethod('cash');
+    setPmRef('');
+    setPmNote('');
+    setPmDate(nowLocalInput());
+  };
+
+  const updateOrderPaid = async (orderId: string, total: number, newPaid: number) => {
     const paid = Math.max(0, Math.min(newPaid, total));
     const label = total > 0 && paid >= total ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
     const paid_at = paid > 0 ? new Date().toISOString() : null;
     const { error } = await supabase
-      .from('orders').update({ paid_amount: paid, payment_status: label, paid_at }).eq('id', o.id);
-    if (reportError('payment update', error)) return;
-    setAdminOrders(prev => prev.map(x => x.id === o.id ? { ...x, paid_amount: paid, payment_status: label, paid_at } : x));
+      .from('orders').update({ paid_amount: paid, payment_status: label, paid_at }).eq('id', orderId);
+    if (reportError('order payment update', error)) return false;
+    setAdminOrders(prev => prev.map(x => x.id === orderId ? { ...x, paid_amount: paid, payment_status: label, paid_at } : x));
+    return true;
   };
 
-  const addPartialPayment = (o: Order) => {
+  const handleSavePaymentEntry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const o = payModal;
+    if (!o) return;
     const info = payInfo(o);
-    const v = window.prompt(`Kitni raqam mili? (Balance: PKR ${info.balance})`);
-    if (!v) return;
-    const n = parseFloat(v);
-    if (isNaN(n) || n <= 0) { alert('Sahi raqam likhein.'); return; }
-    savePayment(o, info.paid + n);
+    const amt = parseFloat(pmAmount);
+    if (isNaN(amt) || amt <= 0) { alert('Please enter a valid amount.'); return; }
+    if (amt > info.balance + 0.0001) { alert(`Amount cannot be more than the balance (PKR ${info.balance}).`); return; }
+
+    let method = 'Cash';
+    let category = 'Cash';
+    let account_id: string | null = null;
+    let account_label = 'Cash';
+    if (pmMethod.startsWith('acc:')) {
+      const a = paymentAccounts.find(x => x.id === pmMethod.slice(4));
+      if (a) {
+        method = a.type;
+        category = /easypaisa|jazzcash|sadapay|nayapay|upaisa|wallet/i.test(a.type) ? 'Mobile Wallet' : 'Bank Transfer';
+        account_id = a.id;
+        account_label = `${a.type} - ${a.account_title} (${a.account_number})`;
+      }
+    } else if (pmMethod === 'other') {
+      method = 'Other';
+      category = 'Other';
+      account_label = 'Other';
+    }
+
+    const received_at = pmDate ? new Date(pmDate).toISOString() : new Date().toISOString();
+    const { data, error } = await supabase.from('payments').insert([{
+      order_id: o.id,
+      amount: amt,
+      method,
+      category,
+      account_id,
+      account_label,
+      reference: pmRef.trim() || null,
+      note: pmNote.trim() || null,
+      received_at
+    }]).select();
+    if (reportError('payment insert', error)) return;
+    if (data && data[0]) setPayments(prev => [data[0], ...prev]);
+    await updateOrderPaid(o.id, info.total, info.paid + amt);
+    setPayModal(null);
+  };
+
+  const handleDeletePaymentEntry = async (pay: Payment) => {
+    if (!window.confirm('Delete this payment entry?')) return;
+    const { error } = await supabase.from('payments').delete().eq('id', pay.id);
+    if (reportError('payment delete', error)) return;
+    setPayments(prev => prev.filter(x => x.id !== pay.id));
+    const o = adminOrders.find(x => x.id === pay.order_id);
+    if (o) await updateOrderPaid(o.id, Number(o.total_amount || 0), Number(o.paid_amount || 0) - Number(pay.amount));
+  };
+
+  const handleResetOrderPayments = async (o: Order) => {
+    if (!window.confirm('Remove all payments of this order and set it back to Unpaid?')) return;
+    const { error } = await supabase.from('payments').delete().eq('order_id', o.id);
+    if (reportError('payments reset', error)) return;
+    setPayments(prev => prev.filter(x => x.order_id !== o.id));
+    await updateOrderPaid(o.id, Number(o.total_amount || 0), 0);
+  };
+
+  async function fetchPayments() {
+    const { data, error } = await supabase.from('payments').select('*').order('received_at', { ascending: false });
+    if (error) { reportError('payments fetch', error); return; }
+    setPayments(data || []);
+  }
+
+  // ---- Edit order ----
+  const openEditOrder = (o: Order) => {
+    setEditOrder(o);
+    setEoName(o.customer_name || '');
+    setEoPhone(o.customer_phone || '');
+    setEoEmail(o.customer_email || '');
+    setEoAddress(o.shipping_address || '');
+  };
+
+  const handleSaveEditOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editOrder) return;
+    if (!eoName.trim() || eoPhone.replace(/\D/g, '').length < 7) {
+      alert('Please enter a name and a valid phone number.');
+      return;
+    }
+    const patch = {
+      customer_name: eoName.trim(),
+      customer_phone: eoPhone.trim(),
+      customer_email: eoEmail.trim() || null,
+      shipping_address: eoAddress.trim()
+    };
+    const { error } = await supabase.from('orders').update(patch).eq('id', editOrder.id);
+    if (reportError('order update', error)) return;
+    setAdminOrders(prev => prev.map(x => x.id === editOrder.id ? { ...x, ...patch } : x));
+    setEditOrder(null);
+  };
+
+  // ---- Customers ----
+  const last10 = (v: any) => String(v ?? '').replace(/\D/g, '').slice(-10);
+
+  async function fetchCustomers() {
+    const { data, error } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+    if (error) { reportError('customers fetch', error); return; }
+    setCustomers(data || []);
+  }
+
+  const resetCustomerForm = () => {
+    setEditingCustomerId(null);
+    setCName(''); setCEmail(''); setCAddress('');
+    setCGeo(emptyGeo());
+  };
+
+  const handleSaveCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cName.trim()) { alert('Customer name is required.'); return; }
+    if (!localNumber(cGeo.phoneNumber)) { alert('Mobile number is required.'); return; }
+
+    const r = await resolveGeo(cGeo);
+    const row = {
+      name: cName.trim(),
+      email: cEmail.trim() || null,
+      phone_iso: cGeo.phoneIso,
+      phone_code: r.phoneCode,
+      phone: localNumber(cGeo.phoneNumber),
+      country_iso: cGeo.countryIso,
+      country: r.countryName,
+      province_iso: cGeo.stateIso,
+      province: r.stateName,
+      city: cGeo.city,
+      address: cAddress.trim()
+    };
+
+    const dup = customers.find(c => c.id !== editingCustomerId && c.phone_code === row.phone_code && c.phone === row.phone);
+    if (dup) { alert(`A customer with this mobile number already exists (${dup.name}).`); return; }
+
+    if (editingCustomerId) {
+      const { error } = await supabase.from('customers').update(row).eq('id', editingCustomerId);
+      if (reportError('customer update', error)) return;
+      alert('Customer updated successfully!');
+    } else {
+      const { error } = await supabase.from('customers').insert([row]);
+      if (reportError('customer insert', error)) return;
+      alert('Customer saved successfully!');
+    }
+    resetCustomerForm();
+    fetchCustomers();
+  };
+
+  const handleEditCustomer = (c: Customer) => {
+    setEditingCustomerId(c.id);
+    setCName(c.name || '');
+    setCEmail(c.email || '');
+    setCAddress(c.address || '');
+    setCGeo({
+      countryIso: c.country_iso || 'PK',
+      stateIso: c.province_iso || '',
+      city: c.city || '',
+      phoneIso: c.phone_iso || c.country_iso || 'PK',
+      phoneNumber: c.phone || ''
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteCustomer = async (c: Customer) => {
+    if (!window.confirm(`Delete customer "${c.name}"? Their past orders will stay.`)) return;
+    const { error } = await supabase.from('customers').delete().eq('id', c.id);
+    if (reportError('customer delete', error)) return;
+    setCustomers(prev => prev.filter(x => x.id !== c.id));
+  };
+
+  // ---- Hero slides ----
+  async function fetchSlides() {
+    const { data, error } = await supabase.from('hero_slides').select('*').order('sort_order', { ascending: true });
+    if (error) { console.error('hero_slides fetch', error); return; }
+    setSlides(data || []);
+  }
+
+  const resetSlideForm = () => {
+    setEditingSlideId(null);
+    setSlTitle(''); setSlText(''); setSlCta('Shop Now'); setSlBg('gold'); setSlImage(''); setSlActive(true);
+  };
+
+  const handleSlideImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 1600 / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setSlImage(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveSlide = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!slTitle.trim()) { alert('Slide title is required.'); return; }
+    const row = { title: slTitle.trim(), text: slText.trim(), cta: slCta.trim() || 'Shop Now', bg: slBg, image_url: slImage || null, active: slActive };
+    if (editingSlideId) {
+      const { error } = await supabase.from('hero_slides').update(row).eq('id', editingSlideId);
+      if (reportError('slide update', error)) return;
+      alert('Slide updated successfully!');
+    } else {
+      const next = slides.reduce((m, x) => Math.max(m, x.sort_order || 0), 0) + 1;
+      const { error } = await supabase.from('hero_slides').insert([{ ...row, sort_order: next }]);
+      if (reportError('slide insert', error)) return;
+      alert('Slide added successfully!');
+    }
+    resetSlideForm();
+    fetchSlides();
+  };
+
+  const handleEditSlide = (sl: Slide) => {
+    setEditingSlideId(sl.id || null);
+    setSlTitle(sl.title); setSlText(sl.text || ''); setSlCta(sl.cta || 'Shop Now');
+    setSlBg(sl.bg || 'gold'); setSlImage(sl.image_url || ''); setSlActive(sl.active !== false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteSlide = async (id: string) => {
+    if (!window.confirm('Delete this slide?')) return;
+    const { error } = await supabase.from('hero_slides').delete().eq('id', id);
+    if (reportError('slide delete', error)) return;
+    setSlides(prev => prev.filter(x => x.id !== id));
+  };
+
+  const handleToggleSlide = async (sl: Slide) => {
+    const { error } = await supabase.from('hero_slides').update({ active: !(sl.active !== false) }).eq('id', sl.id);
+    if (reportError('slide toggle', error)) return;
+    fetchSlides();
+  };
+
+  const handleMoveSlide = async (index: number, dir: -1 | 1) => {
+    const a = slides[index];
+    const b = slides[index + dir];
+    if (!a || !b) return;
+    const e1 = await supabase.from('hero_slides').update({ sort_order: b.sort_order }).eq('id', a.id);
+    const e2 = await supabase.from('hero_slides').update({ sort_order: a.sort_order }).eq('id', b.id);
+    if (reportError('slide reorder', e1.error || e2.error)) return;
+    fetchSlides();
   };
 
   async function fetchNotifSettings() {
@@ -396,7 +737,7 @@ export default function App() {
     const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true } });
     setNotifBusy(false);
     if (error) {
-      alert('Test alert fail hua. Edge Function "notify-order" deploy hui hai? \n' + error.message);
+      alert('Test alert failed. Is the Edge Function "notify-order" deployed?\n' + error.message);
       return;
     }
     alert('Test result:\n' + JSON.stringify(data, null, 2));
@@ -414,7 +755,7 @@ export default function App() {
     } catch (e) { /* ignore */ }
   }
 
-  // Admin logged in hai to naye order ka live alert (Supabase Realtime)
+  // Live alert for new orders while the admin is logged in (Supabase Realtime)
   useEffect(() => {
     if (!isAdminLoggedIn) return;
     const channel = supabase
@@ -430,7 +771,7 @@ export default function App() {
             new Notification('New Order Received', { body: `${o.customer_name || ''} - PKR ${o.total_amount || ''}` });
           }
         } catch (e) { /* ignore */ }
-        // order_items thori der baad save hote hain, isliye list thora ruk kar refresh
+        // order items are saved a moment after the order, so refresh the list after a short delay
         setTimeout(fetchOrders, 2500);
       })
       .subscribe();
@@ -475,6 +816,8 @@ export default function App() {
     fetchOrders();
     fetchUsers();
     fetchNotifSettings();
+    fetchCustomers();
+    fetchPayments();
     try {
       if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     } catch (err) { /* ignore */ }
@@ -588,14 +931,14 @@ export default function App() {
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     const uname = newUsername.trim();
-    if (!uname || !newUserPassword) { alert('User ID aur Password dono likhein.'); return; }
+    if (!uname || !newUserPassword) { alert('Please enter both User ID and Password.'); return; }
 
-    // duplicate check (database se)
+    // duplicate check (from the database)
     const { data: same, error: sameErr } = await supabase
       .from('profiles').select('id').ilike('username', uname.replace(/[%_\\]/g, '\\$&'));
     if (reportError('user check', sameErr)) return;
     if ((same || []).some((r: any) => r.id !== editingUserId)) {
-      alert('Yeh User ID pehle se maujood hai. Doosri ID chunein.');
+      alert('This User ID already exists. Please choose another one.');
       return;
     }
 
@@ -608,12 +951,12 @@ export default function App() {
     } else {
       const { error } = await supabase.from('profiles').insert([row]);
       if (reportError('user insert', error)) return;
-      alert(`New admin user (${uname}) saved in database!\nAb isi User ID/Password se login ho sakta hai.`);
+      alert(`New admin user (${uname}) saved in database!\nYou can now log in with this User ID and password.`);
     }
     setEditingUserId(null);
     setNewUsername('');
     setNewUserPassword('');
-    await fetchUsers(); // database se wapas parh kar list dikhao
+    await fetchUsers(); // reload the list from the database
   };
 
   const handleEditUser = (u: AdminUser) => {
@@ -670,25 +1013,43 @@ export default function App() {
     }
   };
 
-  const addToCart = (product: Product) => {
+  const addToCart = (product: Product, qty = 1) => {
     const inCart = cart.find(i => i.id === product.id)?.quantity || 0;
-    if (typeof product.stock_quantity === 'number' && inCart + 1 > product.stock_quantity) {
-      setToastMessage(product.stock_quantity <= 0 ? 'Sorry, this product is out of stock.' : `Only ${product.stock_quantity} in stock.`);
+    if (typeof product.stock_quantity === 'number' && inCart + qty > product.stock_quantity) {
+      setToastMessage(
+        product.stock_quantity <= 0
+          ? 'Sorry, this product is out of stock.'
+          : `Only ${product.stock_quantity} in stock (${inCart} already in your cart).`
+      );
       setTimeout(() => setToastMessage(null), 2500);
-      return;
+      return false;
     }
     setCart((prevCart) => {
       const existing = prevCart.find((item) => item.id === product.id);
       if (existing) {
         return prevCart.map((item) =>
-          item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
+          item.id === product.id ? { ...item, quantity: item.quantity + qty } : item
         );
       }
-      return [...prevCart, { ...product, quantity: 1 }];
+      return [...prevCart, { ...product, quantity: qty }];
     });
 
-    setToastMessage(`${product.name} added to cart successfully!`);
+    setToastMessage(`${qty} x ${product.name} added to cart!`);
     setTimeout(() => setToastMessage(null), 2500);
+    return true;
+  };
+
+  const changeCartQty = (id: string, delta: number) => {
+    const item = cart.find(i => i.id === id);
+    if (!item) return;
+    const next = item.quantity + delta;
+    if (next <= 0) { removeFromCart(id); return; }
+    if (typeof item.stock_quantity === 'number' && next > item.stock_quantity) {
+      setToastMessage(`Only ${item.stock_quantity} in stock.`);
+      setTimeout(() => setToastMessage(null), 2500);
+      return;
+    }
+    setCart(prev => prev.map(i => i.id === id ? { ...i, quantity: next } : i));
   };
 
   const removeFromCart = (id: string) => {
@@ -699,19 +1060,56 @@ export default function App() {
 
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerName || !customerPhone || !shippingAddress || !city) {
-      alert('Please fill in all required customer details.');
+    if (!customerName.trim() || !localNumber(geo.phoneNumber) || !shippingAddress.trim() || !geo.countryIso || !geo.city) {
+      alert('Please fill in all required customer details (name, country, city, mobile number and address).');
       return;
     }
 
     setIsSubmitting(true);
-    const fullAddress = `${shippingAddress}, City: ${city}, Zip: ${zipCode}`;
 
     try {
+      const info = await resolveGeo(geo);
+      const local = localNumber(geo.phoneNumber);
+      const fullPhone = `${info.phoneCode}${local}`;
+      const fullAddress = [shippingAddress.trim(), geo.city, info.stateName, info.countryName, zipCode ? `Zip: ${zipCode}` : '']
+        .filter(Boolean).join(', ');
+
+      // Save / update the customer record (does not block the order if it fails)
+      let customerId: string | null = null;
+      try {
+        const crow = {
+          name: customerName.trim(),
+          email: customerEmail.trim() || null,
+          phone_iso: geo.phoneIso,
+          phone_code: info.phoneCode,
+          phone: local,
+          country_iso: geo.countryIso,
+          country: info.countryName,
+          province_iso: geo.stateIso,
+          province: info.stateName,
+          city: geo.city,
+          address: shippingAddress.trim()
+        };
+        const { data: found } = await supabase
+          .from('customers').select('id').eq('phone_code', info.phoneCode).eq('phone', local).limit(1);
+        if (found && found[0]) {
+          customerId = found[0].id;
+          await supabase.from('customers').update(crow).eq('id', found[0].id);
+        } else {
+          const { data: ins, error: insErr } = await supabase.from('customers').insert([crow]).select();
+          if (insErr) console.warn('customer insert', insErr.message);
+          customerId = ins && ins[0] ? ins[0].id : null;
+        }
+      } catch (err) {
+        console.warn('customer save failed', err);
+      }
+
       const { data: orderData, error: orderError } = await supabase.from('orders').insert([
         {
-          customer_name: customerName,
-          customer_phone: customerPhone,
+          customer_name: customerName.trim(),
+          customer_phone: fullPhone,
+          customer_email: customerEmail.trim() || null,
+          customer_id: customerId,
           shipping_address: fullAddress,
           total_amount: totalAmount,
           payment_method: paymentMethod,
@@ -743,20 +1141,20 @@ export default function App() {
         return;
       }
 
-      // Stock kam karo aur sold barhao
+      // Decrease stock and increase sold count
       for (const item of cart) {
         const { error: stockErr } = await supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.quantity });
         if (stockErr) { console.error('decrement_stock', stockErr); setDbError(`stock update: ${stockErr.message}`); }
       }
       fetchProducts();
 
-      // Owner ko email / WhatsApp alert (Edge Function). Fail ho to order par asar nahi.
+      // Email / WhatsApp alert to the owner (Edge Function). A failure here does not affect the order.
       supabase.functions.invoke('notify-order', { body: { order_id: order.id } })
         .then(({ error: nErr }) => { if (nErr) console.warn('notify-order:', nErr.message); });
 
       setPurchased({
         order_id: order.id,
-        customer_name: customerName,
+        customer_name: customerName.trim(),
         items: cart.map(i => ({ id: i.id, name: i.name }))
       });
       setRateDrafts({});
@@ -771,6 +1169,11 @@ export default function App() {
   const filteredProducts = selectedCategory === 'All' 
     ? products 
     : products.filter(p => p.category_name === selectedCategory);
+
+  const displaySlides: Slide[] = slides.filter(x => x.active !== false).length > 0
+    ? slides.filter(x => x.active !== false)
+    : HERO_SLIDES;
+  const hi = displaySlides.length ? heroIndex % displaySlides.length : 0;
 
   const visibleProducts = filteredProducts.filter(p =>
     !searchQuery.trim() || (p.name + ' ' + (p.description || '')).toLowerCase().includes(searchQuery.trim().toLowerCase())
@@ -899,13 +1302,18 @@ export default function App() {
 
           {/* Hero slider */}
           <section className="relative overflow-hidden">
-            <div className="flex transition-transform duration-700" style={{ transform: `translateX(-${heroIndex * 100}%)` }}>
-              {HERO_SLIDES.map((sl, i) => (
-                <div key={i} className={`min-w-full h-64 md:h-96 bg-gradient-to-r ${sl.bg} flex items-center justify-center text-center px-6`}>
-                  <div className="max-w-2xl">
+            <div className="flex transition-transform duration-700" style={{ transform: `translateX(-${hi * 100}%)` }}>
+              {displaySlides.map((sl, i) => (
+                <div
+                  key={sl.id || i}
+                  className={`min-w-full h-64 md:h-96 bg-gradient-to-r ${BG_PRESETS[sl.bg] || BG_PRESETS.gold} flex items-center justify-center text-center px-6 relative`}
+                  style={sl.image_url ? { backgroundImage: `url(${sl.image_url})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
+                >
+                  {sl.image_url && <div className="absolute inset-0 bg-black/45" />}
+                  <div className="max-w-2xl relative">
                     <p className="text-amber-400 text-xs font-bold tracking-[0.3em] mb-3">{STORE.name}</p>
                     <h2 className="text-3xl md:text-6xl font-black text-white mb-3">{sl.title}</h2>
-                    <p className="text-slate-300 text-sm md:text-lg mb-6">{sl.text}</p>
+                    <p className="text-slate-200 text-sm md:text-lg mb-6">{sl.text}</p>
                     <button
                       onClick={scrollToProducts}
                       className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm px-8 py-3 rounded-full transition cursor-pointer"
@@ -917,25 +1325,25 @@ export default function App() {
               ))}
             </div>
             <button
-              onClick={() => setHeroIndex(i => (i - 1 + HERO_SLIDES.length) % HERO_SLIDES.length)}
+              onClick={() => setHeroIndex(i => (i % displaySlides.length - 1 + displaySlides.length) % displaySlides.length)}
               className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
               aria-label="Previous slide"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
             <button
-              onClick={() => setHeroIndex(i => (i + 1) % HERO_SLIDES.length)}
+              onClick={() => setHeroIndex(i => i + 1)}
               className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
               aria-label="Next slide"
             >
               <ChevronRight className="w-5 h-5" />
             </button>
             <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
-              {HERO_SLIDES.map((_, i) => (
+              {displaySlides.map((_, i) => (
                 <button
                   key={i}
                   onClick={() => setHeroIndex(i)}
-                  className={`h-2 rounded-full transition-all cursor-pointer ${i === heroIndex ? 'w-6 bg-amber-400' : 'w-2 bg-white/50'}`}
+                  className={`h-2 rounded-full transition-all cursor-pointer ${i === hi ? 'w-6 bg-amber-400' : 'w-2 bg-white/50'}`}
                   aria-label={`Slide ${i + 1}`}
                 />
               ))}
@@ -1021,7 +1429,7 @@ export default function App() {
                           <Heart className={`w-4 h-4 ${wishlist.includes(product.id) ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} />
                         </button>
                         <button
-                          onClick={() => setQuickView(product)}
+                          onClick={() => { setQuickView(product); setQvQty(1); }}
                           className="absolute bottom-0 left-0 right-0 bg-slate-900/90 text-white text-xs font-bold py-2 flex items-center justify-center md:translate-y-full md:group-hover:translate-y-0 transition-transform cursor-pointer"
                         >
                           <Eye className="w-3.5 h-3.5 mr-1.5" /> Quick view
@@ -1117,7 +1525,7 @@ export default function App() {
                 <p className="text-sm text-slate-300">Message us on WhatsApp and we will help you.</p>
               </div>
               <a
-                href={waLink(STORE.whatsapp, 'Assalam o Alaikum, mujhe products ke bare mein maloomat chahiye.')}
+                href={waLink(STORE.whatsapp, 'Hello, I would like some information about your products.')}
                 target="_blank"
                 rel="noreferrer"
                 className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm px-6 py-3 rounded-full flex items-center"
@@ -1164,11 +1572,11 @@ export default function App() {
                 <button onClick={() => setQuickView(null)} className="absolute top-3 right-3 bg-white/90 p-1.5 rounded-full shadow z-10 cursor-pointer" aria-label="Close">
                   <X className="w-4 h-4" />
                 </button>
-                <img src={quickView.image_url} alt={quickView.name} className="w-full h-64 md:h-full object-cover bg-slate-100" />
+                <img src={quickView.image_url} alt={quickView.name} className="w-full h-56 md:h-full object-cover bg-slate-100" />
                 <div className="p-6 flex flex-col overflow-y-auto max-h-[90vh]">
                   <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">{quickView.category_name}</span>
                   <h3 className="text-xl font-black text-slate-900 mt-1 mb-2">{quickView.name}</h3>
-                  <div className="flex items-baseline space-x-2 mb-3">
+                  <div className="flex items-baseline space-x-2 mb-2">
                     <span className="text-2xl font-black text-slate-900">PKR {quickView.discounted_price || quickView.price}</span>
                     {discountPct(quickView) > 0 && (
                       <>
@@ -1177,7 +1585,6 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  <p className="text-sm text-slate-600 mb-3">{quickView.description}</p>
                   <p className="text-xs font-bold mb-3">
                     {quickView.stock_quantity <= 0
                       ? <span className="text-red-600">Out of stock</span>
@@ -1185,7 +1592,31 @@ export default function App() {
                     <span className="text-slate-400"> | {quickView.sold_quantity ?? 0} sold</span>
                   </p>
 
-                  <div className="border-t pt-3 mb-4">
+                  {quickView.stock_quantity > 0 ? (
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="flex items-center border rounded-xl overflow-hidden">
+                        <button type="button" onClick={() => setQvQty(q => Math.max(1, q - 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Decrease quantity">
+                          <Minus className="w-4 h-4" />
+                        </button>
+                        <span className="px-4 text-sm font-black">{qvQty}</span>
+                        <button type="button" onClick={() => setQvQty(q => Math.min(quickView.stock_quantity, q + 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Increase quantity">
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => { if (addToCart(quickView, qvQty)) setQuickView(null); }}
+                        className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm py-3 rounded-xl flex items-center justify-center cursor-pointer"
+                      >
+                        <ShoppingCart className="w-4 h-4 mr-2" /> Add to Cart
+                      </button>
+                    </div>
+                  ) : (
+                    <button disabled className="mb-4 bg-slate-200 text-slate-500 font-black text-sm py-3 rounded-xl">Sold Out</button>
+                  )}
+
+                  <p className="text-sm text-slate-600 mb-3">{quickView.description}</p>
+
+                  <div className="border-t pt-3">
                     <div className="flex items-center space-x-2 mb-2">
                       <h4 className="text-sm font-black text-slate-900">Customer Reviews</h4>
                       {renderStars(ratingOf(quickView.id).avg)}
@@ -1193,7 +1624,7 @@ export default function App() {
                     </div>
                     <div className="space-y-2 max-h-40 overflow-y-auto">
                       {reviews.filter(r => r.product_id === quickView.id).length === 0 && (
-                        <p className="text-xs text-slate-400">Abhi koi review nahi. Pehle aap dein!</p>
+                        <p className="text-xs text-slate-400">No reviews yet. Be the first to review this product!</p>
                       )}
                       {reviews.filter(r => r.product_id === quickView.id).map(r => (
                         <div key={r.id} className="bg-slate-50 rounded-lg p-2.5 text-xs">
@@ -1208,21 +1639,30 @@ export default function App() {
                     </div>
 
                     <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 space-y-2">
-                      <p className="text-xs font-bold text-slate-800">Kharidne ke baad review dein</p>
+                      <p className="text-xs font-bold text-slate-800">Write a review</p>
                       <input
                         type="text"
-                        placeholder="Invoice No (e.g. ZP-1001)"
-                        value={rvInvoice}
-                        onChange={(e) => setRvInvoice(e.target.value)}
+                        placeholder="Your name *"
+                        value={rvName}
+                        onChange={(e) => setRvName(e.target.value)}
                         className="w-full px-3 py-2 border rounded-lg text-xs"
                       />
-                      <input
-                        type="text"
-                        placeholder="Order mein diya hua phone number"
-                        value={rvPhone}
-                        onChange={(e) => setRvPhone(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg text-xs"
-                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="email"
+                          placeholder="Email (optional)"
+                          value={rvEmail}
+                          onChange={(e) => setRvEmail(e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg text-xs"
+                        />
+                        <input
+                          type="tel"
+                          placeholder="Mobile (optional)"
+                          value={rvPhone}
+                          onChange={(e) => setRvPhone(e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg text-xs"
+                        />
+                      </div>
                       {starPicker(rvRating, setRvRating)}
                       <textarea
                         rows={2}
@@ -1232,25 +1672,102 @@ export default function App() {
                         className="w-full px-3 py-2 border rounded-lg text-xs"
                       />
                       <button
-                        onClick={() => handleVerifiedReview(quickView)}
-                        disabled={rvBusy}
-                        className="w-full bg-slate-900 text-amber-400 font-bold text-xs py-2 rounded-lg cursor-pointer disabled:opacity-60"
+                        onClick={() => handleSubmitReview(quickView)}
+                        className="w-full bg-slate-900 text-amber-400 font-bold text-xs py-2 rounded-lg cursor-pointer"
                       >
-                        {rvBusy ? 'Checking...' : 'Submit Review'}
+                        Submit Review
                       </button>
                     </div>
                   </div>
-                  <button
-                    onClick={() => { addToCart(quickView); setQuickView(null); }}
-                    disabled={quickView.stock_quantity <= 0}
-                    className="mt-auto bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-500 text-slate-950 font-black text-sm py-3 rounded-xl flex items-center justify-center cursor-pointer"
-                  >
-                    <ShoppingCart className="w-4 h-4 mr-2" /> {quickView.stock_quantity <= 0 ? 'Sold Out' : 'Add to Cart'}
-                  </button>
                 </div>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* RECORD PAYMENT MODAL */}
+      {payModal && (() => {
+        const info = payInfo(payModal);
+        return (
+          <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setPayModal(null)}>
+            <form onSubmit={handleSavePaymentEntry} onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl max-w-md w-full p-6 space-y-3 max-h-[90vh] overflow-y-auto">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-black text-slate-900">Record Payment</h3>
+                <button type="button" onClick={() => setPayModal(null)} className="cursor-pointer" aria-label="Close"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1">
+                <div><span className="text-slate-500">Invoice:</span> <b>{payModal.invoice_no || '-'}</b> | <b>{payModal.customer_name}</b></div>
+                <div>Total: <b>PKR {info.total}</b> | Received: <b className="text-emerald-700">PKR {info.paid}</b> | Balance: <b className="text-red-600">PKR {info.balance}</b></div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Amount received (PKR) *</label>
+                <input type="number" min="1" step="any" required value={pmAmount} onChange={(e) => setPmAmount(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm font-bold" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Received in / via *</label>
+                <select value={pmMethod} onChange={(e) => setPmMethod(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm bg-white">
+                  <option value="cash">Cash</option>
+                  {paymentAccounts.map(a => (
+                    <option key={a.id} value={`acc:${a.id}`}>{a.type} - {a.account_title} ({a.account_number})</option>
+                  ))}
+                  <option value="other">Other</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Date & time received</label>
+                <input type="datetime-local" value={pmDate} onChange={(e) => setPmDate(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Transaction / reference ID (optional)</label>
+                <input type="text" value={pmRef} onChange={(e) => setPmRef(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Note (optional)</label>
+                <input type="text" value={pmNote} onChange={(e) => setPmNote(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+              </div>
+
+              <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-black text-sm py-3 rounded-xl cursor-pointer">
+                Save Payment
+              </button>
+            </form>
+          </div>
+        );
+      })()}
+
+      {/* EDIT ORDER MODAL */}
+      {editOrder && (
+        <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setEditOrder(null)}>
+          <form onSubmit={handleSaveEditOrder} onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl max-w-md w-full p-6 space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="text-lg font-black text-slate-900">Edit Order {editOrder.invoice_no || ''}</h3>
+              <button type="button" onClick={() => setEditOrder(null)} className="cursor-pointer" aria-label="Close"><X className="w-5 h-5" /></button>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Customer name *</label>
+              <input type="text" required value={eoName} onChange={(e) => setEoName(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Phone (with country code, e.g. +923001234567) *</label>
+              <input type="tel" required value={eoPhone} onChange={(e) => setEoPhone(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Email</label>
+              <input type="email" value={eoEmail} onChange={(e) => setEoEmail(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Delivery address</label>
+              <textarea rows={3} value={eoAddress} onChange={(e) => setEoAddress(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+            </div>
+            <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-black text-sm py-3 rounded-xl cursor-pointer">
+              Save Changes
+            </button>
+          </form>
         </div>
       )}
 
@@ -1287,14 +1804,14 @@ export default function App() {
                 </div>
                 {purchased && (
                   <div className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 space-y-4">
-                    <p className="text-sm font-black text-slate-900">Apne products ko rate karein</p>
+                    <p className="text-sm font-black text-slate-900">Rate your products</p>
                     {purchased.items.map(it => {
                       const d = rateDrafts[it.id] || { rating: 5, remark: '' };
                       return (
                         <div key={it.id} className="border-b last:border-b-0 pb-3 last:pb-0">
                           <p className="text-xs font-bold text-slate-800 mb-1">{it.name}</p>
                           {d.done ? (
-                            <p className="text-xs text-emerald-700 font-bold">Review submitted. Shukriya!</p>
+                            <p className="text-xs text-emerald-700 font-bold">Review submitted. Thank you!</p>
                           ) : (
                             <>
                               {starPicker(d.rating, (n) => setRateDrafts(prev => ({ ...prev, [it.id]: { ...d, rating: n } })))}
@@ -1344,9 +1861,26 @@ export default function App() {
                     <div key={item.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
                       <div>
                         <h4 className="font-bold text-slate-800 text-sm">{item.name}</h4>
-                        <span className="text-xs text-slate-500">
-                          {item.quantity} x PKR {item.discounted_price || item.price}
-                        </span>
+                        <div className="flex items-center space-x-2 mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => changeCartQty(item.id, -1)}
+                            className="w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center cursor-pointer"
+                            aria-label="Decrease quantity"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="text-sm font-bold w-6 text-center">{item.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={() => changeCartQty(item.id, 1)}
+                            className="w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center cursor-pointer"
+                            aria-label="Increase quantity"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                          <span className="text-xs text-slate-500">x PKR {item.discounted_price || item.price}</span>
+                        </div>
                       </div>
                       <div className="flex items-center space-x-3">
                         <span className="font-black text-slate-900 text-sm">
@@ -1373,7 +1907,7 @@ export default function App() {
                   
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Full Name</label>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Full Name *</label>
                       <input
                         type="text"
                         required
@@ -1384,52 +1918,40 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Phone / WhatsApp</label>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Email (optional)</label>
                       <input
-                        type="tel"
-                        required
-                        placeholder="03001234567"
-                        value={customerPhone}
-                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        type="email"
+                        placeholder="name@email.com"
+                        value={customerEmail}
+                        onChange={(e) => setCustomerEmail(e.target.value)}
                         className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                       />
                     </div>
                   </div>
 
+                  <GeoFields value={geo} onChange={setGeo} />
+
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Delivery Address</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Delivery Address *</label>
                     <input
                       type="text"
                       required
-                      placeholder="Shop/House address"
+                      placeholder="Shop / house address"
                       value={shippingAddress}
                       onChange={(e) => setShippingAddress(e.target.value)}
                       className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">City</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="City Name"
-                        value={city}
-                        onChange={(e) => setCity(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">ZIP / Postal Code</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 54000"
-                        value={zipCode}
-                        onChange={(e) => setZipCode(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">ZIP / Postal Code (optional)</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 54000"
+                      value={zipCode}
+                      onChange={(e) => setZipCode(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                    />
                   </div>
 
                   <div>
@@ -1654,6 +2176,22 @@ export default function App() {
             >
               <Star className="w-4 h-4 mr-1.5 text-amber-500" /> Reviews ({reviews.length})
             </button>
+            <button
+              onClick={() => { setAdminTab('customers'); fetchCustomers(); }}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'customers' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Users className="w-4 h-4 mr-1.5 text-amber-500" /> Customers ({customers.length})
+            </button>
+            <button
+              onClick={() => { setAdminTab('slides'); fetchSlides(); }}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'slides' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <ImageIcon className="w-4 h-4 mr-1.5 text-amber-500" /> Home Slides
+            </button>
           </div>
 
           {/* TAB 1: PRODUCTS MANAGER */}
@@ -1737,7 +2275,7 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Stock Quantity (kitne item hain) *</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Stock Quantity (items available) *</label>
                     <input
                       type="number"
                       min="0"
@@ -1747,7 +2285,7 @@ export default function App() {
                       onChange={(e) => setProductStock(e.target.value)}
                       className="w-full px-3.5 py-2 border rounded-xl text-sm font-bold"
                     />
-                    <p className="text-[11px] text-slate-400 mt-1">Edit karte waqt yahan abhi bacha hua stock likhein. Sold count automatic hai.</p>
+                    <p className="text-[11px] text-slate-400 mt-1">When editing, enter the stock that is left now. The sold count updates automatically.</p>
                   </div>
 
                   <div className="bg-slate-50 p-4 rounded-2xl border space-y-3">
@@ -1915,11 +2453,20 @@ export default function App() {
                       <tr key={order.id} className="hover:bg-slate-50 transition">
                         <td className="p-3.5 font-black text-slate-900">{order.invoice_no || '-'}</td>
                         <td className="p-3.5 text-slate-600 whitespace-nowrap">{fmtDateTime(order.created_at)}</td>
-                        <td className="p-3.5 font-bold text-slate-800">{order.customer_name}</td>
+                        <td className="p-3.5 font-bold text-slate-800">
+                          {order.customer_name}
+                          {order.customer_email && <div className="text-[11px] font-normal text-slate-500">{order.customer_email}</div>}
+                          <button
+                            onClick={() => openEditOrder(order)}
+                            className="mt-1 flex items-center text-[10px] font-bold text-blue-700 hover:underline cursor-pointer"
+                          >
+                            <Edit className="w-3 h-3 mr-1" /> Edit order
+                          </button>
+                        </td>
                         <td className="p-3.5 text-slate-600">
                           {order.customer_phone}
                           <a
-                            href={waLink(order.customer_phone, `Assalam o Alaikum ${order.customer_name}, aap ka order ${order.invoice_no || ''} SK Trader Shop se receive ho gaya hai. Shukriya!`)}
+                            href={waLink(order.customer_phone, `Hello ${order.customer_name}, we have received your order ${order.invoice_no || ''}. Thank you!`)}
                             target="_blank"
                             rel="noreferrer"
                             className="block text-emerald-700 font-bold underline"
@@ -1962,7 +2509,7 @@ export default function App() {
                                 </span>
                                 {pi.status !== 'Paid' && (
                                   <button
-                                    onClick={() => savePayment(order, pi.total)}
+                                    onClick={() => openPayModal(order)}
                                     className="block mt-1.5 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
                                   >
                                     Payment Received
@@ -2082,6 +2629,16 @@ export default function App() {
             const pending = totalSales - received;
             const unpaidCount = rows.filter(r => r.status !== 'Paid').length;
             const shown = rows.filter(r => paymentFilter === 'All' || r.status === paymentFilter);
+
+            const byCategory: Record<string, number> = {};
+            const byAccount: Record<string, number> = {};
+            payments.forEach(pm => {
+              byCategory[pm.category] = (byCategory[pm.category] || 0) + Number(pm.amount);
+              const key = pm.account_label || pm.method;
+              byAccount[key] = (byAccount[key] || 0) + Number(pm.amount);
+            });
+            const orderById = (id: string) => adminOrders.find(x => x.id === id);
+
             return (
               <div className="space-y-6">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -2091,10 +2648,33 @@ export default function App() {
                   <div className="bg-white rounded-2xl border p-4"><p className="text-[11px] font-bold text-slate-500 uppercase">Orders Not Fully Paid</p><p className="text-xl font-black text-amber-600">{unpaidCount}</p></div>
                 </div>
 
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="bg-white rounded-2xl border p-4">
+                    <h4 className="text-sm font-black text-slate-900 mb-2">Received by Category</h4>
+                    {Object.keys(byCategory).length === 0 ? <p className="text-xs text-slate-400">No payments recorded yet.</p> : (
+                      <table className="w-full text-xs"><tbody>
+                        {Object.entries(byCategory).map(([k, v]) => (
+                          <tr key={k} className="border-b last:border-b-0"><td className="py-1.5 font-bold">{k}</td><td className="py-1.5 text-right font-black text-emerald-700">PKR {v}</td></tr>
+                        ))}
+                      </tbody></table>
+                    )}
+                  </div>
+                  <div className="bg-white rounded-2xl border p-4">
+                    <h4 className="text-sm font-black text-slate-900 mb-2">Received by Account</h4>
+                    {Object.keys(byAccount).length === 0 ? <p className="text-xs text-slate-400">No payments recorded yet.</p> : (
+                      <table className="w-full text-xs"><tbody>
+                        {Object.entries(byAccount).map(([k, v]) => (
+                          <tr key={k} className="border-b last:border-b-0"><td className="py-1.5">{k}</td><td className="py-1.5 text-right font-black text-emerald-700">PKR {v}</td></tr>
+                        ))}
+                      </tbody></table>
+                    )}
+                  </div>
+                </div>
+
                 <div className="bg-white rounded-3xl p-6 border shadow-sm overflow-x-auto">
                   <div className="flex items-center justify-between flex-wrap gap-3 mb-4 pb-2 border-b">
                     <h3 className="text-lg font-extrabold text-slate-900 flex items-center">
-                      <Wallet className="w-5 h-5 text-amber-500 mr-2" /> Payments (kis ki aayi, kis ki nahi)
+                      <Wallet className="w-5 h-5 text-amber-500 mr-2" /> Order Payments
                     </h3>
                     <div className="flex space-x-2">
                       {(['All', 'Unpaid', 'Partial', 'Paid'] as const).map(f => (
@@ -2110,7 +2690,7 @@ export default function App() {
                   </div>
 
                   {shown.length === 0 ? (
-                    <div className="text-center py-10 text-slate-400 font-medium">Koi order nahi mila.</div>
+                    <div className="text-center py-10 text-slate-400 font-medium">No orders found.</div>
                   ) : (
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
@@ -2134,20 +2714,17 @@ export default function App() {
                             <td className="p-3"><div className="font-bold">{o.customer_name}</div><div className="text-slate-500">{o.customer_phone}</div></td>
                             <td className="p-3 uppercase">{o.payment_method}{o.transaction_id ? <div className="normal-case text-slate-500">Txn: {o.transaction_id}</div> : null}</td>
                             <td className="p-3 font-bold">PKR {total}</td>
-                            <td className="p-3 font-bold text-emerald-700">PKR {paid}{o.paid_at ? <div className="text-[10px] font-normal text-slate-400">{fmtDateTime(o.paid_at)}</div> : null}</td>
+                            <td className="p-3 font-bold text-emerald-700">PKR {paid}</td>
                             <td className="p-3 font-bold text-red-600">PKR {balance}</td>
                             <td className="p-3">
                               <span className={`text-[10px] font-black px-2 py-1 rounded-full ${status === 'Paid' ? 'bg-emerald-100 text-emerald-800' : status === 'Partial' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-700'}`}>{status}</span>
                             </td>
                             <td className="p-3 space-y-1">
                               {status !== 'Paid' && (
-                                <button onClick={() => savePayment(o, total)} className="block w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Payment Received (Full)</button>
-                              )}
-                              {status !== 'Paid' && (
-                                <button onClick={() => addPartialPayment(o)} className="block w-full bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">+ Add Partial Amount</button>
+                                <button onClick={() => openPayModal(o)} className="block w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Record Payment</button>
                               )}
                               {paid > 0 && (
-                                <button onClick={() => { if (window.confirm('Payment reset kar dein?')) savePayment(o, 0); }} className="block w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Reset to Unpaid</button>
+                                <button onClick={() => handleResetOrderPayments(o)} className="block w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Reset to Unpaid</button>
                               )}
                             </td>
                           </tr>
@@ -2156,9 +2733,233 @@ export default function App() {
                     </table>
                   )}
                 </div>
+
+                <div className="bg-white rounded-3xl p-6 border shadow-sm overflow-x-auto">
+                  <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
+                    <FileText className="w-5 h-5 text-amber-500 mr-2" /> Payment Ledger (every payment received)
+                  </h3>
+                  {payments.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 font-medium">No payments recorded yet.</div>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
+                        <tr>
+                          <th className="p-3">Received On</th>
+                          <th className="p-3">Invoice</th>
+                          <th className="p-3">Customer</th>
+                          <th className="p-3">Category</th>
+                          <th className="p-3">Account</th>
+                          <th className="p-3">Reference / Note</th>
+                          <th className="p-3">Amount</th>
+                          <th className="p-3"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {payments.map(pm => {
+                          const od = orderById(pm.order_id);
+                          return (
+                            <tr key={pm.id}>
+                              <td className="p-3 whitespace-nowrap">{fmtDateTime(pm.received_at)}</td>
+                              <td className="p-3 font-black">{od?.invoice_no || '-'}</td>
+                              <td className="p-3">{od?.customer_name || '-'}</td>
+                              <td className="p-3 font-bold">{pm.category}</td>
+                              <td className="p-3">{pm.account_label || pm.method}</td>
+                              <td className="p-3 text-slate-500">{pm.reference || ''}{pm.reference && pm.note ? ' | ' : ''}{pm.note || ''}{!pm.reference && !pm.note ? '-' : ''}</td>
+                              <td className="p-3 font-black text-emerald-700">PKR {pm.amount}</td>
+                              <td className="p-3">
+                                <button onClick={() => handleDeletePaymentEntry(pm)} className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg cursor-pointer" title="Delete payment entry">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             );
           })()}
+
+          {/* TAB 9: CUSTOMERS */}
+          {adminTab === 'customers' && (
+            <div className="grid lg:grid-cols-3 gap-6">
+              <form onSubmit={handleSaveCustomer} className="bg-white rounded-3xl p-6 border shadow-sm space-y-3 h-fit">
+                <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b flex items-center">
+                  <Users className="w-5 h-5 text-amber-500 mr-2" /> {editingCustomerId ? 'Edit Customer' : 'Add Customer'}
+                </h3>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Full Name *</label>
+                  <input type="text" required value={cName} onChange={(e) => setCName(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Email Address</label>
+                  <input type="email" value={cEmail} onChange={(e) => setCEmail(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <GeoFields value={cGeo} onChange={setCGeo} />
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Street Address</label>
+                  <input type="text" value={cAddress} onChange={(e) => setCAddress(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <div className="flex space-x-2">
+                  <button type="submit" className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer">
+                    {editingCustomerId ? 'Update Customer' : 'Save Customer'}
+                  </button>
+                  {editingCustomerId && (
+                    <button type="button" onClick={resetCustomerForm} className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl cursor-pointer">Cancel</button>
+                  )}
+                </div>
+              </form>
+
+              <div className="lg:col-span-2 bg-white rounded-3xl p-6 border shadow-sm overflow-x-auto">
+                <div className="flex items-center justify-between flex-wrap gap-3 mb-4 pb-2 border-b">
+                  <h3 className="text-lg font-extrabold text-slate-900">Customer Details ({customers.length})</h3>
+                  <input
+                    type="text"
+                    placeholder="Search name, phone, email, city"
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    className="px-3 py-2 border rounded-full text-xs w-64"
+                  />
+                </div>
+                {(() => {
+                  const q = customerSearch.trim().toLowerCase();
+                  const list = customers.filter(c =>
+                    !q || [c.name, c.email, c.phone, c.phone_code, c.city, c.province, c.country].join(' ').toLowerCase().includes(q)
+                  );
+                  if (list.length === 0) return <div className="text-center py-10 text-slate-400 font-medium">No customers found.</div>;
+                  return (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
+                        <tr>
+                          <th className="p-3">Name</th>
+                          <th className="p-3">Contact</th>
+                          <th className="p-3">Location</th>
+                          <th className="p-3">Orders</th>
+                          <th className="p-3">Total Spent</th>
+                          <th className="p-3">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {list.map(c => {
+                          const full = `${c.phone_code || ''}${c.phone || ''}`;
+                          const mine = adminOrders.filter(o =>
+                            o.status !== 'Cancelled' && (o.customer_id === c.id || (c.phone && last10(o.customer_phone) === last10(full)))
+                          );
+                          const spent = mine.reduce((a, o) => a + Number(o.total_amount || 0), 0);
+                          return (
+                            <tr key={c.id} className="hover:bg-slate-50">
+                              <td className="p-3 font-bold">{c.name}<div className="text-[10px] font-normal text-slate-400">Since {fmtDateTime(c.created_at)}</div></td>
+                              <td className="p-3">
+                                <div>{full || '-'}</div>
+                                <div className="text-slate-500">{c.email || ''}</div>
+                                {full && (
+                                  <a href={waLink(full, `Hello ${c.name},`)} target="_blank" rel="noreferrer" className="text-emerald-700 font-bold underline">WhatsApp</a>
+                                )}
+                              </td>
+                              <td className="p-3 text-slate-600">{[c.city, c.province, c.country].filter(Boolean).join(', ') || '-'}<div className="text-slate-400">{c.address}</div></td>
+                              <td className="p-3 font-bold">{mine.length}</td>
+                              <td className="p-3 font-bold text-emerald-700">PKR {spent}</td>
+                              <td className="p-3 space-x-1 whitespace-nowrap">
+                                <button onClick={() => handleEditCustomer(c)} className="bg-blue-100 hover:bg-blue-200 text-blue-700 p-2 rounded-lg cursor-pointer" title="Edit customer"><Edit className="w-3.5 h-3.5" /></button>
+                                <button onClick={() => handleDeleteCustomer(c)} className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg cursor-pointer" title="Delete customer"><Trash2 className="w-3.5 h-3.5" /></button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 10: HOME SLIDES */}
+          {adminTab === 'slides' && (
+            <div className="grid lg:grid-cols-3 gap-6">
+              <form onSubmit={handleSaveSlide} className="bg-white rounded-3xl p-6 border shadow-sm space-y-3 h-fit">
+                <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b flex items-center">
+                  <ImageIcon className="w-5 h-5 text-amber-500 mr-2" /> {editingSlideId ? 'Edit Slide' : 'Add Slide'}
+                </h3>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Title *</label>
+                  <input type="text" required value={slTitle} onChange={(e) => setSlTitle(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Text</label>
+                  <textarea rows={2} value={slText} onChange={(e) => setSlText(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Button text</label>
+                  <input type="text" value={slCta} onChange={(e) => setSlCta(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Background color</label>
+                  <select value={slBg} onChange={(e) => setSlBg(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm bg-white">
+                    <option value="gold">Dark Gold</option>
+                    <option value="amber">Amber</option>
+                    <option value="green">Dark Green</option>
+                    <option value="blue">Dark Blue</option>
+                    <option value="rose">Dark Rose</option>
+                  </select>
+                  <div className={`h-6 rounded-lg mt-2 bg-gradient-to-r ${BG_PRESETS[slBg] || BG_PRESETS.gold}`} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Background image (optional)</label>
+                  <input type="file" accept="image/*" onChange={handleSlideImage} className="w-full text-xs" />
+                  {slImage && (
+                    <div className="mt-2">
+                      <img src={slImage} alt="Slide preview" className="w-full h-24 object-cover rounded-lg" />
+                      <button type="button" onClick={() => setSlImage('')} className="text-[11px] text-red-600 font-bold mt-1 cursor-pointer">Remove image</button>
+                    </div>
+                  )}
+                </div>
+                <label className="flex items-center space-x-2 text-sm font-bold text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={slActive} onChange={(e) => setSlActive(e.target.checked)} />
+                  <span>Show this slide on the home page</span>
+                </label>
+                <div className="flex space-x-2">
+                  <button type="submit" className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer">
+                    {editingSlideId ? 'Update Slide' : 'Save Slide'}
+                  </button>
+                  {editingSlideId && (
+                    <button type="button" onClick={resetSlideForm} className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl cursor-pointer">Cancel</button>
+                  )}
+                </div>
+              </form>
+
+              <div className="lg:col-span-2 bg-white rounded-3xl p-6 border shadow-sm space-y-3">
+                <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b">Home Page Slides ({slides.length})</h3>
+                {slides.length === 0 && (
+                  <p className="text-sm text-slate-500">
+                    No custom slides yet, so the store is showing the 3 default slides. Add your first slide here and the defaults will be replaced.
+                  </p>
+                )}
+                {slides.map((sl, idx) => (
+                  <div key={sl.id} className="flex items-center gap-3 border rounded-2xl p-3">
+                    <div
+                      className={`w-28 h-16 rounded-lg shrink-0 bg-gradient-to-r ${BG_PRESETS[sl.bg] || BG_PRESETS.gold}`}
+                      style={sl.image_url ? { backgroundImage: `url(${sl.image_url})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm text-slate-900 truncate">{sl.title}</p>
+                      <p className="text-xs text-slate-500 truncate">{sl.text}</p>
+                      <p className={`text-[10px] font-black mt-0.5 ${sl.active !== false ? 'text-emerald-700' : 'text-slate-400'}`}>{sl.active !== false ? 'VISIBLE' : 'HIDDEN'}</p>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <button onClick={() => handleMoveSlide(idx, -1)} disabled={idx === 0} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-30 cursor-pointer" title="Move up"><ArrowUp className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleMoveSlide(idx, 1)} disabled={idx === slides.length - 1} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-30 cursor-pointer" title="Move down"><ArrowDown className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleToggleSlide(sl)} className="px-2 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold rounded-lg cursor-pointer">{sl.active !== false ? 'Hide' : 'Show'}</button>
+                      <button onClick={() => handleEditSlide(sl)} className="p-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg cursor-pointer" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => sl.id && handleDeleteSlide(sl.id)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg cursor-pointer" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* TAB 8: REVIEWS */}
           {adminTab === 'reviews' && (
@@ -2167,13 +2968,14 @@ export default function App() {
                 <Star className="w-5 h-5 text-amber-500 mr-2" /> Customer Ratings & Remarks
               </h3>
               {reviews.length === 0 ? (
-                <div className="text-center py-10 text-slate-400 font-medium">Abhi koi review nahi aaya.</div>
+                <div className="text-center py-10 text-slate-400 font-medium">No reviews yet.</div>
               ) : (
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
                     <tr>
                       <th className="p-3">Product</th>
                       <th className="p-3">Customer</th>
+                      <th className="p-3">Contact</th>
                       <th className="p-3">Rating</th>
                       <th className="p-3">Remarks</th>
                       <th className="p-3">Date</th>
@@ -2185,6 +2987,7 @@ export default function App() {
                       <tr key={r.id}>
                         <td className="p-3 font-bold">{products.find(p => p.id === r.product_id)?.name || 'Deleted product'}</td>
                         <td className="p-3">{r.customer_name}</td>
+                        <td className="p-3 text-slate-500">{r.customer_email || ''}{r.customer_email && r.customer_phone ? <br /> : null}{r.customer_phone || ''}{!r.customer_email && !r.customer_phone ? '-' : ''}</td>
                         <td className="p-3">{renderStars(r.rating)}</td>
                         <td className="p-3 max-w-xs text-slate-600">{r.remark || '-'}</td>
                         <td className="p-3 whitespace-nowrap text-slate-500">{fmtDateTime(r.created_at)}</td>
@@ -2208,8 +3011,8 @@ export default function App() {
                 <Settings className="w-5 h-5 text-amber-500 mr-2" /> New Order Alerts
               </h3>
               <p className="text-xs text-slate-500 mb-4">
-                Admin panel khula ho to naya order aate hi screen par alert, awaaz aur browser notification aata hai (hamesha ON).
-                Panel band ho tab bhi alert chahiye to neeche Email / WhatsApp ON karein (README mein setup likha hai).
+                While the admin panel is open, a new order shows an on-screen alert, a sound and a browser notification (always ON).
+                To also get alerts when the panel is closed, turn on Email / WhatsApp below (setup steps are in the README).
               </p>
 
               <form onSubmit={saveNotifSettings} className="space-y-5">
@@ -2220,7 +3023,7 @@ export default function App() {
                   </label>
                   <input
                     type="email"
-                    placeholder="alert kis email par chahiye"
+                    placeholder="Email address for alerts"
                     value={notif.email_to}
                     onChange={(e) => setNotif({ ...notif, email_to: e.target.value })}
                     className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -2234,7 +3037,7 @@ export default function App() {
                   </label>
                   <input
                     type="text"
-                    placeholder="WhatsApp number country code ke saath, e.g. 923001234567"
+                    placeholder="WhatsApp number with country code, e.g. 923001234567"
                     value={notif.whatsapp_phone}
                     onChange={(e) => setNotif({ ...notif, whatsapp_phone: e.target.value })}
                     className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
