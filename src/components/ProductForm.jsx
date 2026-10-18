@@ -2,12 +2,13 @@ import React, { useState } from 'react';
 
 export default function ProductForm({ onAddProduct }) {
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
   const [stockQuantity, setStockQuantity] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [imageBase64, setImageBase64] = useState('');
 
-  // Direct image file ko Base64 mein convert karne ka function (URL ka chakkar khatam)
+  // Direct image file ko Base64 mein convert karne ka function
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -22,12 +23,14 @@ export default function ProductForm({ onAddProduct }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     
+    // Database ke columns ke mutabiq poora data object
     const newProduct = {
       name,
+      description,
       price: parseFloat(price) || 0,
       stock_quantity: parseInt(stockQuantity) || 0,
       category_id: categoryId,
-      image_url: imageBase64 // Seedhi upload ki gayi image ka data
+      image_url: imageBase64
     };
 
     onAddProduct(newProduct);
@@ -44,6 +47,17 @@ export default function ProductForm({ onAddProduct }) {
           value={name} 
           onChange={(e) => setName(e.target.value)} 
           className="w-full p-2 border rounded" 
+          required 
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium">Description</label>
+        <textarea 
+          value={description} 
+          onChange={(e) => setDescription(e.target.value)} 
+          className="w-full p-2 border rounded" 
+          placeholder="Enter product description"
           required 
         />
       </div>
@@ -70,7 +84,18 @@ export default function ProductForm({ onAddProduct }) {
         />
       </div>
 
-      {/* Direct Image Upload Option (No URL needed) */}
+      <div>
+        <label className="block text-sm font-medium">Category ID</label>
+        <input 
+          type="text" 
+          value={categoryId} 
+          onChange={(e) => setCategoryId(e.target.value)} 
+          className="w-full p-2 border rounded text-sm" 
+          placeholder="Enter category UUID"
+          required 
+        />
+      </div>
+
       <div>
         <label className="block text-sm font-medium">Upload Product Image</label>
         <input 
