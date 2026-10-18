@@ -4,7 +4,8 @@ import {
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
-  UserPlus, Shield, Wallet, Save, RefreshCw, X
+  UserPlus, Shield, Wallet, Save, RefreshCw, X,
+  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle
 } from 'lucide-react';
 
 interface Category {
@@ -22,6 +23,7 @@ interface Product {
   image_url: string;
   category_name: string;
   stock_quantity: number;
+  sold_quantity?: number;
 }
 
 interface CartItem extends Product {
@@ -47,6 +49,7 @@ interface Order {
   payment_status: string;
   status: string;
   transaction_id?: string;
+  delivered_at?: string | null;
   created_at: string;
 }
 
@@ -65,6 +68,20 @@ interface PaymentAccount {
   is_active: boolean;
 }
 
+// ====== STORE SETTINGS (yahan apni info likhein) ======
+const STORE = {
+  name: 'ZORIMA PROFESSIONAL',
+  announcement: 'Original Products  |  Cash on Delivery Available  |  Fast Delivery Across Pakistan',
+  whatsapp: '923000000000', // apna WhatsApp number country code ke saath
+  tagline: 'Original salon-grade hair care & beauty products.'
+};
+
+const HERO_SLIDES = [
+  { title: 'Summer Sale Is Live Now', text: 'Original salon-grade hair care at discounted prices.', cta: 'Shop Now', bg: 'from-slate-950 via-slate-900 to-amber-900' },
+  { title: 'Trusted by Professionals', text: 'Hair color, masks, shampoos & treatments in one place.', cta: 'Browse Products', bg: 'from-amber-900 via-slate-900 to-slate-950' },
+  { title: 'Cash on Delivery', text: 'Order today and pay when it reaches your door.', cta: 'Order Now', bg: 'from-slate-900 via-emerald-950 to-slate-950' }
+];
+
 export default function App() {
   const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin'>('store');
   
@@ -74,6 +91,10 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [heroIndex, setHeroIndex] = useState(0);
+  const [wishlist, setWishlist] = useState<string[]>([]);
+  const [quickView, setQuickView] = useState<Product | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin Portal States
@@ -81,7 +102,7 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
-  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications'>('products');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -89,6 +110,7 @@ export default function App() {
   const [productDesc, setProductDesc] = useState('');
   const [originalPrice, setOriginalPrice] = useState('');
   const [discountedPrice, setDiscountedPrice] = useState('');
+  const [productStock, setProductStock] = useState('');
   const [productCategory, setProductCategory] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -102,6 +124,14 @@ export default function App() {
   const [adminOrders, setAdminOrders] = useState<Order[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [newOrderCount, setNewOrderCount] = useState(0);
+  const [notif, setNotif] = useState({
+    email_enabled: false,
+    email_to: '',
+    whatsapp_enabled: false,
+    whatsapp_phone: ''
+  });
+  const [notifBusy, setNotifBusy] = useState(false);
 
   // Payment Accounts State (including UBL, EasyPaisa, JazzCash etc with full custom add/delete support)
   const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([
@@ -144,6 +174,11 @@ export default function App() {
     fetchPaymentAccounts();
   }, []);
 
+  useEffect(() => {
+    const t = setInterval(() => setHeroIndex(i => (i + 1) % HERO_SLIDES.length), 5000);
+    return () => clearInterval(t);
+  }, []);
+
   function reportError(where: string, error: { message: string } | null | undefined) {
     if (!error) return false;
     console.error(`[Supabase] ${where}:`, error);
@@ -177,18 +212,110 @@ export default function App() {
   }
 
   async function fetchOrders() {
-    const { data, error } = await supabase
+    const { data: orders, error } = await supabase
       .from('orders')
-      .select('*, order_items(*)')
+      .select('*')
       .order('created_at', { ascending: false });
     if (error) { reportError('orders fetch', error); return; }
-    setAdminOrders(data || []);
+
+    const list: Order[] = orders || [];
+    if (list.length > 0) {
+      const { data: items, error: itemsErr } = await supabase
+        .from('order_items')
+        .select('*')
+        .in('order_id', list.map(o => o.id));
+      if (itemsErr) { reportError('order items fetch', itemsErr); }
+      list.forEach(o => {
+        o.order_items = (items || []).filter((it: any) => it.order_id === o.id);
+      });
+    }
+    setAdminOrders(list);
   }
 
+  async function fetchNotifSettings() {
+    const { data, error } = await supabase.from('notification_settings').select('*').eq('id', 1).maybeSingle();
+    if (error) { console.error('notification_settings fetch', error); return; }
+    if (data) {
+      setNotif({
+        email_enabled: !!data.email_enabled,
+        email_to: data.email_to || '',
+        whatsapp_enabled: !!data.whatsapp_enabled,
+        whatsapp_phone: data.whatsapp_phone || ''
+      });
+    }
+  }
+
+  const saveNotifSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { error } = await supabase.from('notification_settings').upsert({
+      id: 1,
+      ...notif,
+      updated_at: new Date().toISOString()
+    });
+    if (reportError('notification settings save', error)) return;
+    alert('Notification settings saved!');
+  };
+
+  const sendTestAlert = async () => {
+    setNotifBusy(true);
+    const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true } });
+    setNotifBusy(false);
+    if (error) {
+      alert('Test alert fail hua. Edge Function "notify-order" deploy hui hai? \n' + error.message);
+      return;
+    }
+    alert('Test result:\n' + JSON.stringify(data, null, 2));
+  };
+
+  function beep() {
+    try {
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      osc.frequency.value = 880;
+      osc.connect(ctx.destination);
+      osc.start();
+      setTimeout(() => { osc.stop(); ctx.close(); }, 350);
+    } catch (e) { /* ignore */ }
+  }
+
+  // Admin logged in hai to naye order ka live alert (Supabase Realtime)
+  useEffect(() => {
+    if (!isAdminLoggedIn) return;
+    const channel = supabase
+      .channel('orders-live')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload: any) => {
+        const o = payload.new || {};
+        setNewOrderCount(c => c + 1);
+        setToastMessage(`NEW ORDER ${o.invoice_no || ''} - ${o.customer_name || ''} - PKR ${o.total_amount || ''}`);
+        setTimeout(() => setToastMessage(null), 9000);
+        beep();
+        try {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('New Order Received', { body: `${o.customer_name || ''} - PKR ${o.total_amount || ''}` });
+          }
+        } catch (e) { /* ignore */ }
+        // order_items thori der baad save hote hain, isliye list thora ruk kar refresh
+        setTimeout(fetchOrders, 2500);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [isAdminLoggedIn]);
+
   const handleUpdateOrderStatus = async (id: string, status: string) => {
-    const { error } = await supabase.from('orders').update({ status }).eq('id', id);
+    const delivered_at = status === 'Delivered' ? new Date().toISOString() : null;
+    const { error } = await supabase.from('orders').update({ status, delivered_at }).eq('id', id);
     if (reportError('order status update', error)) return;
-    setAdminOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o));
+    setAdminOrders(prev => prev.map(o => o.id === id ? { ...o, status, delivered_at } : o));
+  };
+
+  const fmtDateTime = (iso?: string | null) =>
+    iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '-';
+
+  const waLink = (phone: string, text: string) => {
+    let d = (phone || '').replace(/\D/g, '');
+    if (d.startsWith('0')) d = '92' + d.slice(1);
+    return `https://wa.me/${d}?text=${encodeURIComponent(text)}`;
   };
 
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -198,17 +325,23 @@ export default function App() {
       .select('*')
       .eq('username', adminUsername.trim())
       .eq('password', adminPassword)
-      .maybeSingle();
+      .limit(1);
     if (error) { reportError('login', error); return; }
-    if (!data) {
+    const user = data && data[0];
+    if (!user) {
       alert('Invalid User ID or Password!');
       return;
     }
     setIsAdminLoggedIn(true);
-    setLoggedInUserRole(data.role);
+    setLoggedInUserRole(user.role);
     setCurrentView('admin');
+    setNewOrderCount(0);
     fetchOrders();
     fetchUsers();
+    fetchNotifSettings();
+    try {
+      if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    } catch (err) { /* ignore */ }
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -244,7 +377,7 @@ export default function App() {
       price: parseFloat(discountedPrice),
       category_name: productCategory || 'Hair Care',
       image_url: finalImageUrl,
-      stock_quantity: 50
+      stock_quantity: parseInt(productStock) || 0
     };
 
     if (editingProductId) {
@@ -269,6 +402,7 @@ export default function App() {
     setProductDesc(p.description);
     setOriginalPrice(String(p.original_price));
     setDiscountedPrice(String(p.discounted_price || p.price));
+    setProductStock(String(p.stock_quantity ?? 0));
     setProductCategory(p.category_name);
     setImageUrl(p.image_url);
     setImagePreview(p.image_url);
@@ -289,6 +423,7 @@ export default function App() {
     setProductDesc('');
     setOriginalPrice('');
     setDiscountedPrice('');
+    setProductStock('');
     setProductCategory('');
     setImageUrl('');
     setImageFile(null);
@@ -391,6 +526,12 @@ export default function App() {
   };
 
   const addToCart = (product: Product) => {
+    const inCart = cart.find(i => i.id === product.id)?.quantity || 0;
+    if (typeof product.stock_quantity === 'number' && inCart + 1 > product.stock_quantity) {
+      setToastMessage(product.stock_quantity <= 0 ? 'Sorry, this product is out of stock.' : `Only ${product.stock_quantity} in stock.`);
+      setTimeout(() => setToastMessage(null), 2500);
+      return;
+    }
     setCart((prevCart) => {
       const existing = prevCart.find((item) => item.id === product.id);
       if (existing) {
@@ -456,6 +597,17 @@ export default function App() {
         return;
       }
 
+      // Stock kam karo aur sold barhao
+      for (const item of cart) {
+        const { error: stockErr } = await supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.quantity });
+        if (stockErr) { console.error('decrement_stock', stockErr); setDbError(`stock update: ${stockErr.message}`); }
+      }
+      fetchProducts();
+
+      // Owner ko email / WhatsApp alert (Edge Function). Fail ho to order par asar nahi.
+      supabase.functions.invoke('notify-order', { body: { order_id: order.id } })
+        .then(({ error: nErr }) => { if (nErr) console.warn('notify-order:', nErr.message); });
+
       setConfirmedInvoice(order.invoice_no || String(order.id).slice(0, 8).toUpperCase());
       setOrderSuccess(true);
       setCart([]);
@@ -467,6 +619,21 @@ export default function App() {
   const filteredProducts = selectedCategory === 'All' 
     ? products 
     : products.filter(p => p.category_name === selectedCategory);
+
+  const visibleProducts = filteredProducts.filter(p =>
+    !searchQuery.trim() || (p.name + ' ' + (p.description || '')).toLowerCase().includes(searchQuery.trim().toLowerCase())
+  );
+
+  const toggleWishlist = (id: string) =>
+    setWishlist(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const scrollToProducts = () =>
+    document.getElementById('products')?.scrollIntoView({ behavior: 'smooth' });
+
+  const discountPct = (p: Product) => {
+    const now = p.discounted_price || p.price;
+    return p.original_price > now ? Math.round((1 - now / p.original_price) * 100) : 0;
+  };
 
   const activePaymentAccount = paymentAccounts.find(a => a.type.toLowerCase().includes(paymentMethod.toLowerCase())) || paymentAccounts[0];
 
@@ -483,6 +650,12 @@ export default function App() {
         <div className="fixed top-20 right-5 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-xl flex items-center space-x-2 animate-bounce">
           <CheckCircle2 className="w-5 h-5" />
           <span className="font-semibold text-sm">{toastMessage}</span>
+        </div>
+      )}
+
+      {currentView === 'store' && (
+        <div className="bg-slate-950 text-amber-300 text-[11px] md:text-xs font-bold text-center py-2 px-3 tracking-wide">
+          {STORE.announcement}
         </div>
       )}
 
@@ -539,21 +712,106 @@ export default function App() {
       {/* VIEW 1: CUSTOMER STORE VIEW */}
       {currentView === 'store' && (
         <div>
-          <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-amber-950 text-white py-12 px-4 text-center border-b border-amber-500/20">
-            <h1 className="text-3xl md:text-5xl font-black mb-2 text-amber-400">ZORIMA PROFESSIONAL STORE</h1>
-            <p className="text-slate-300 text-sm md:text-base max-w-2xl mx-auto">Original Hair Care, Baobab Oils & Skin Bleach Masks at Discounted Prices.</p>
+          {/* Category nav + search */}
+          <nav className="bg-white border-b sticky top-[68px] z-30">
+            <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-4">
+              <div className="flex items-center space-x-1 overflow-x-auto">
+                <button
+                  onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
+                  className={`px-3.5 py-2 text-xs font-bold whitespace-nowrap rounded-lg cursor-pointer ${selectedCategory === 'All' ? 'text-amber-600' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  Best Sellers
+                </button>
+                {categories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
+                    className={`px-3.5 py-2 text-xs font-bold whitespace-nowrap rounded-lg cursor-pointer ${selectedCategory === cat.name ? 'text-amber-600' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    {cat.name}
+                  </button>
+                ))}
+              </div>
+              <div className="relative hidden sm:block">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search our store"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 pr-3 py-2 border rounded-full text-xs w-56 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+          </nav>
+
+          {/* Hero slider */}
+          <section className="relative overflow-hidden">
+            <div className="flex transition-transform duration-700" style={{ transform: `translateX(-${heroIndex * 100}%)` }}>
+              {HERO_SLIDES.map((sl, i) => (
+                <div key={i} className={`min-w-full h-64 md:h-96 bg-gradient-to-r ${sl.bg} flex items-center justify-center text-center px-6`}>
+                  <div className="max-w-2xl">
+                    <p className="text-amber-400 text-xs font-bold tracking-[0.3em] mb-3">{STORE.name}</p>
+                    <h2 className="text-3xl md:text-6xl font-black text-white mb-3">{sl.title}</h2>
+                    <p className="text-slate-300 text-sm md:text-lg mb-6">{sl.text}</p>
+                    <button
+                      onClick={scrollToProducts}
+                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm px-8 py-3 rounded-full transition cursor-pointer"
+                    >
+                      {sl.cta}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setHeroIndex(i => (i - 1 + HERO_SLIDES.length) % HERO_SLIDES.length)}
+              className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
+              aria-label="Previous slide"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setHeroIndex(i => (i + 1) % HERO_SLIDES.length)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
+              aria-label="Next slide"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+            <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
+              {HERO_SLIDES.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setHeroIndex(i)}
+                  className={`h-2 rounded-full transition-all cursor-pointer ${i === heroIndex ? 'w-6 bg-amber-400' : 'w-2 bg-white/50'}`}
+                  aria-label={`Slide ${i + 1}`}
+                />
+              ))}
+            </div>
+          </section>
+
+          {/* Scrolling strip */}
+          <div className="bg-amber-500 text-slate-950 overflow-hidden whitespace-nowrap py-2.5">
+            <div className="marquee-track inline-block font-black text-xs md:text-sm tracking-widest uppercase">
+              {[0, 1, 2, 3].map(k => (
+                <span key={k} className="mx-6">Summer Sale Is Live Now &nbsp;&#10022;&nbsp; Trusted by Professionals &nbsp;&#10022;&nbsp; 100% Original Products &nbsp;&#10022;&nbsp; Cash on Delivery &nbsp;&#10022;</span>
+              ))}
+            </div>
           </div>
 
-          <main className="max-w-7xl mx-auto px-4 py-8">
-            <div className="flex items-center space-x-2 overflow-x-auto pb-4 mb-6 border-b">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2 flex items-center">
-                <ListFilter className="w-4 h-4 mr-1" /> Category:
-              </span>
+          {/* Products */}
+          <main id="products" className="max-w-7xl mx-auto px-4 py-10 scroll-mt-32">
+            <div className="text-center mb-6">
+              <h2 className="text-2xl md:text-3xl font-black text-slate-900">
+                {selectedCategory === 'All' ? 'Best Sellers' : selectedCategory}
+              </h2>
+              <div className="w-16 h-1 bg-amber-500 mx-auto mt-2 rounded-full" />
+            </div>
+
+            <div className="flex items-center justify-center flex-wrap gap-2 mb-6">
               <button
                 onClick={() => setSelectedCategory('All')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap ${
-                  selectedCategory === 'All' ? 'bg-slate-900 text-amber-400 shadow-md' : 'bg-white text-slate-600 border'
-                }`}
+                className={`px-4 py-2 rounded-full text-xs font-bold transition whitespace-nowrap cursor-pointer ${selectedCategory === 'All' ? 'bg-slate-900 text-amber-400' : 'bg-white text-slate-600 border'}`}
               >
                 All Products
               </button>
@@ -561,63 +819,208 @@ export default function App() {
                 <button
                   key={cat.id}
                   onClick={() => setSelectedCategory(cat.name)}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap ${
-                    selectedCategory === cat.name ? 'bg-slate-900 text-amber-400 shadow-md' : 'bg-white text-slate-600 border'
-                  }`}
+                  className={`px-4 py-2 rounded-full text-xs font-bold transition whitespace-nowrap cursor-pointer ${selectedCategory === cat.name ? 'bg-slate-900 text-amber-400' : 'bg-white text-slate-600 border'}`}
                 >
                   {cat.name}
                 </button>
               ))}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-              {filteredProducts.map((product) => (
-                <div key={product.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col group">
-                  <div className="overflow-hidden bg-slate-100 h-52 relative flex items-center justify-center">
-                    <img
-                      src={product.image_url || 'https://via.placeholder.com/300'}
-                      alt={product.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
-                      }}
-                    />
-                    {product.original_price > (product.discounted_price || product.price) && (
-                      <span className="absolute top-3 left-3 bg-red-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full uppercase shadow">
-                        SAVE PKR {product.original_price - (product.discounted_price || product.price)}
-                      </span>
-                    )}
-                    <span className="absolute top-3 right-3 bg-slate-900/80 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
-                      {product.category_name || 'Hair Care'}
-                    </span>
-                  </div>
+            <div className="sm:hidden mb-5 relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search our store"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-2.5 border rounded-full text-sm bg-white focus:outline-none focus:border-amber-500"
+              />
+            </div>
 
-                  <div className="p-4 flex-1 flex flex-col justify-between">
-                    <div>
-                      <h3 className="font-bold text-base text-slate-800 mb-1 group-hover:text-amber-600 transition">{product.name}</h3>
-                      <p className="text-slate-500 text-xs mb-3 line-clamp-2">{product.description}</p>
-                    </div>
-
-                    <div className="border-t pt-3 mt-auto">
-                      <div className="flex items-baseline space-x-2 mb-3">
-                        <span className="text-lg font-black text-slate-900">PKR {product.discounted_price || product.price}</span>
-                        {product.original_price > (product.discounted_price || product.price) && (
-                          <span className="text-xs text-slate-400 line-through">PKR {product.original_price}</span>
+            {visibleProducts.length === 0 ? (
+              <div className="text-center py-16 text-slate-400 font-medium">No products found.</div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-6">
+                {visibleProducts.map((product) => {
+                  const soldOut = product.stock_quantity <= 0;
+                  const pct = discountPct(product);
+                  return (
+                    <div key={product.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col group">
+                      <div className="overflow-hidden bg-slate-100 aspect-square relative">
+                        <img
+                          src={product.image_url || 'https://via.placeholder.com/300'}
+                          alt={product.name}
+                          className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${soldOut ? 'opacity-50' : ''}`}
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = 'https://via.placeholder.com/300?text=No+Image';
+                          }}
+                        />
+                        {pct > 0 && !soldOut && (
+                          <span className="absolute top-2 left-2 bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded-full">-{pct}%</span>
                         )}
+                        {soldOut && (
+                          <span className="absolute top-2 left-2 bg-slate-900 text-white text-[10px] font-black px-2 py-1 rounded-full">Sold Out</span>
+                        )}
+                        <button
+                          onClick={() => toggleWishlist(product.id)}
+                          className="absolute top-2 right-2 bg-white/90 hover:bg-white p-1.5 rounded-full shadow cursor-pointer"
+                          aria-label="Add to wishlist"
+                        >
+                          <Heart className={`w-4 h-4 ${wishlist.includes(product.id) ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} />
+                        </button>
+                        <button
+                          onClick={() => setQuickView(product)}
+                          className="absolute bottom-0 left-0 right-0 bg-slate-900/90 text-white text-xs font-bold py-2 flex items-center justify-center md:translate-y-full md:group-hover:translate-y-0 transition-transform cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5 mr-1.5" /> Quick view
+                        </button>
                       </div>
 
-                      <button
-                        onClick={() => addToCart(product)}
-                        className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center shadow cursor-pointer"
-                      >
-                        <ShoppingCart className="w-4 h-4 mr-1.5" /> Add to Cart
-                      </button>
+                      <div className="p-3 md:p-4 flex-1 flex flex-col">
+                        <h3 className="font-bold text-xs md:text-sm text-slate-800 mb-1.5 line-clamp-2 min-h-[2.5rem]">{product.name}</h3>
+                        <div className="flex items-baseline flex-wrap gap-x-2 mb-2">
+                          <span className="text-sm md:text-base font-black text-slate-900">PKR {product.discounted_price || product.price}</span>
+                          {pct > 0 && (
+                            <span className="text-[11px] text-slate-400 line-through">PKR {product.original_price}</span>
+                          )}
+                        </div>
+                        {!soldOut && product.stock_quantity <= 5 && (
+                          <p className="text-[11px] font-bold text-red-600 mb-2">Only {product.stock_quantity} left!</p>
+                        )}
+                        <button
+                          onClick={() => addToCart(product)}
+                          disabled={soldOut}
+                          className="mt-auto w-full bg-slate-900 hover:bg-amber-500 hover:text-slate-950 text-white disabled:bg-slate-200 disabled:text-slate-500 disabled:cursor-not-allowed font-bold text-xs py-2.5 rounded-lg transition flex items-center justify-center cursor-pointer"
+                        >
+                          <ShoppingCart className="w-4 h-4 mr-1.5" /> {soldOut ? 'Sold Out' : 'Add to Cart'}
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </main>
+
+          {/* Trust badges */}
+          <section className="bg-white border-y">
+            <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
+              {[
+                { icon: <BadgeCheck className="w-8 h-8 text-amber-500" />, t: '100% Original', d: 'Authentic salon-grade products.' },
+                { icon: <Truck className="w-8 h-8 text-amber-500" />, t: 'Fast Delivery', d: 'Delivered across Pakistan.' },
+                { icon: <ShieldCheck className="w-8 h-8 text-amber-500" />, t: 'Cash on Delivery', d: 'Pay when you receive your order.' },
+                { icon: <MessageCircle className="w-8 h-8 text-amber-500" />, t: 'WhatsApp Support', d: 'Ask us anything, anytime.' }
+              ].map((b, i) => (
+                <div key={i} className="flex flex-col items-center">
+                  <div className="bg-amber-50 p-4 rounded-full mb-3">{b.icon}</div>
+                  <h4 className="font-black text-sm text-slate-900">{b.t}</h4>
+                  <p className="text-xs text-slate-500 mt-1">{b.d}</p>
                 </div>
               ))}
             </div>
-          </main>
+          </section>
+
+          {/* Shop by category */}
+          {categories.length > 0 && (
+            <section className="max-w-7xl mx-auto px-4 py-10">
+              <h2 className="text-xl md:text-2xl font-black text-center text-slate-900 mb-6">Shop by Category</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {categories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
+                    className="bg-gradient-to-br from-slate-900 to-slate-800 hover:from-amber-600 hover:to-amber-500 text-white rounded-2xl py-10 px-4 font-black text-sm md:text-base transition cursor-pointer"
+                  >
+                    {cat.name}
+                    <span className="block text-[11px] font-medium text-amber-300 mt-1">
+                      {products.filter(p => p.category_name === cat.name).length} products
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* WhatsApp contact strip */}
+          <section className="bg-slate-900 text-white">
+            <div className="max-w-7xl mx-auto px-4 py-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+              <div>
+                <h3 className="text-lg font-black text-amber-400">Need help choosing a product?</h3>
+                <p className="text-sm text-slate-300">Message us on WhatsApp and we will help you.</p>
+              </div>
+              <a
+                href={waLink(STORE.whatsapp, 'Assalam o Alaikum, mujhe products ke bare mein maloomat chahiye.')}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm px-6 py-3 rounded-full flex items-center"
+              >
+                <MessageCircle className="w-4 h-4 mr-2" /> Chat on WhatsApp
+              </a>
+            </div>
+          </section>
+
+          {/* Footer */}
+          <footer className="bg-slate-950 text-slate-400">
+            <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
+              <div>
+                <h4 className="text-white font-black mb-2">{STORE.name}</h4>
+                <p className="text-xs">{STORE.tagline}</p>
+              </div>
+              <div>
+                <h4 className="text-white font-black mb-2">Quick Links</h4>
+                <ul className="space-y-1 text-xs">
+                  <li><button onClick={() => { setSelectedCategory('All'); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">Best Sellers</button></li>
+                  {categories.map(c => (
+                    <li key={c.id}><button onClick={() => { setSelectedCategory(c.name); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">{c.name}</button></li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className="text-white font-black mb-2">Payment Options</h4>
+                <div className="flex flex-wrap gap-2">
+                  {['Cash on Delivery', ...Array.from(new Set(paymentAccounts.map(a => a.type)))].map(t => (
+                    <span key={t} className="bg-slate-800 text-slate-300 text-[11px] font-bold px-2.5 py-1 rounded">{t}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="border-t border-slate-800 text-center text-[11px] py-4">
+              &copy; {new Date().getFullYear()} {STORE.name}. All rights reserved.
+            </div>
+          </footer>
+
+          {/* Quick view modal */}
+          {quickView && (
+            <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setQuickView(null)}>
+              <div className="bg-white rounded-2xl max-w-3xl w-full grid md:grid-cols-2 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setQuickView(null)} className="absolute top-3 right-3 bg-white/90 p-1.5 rounded-full shadow z-10 cursor-pointer" aria-label="Close">
+                  <X className="w-4 h-4" />
+                </button>
+                <img src={quickView.image_url} alt={quickView.name} className="w-full h-64 md:h-full object-cover bg-slate-100" />
+                <div className="p-6 flex flex-col">
+                  <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">{quickView.category_name}</span>
+                  <h3 className="text-xl font-black text-slate-900 mt-1 mb-2">{quickView.name}</h3>
+                  <div className="flex items-baseline space-x-2 mb-3">
+                    <span className="text-2xl font-black text-slate-900">PKR {quickView.discounted_price || quickView.price}</span>
+                    {discountPct(quickView) > 0 && (
+                      <>
+                        <span className="text-sm text-slate-400 line-through">PKR {quickView.original_price}</span>
+                        <span className="text-xs font-black text-red-600">-{discountPct(quickView)}%</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-sm text-slate-600 mb-4 overflow-y-auto max-h-40">{quickView.description}</p>
+                  <button
+                    onClick={() => { addToCart(quickView); setQuickView(null); }}
+                    disabled={quickView.stock_quantity <= 0}
+                    className="mt-auto bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-500 text-slate-950 font-black text-sm py-3 rounded-xl flex items-center justify-center cursor-pointer"
+                  >
+                    <ShoppingCart className="w-4 h-4 mr-2" /> {quickView.stock_quantity <= 0 ? 'Sold Out' : 'Add to Cart'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -931,6 +1334,7 @@ export default function App() {
             <button
               onClick={() => {
                 setAdminTab('orders');
+                setNewOrderCount(0);
                 fetchOrders();
               }}
               className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
@@ -938,6 +1342,9 @@ export default function App() {
               }`}
             >
               <FileText className="w-4 h-4 mr-1.5 text-amber-500" /> Orders ({adminOrders.length})
+              {newOrderCount > 0 && (
+                <span className="ml-2 bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full">{newOrderCount} new</span>
+              )}
             </button>
             <button
               onClick={() => setAdminTab('users')}
@@ -954,6 +1361,14 @@ export default function App() {
               }`}
             >
               <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank & UBL Accounts (Add/Delete)
+            </button>
+            <button
+              onClick={() => setAdminTab('notifications')}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'notifications' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Settings className="w-4 h-4 mr-1.5 text-amber-500" /> Order Alerts
             </button>
           </div>
 
@@ -1037,6 +1452,20 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Stock Quantity (kitne item hain) *</label>
+                    <input
+                      type="number"
+                      min="0"
+                      required
+                      placeholder="e.g. 100"
+                      value={productStock}
+                      onChange={(e) => setProductStock(e.target.value)}
+                      className="w-full px-3.5 py-2 border rounded-xl text-sm font-bold"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">Edit karte waqt yahan abhi bacha hua stock likhein. Sold count automatic hai.</p>
+                  </div>
+
                   <div className="bg-slate-50 p-4 rounded-2xl border space-y-3">
                     <label className="block text-xs font-bold text-slate-800 mb-1">
                       Option A: Browse File Image Upload (PNG, JPG, WEBP, GIF, SVG Support)
@@ -1099,6 +1528,9 @@ export default function App() {
                         <div className="max-w-[130px]">
                           <h4 className="font-bold text-slate-800 truncate">{p.name}</h4>
                           <span className="text-emerald-700 font-bold">PKR {p.discounted_price || p.price}</span>
+                          <div className="text-[10px] font-bold text-slate-500">
+                            Stock: <span className={p.stock_quantity <= 0 ? 'text-red-600' : 'text-slate-800'}>{p.stock_quantity ?? 0}</span> | Sold: <span className="text-emerald-700">{p.sold_quantity ?? 0}</span>
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center space-x-1">
@@ -1183,6 +1615,7 @@ export default function App() {
                   <thead className="bg-slate-900 text-amber-400 uppercase font-bold border-b">
                     <tr>
                       <th className="p-3.5">Invoice No</th>
+                      <th className="p-3.5">Ordered On</th>
                       <th className="p-3.5">Customer Name</th>
                       <th className="p-3.5">Phone / WhatsApp</th>
                       <th className="p-3.5">Shipping Address</th>
@@ -1190,14 +1623,26 @@ export default function App() {
                       <th className="p-3.5">Total Amount</th>
                       <th className="p-3.5">Payment Method</th>
                       <th className="p-3.5">Status</th>
+                      <th className="p-3.5">Delivered On</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
                     {adminOrders.map((order) => (
                       <tr key={order.id} className="hover:bg-slate-50 transition">
-                        <td className="p-3.5 font-black text-slate-900">{order.invoice_no || 'ZP-1001'}</td>
+                        <td className="p-3.5 font-black text-slate-900">{order.invoice_no || '-'}</td>
+                        <td className="p-3.5 text-slate-600 whitespace-nowrap">{fmtDateTime(order.created_at)}</td>
                         <td className="p-3.5 font-bold text-slate-800">{order.customer_name}</td>
-                        <td className="p-3.5 text-slate-600">{order.customer_phone}</td>
+                        <td className="p-3.5 text-slate-600">
+                          {order.customer_phone}
+                          <a
+                            href={waLink(order.customer_phone, `Assalam o Alaikum ${order.customer_name}, aap ka order ${order.invoice_no || ''} SK Trader Shop se receive ho gaya hai. Shukriya!`)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block text-emerald-700 font-bold underline"
+                          >
+                            WhatsApp customer
+                          </a>
+                        </td>
                         <td className="p-3.5 text-slate-600 max-w-xs">{order.shipping_address}</td>
                         <td className="p-3.5 text-slate-700">
                           {(order.order_items || []).map((it, i) => (
@@ -1216,7 +1661,16 @@ export default function App() {
                               <option key={st} value={st}>{st}</option>
                             ))}
                           </select>
+                          {order.status !== 'Delivered' && order.status !== 'Cancelled' && (
+                            <button
+                              onClick={() => handleUpdateOrderStatus(order.id, 'Delivered')}
+                              className="block mt-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
+                            >
+                              Mark Delivered
+                            </button>
+                          )}
                         </td>
+                        <td className="p-3.5 text-emerald-700 font-bold whitespace-nowrap">{fmtDateTime(order.delivered_at)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1313,6 +1767,63 @@ export default function App() {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB 6: ORDER ALERTS */}
+          {adminTab === 'notifications' && (
+            <div className="bg-white rounded-3xl p-6 border shadow-sm max-w-2xl">
+              <h3 className="text-lg font-extrabold text-slate-900 mb-1 pb-2 border-b flex items-center">
+                <Settings className="w-5 h-5 text-amber-500 mr-2" /> New Order Alerts
+              </h3>
+              <p className="text-xs text-slate-500 mb-4">
+                Admin panel khula ho to naya order aate hi screen par alert, awaaz aur browser notification aata hai (hamesha ON).
+                Panel band ho tab bhi alert chahiye to neeche Email / WhatsApp ON karein (README mein setup likha hai).
+              </p>
+
+              <form onSubmit={saveNotifSettings} className="space-y-5">
+                <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+                  <label className="flex items-center space-x-2 text-sm font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" checked={notif.email_enabled} onChange={(e) => setNotif({ ...notif, email_enabled: e.target.checked })} />
+                    <span>Email alert ON</span>
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="alert kis email par chahiye"
+                    value={notif.email_to}
+                    onChange={(e) => setNotif({ ...notif, email_to: e.target.value })}
+                    className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
+                  />
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+                  <label className="flex items-center space-x-2 text-sm font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" checked={notif.whatsapp_enabled} onChange={(e) => setNotif({ ...notif, whatsapp_enabled: e.target.checked })} />
+                    <span>WhatsApp alert ON</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="WhatsApp number country code ke saath, e.g. 923001234567"
+                    value={notif.whatsapp_phone}
+                    onChange={(e) => setNotif({ ...notif, whatsapp_phone: e.target.value })}
+                    className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
+                  />
+                </div>
+
+                <div className="flex space-x-3">
+                  <button type="submit" className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer">
+                    Save Alert Settings
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendTestAlert}
+                    disabled={notifBusy}
+                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm py-3 rounded-xl cursor-pointer disabled:opacity-60"
+                  >
+                    {notifBusy ? 'Sending...' : 'Send Test Alert'}
+                  </button>
+                </div>
+              </form>
             </div>
           )}
 
