@@ -61,6 +61,8 @@ alter table public.orders
   add column if not exists payment_status text default 'Pending',
   add column if not exists transaction_id text,
   add column if not exists delivered_at timestamptz,
+  add column if not exists paid_amount numeric default 0,
+  add column if not exists paid_at timestamptz,
   add column if not exists notified boolean default false,
   add column if not exists status text default 'Pending';
 
@@ -110,6 +112,26 @@ create table if not exists public.payment_accounts (
   created_at timestamptz default now() not null
 );
 
+-- ---------- 5b. REVIEWS (customer rating + remarks) ----------
+create table if not exists public.reviews (
+  id uuid default gen_random_uuid() primary key,
+  product_id uuid not null,
+  order_id uuid,
+  customer_name text,
+  rating int not null default 5,
+  remark text,
+  created_at timestamptz default now() not null
+);
+alter table public.reviews
+  add column if not exists product_id uuid,
+  add column if not exists order_id uuid,
+  add column if not exists customer_name text,
+  add column if not exists rating int default 5,
+  add column if not exists remark text;
+create index if not exists reviews_product_id_idx on public.reviews(product_id);
+
+update public.orders set paid_amount = 0 where paid_amount is null;
+
 -- ---------- 6a. ORDER ALERT SETTINGS (email / whatsapp on-off) ----------
 create table if not exists public.notification_settings (
   id int primary key default 1,
@@ -143,7 +165,7 @@ begin
     select table_name, column_name
     from information_schema.columns
     where table_schema = 'public'
-      and table_name in ('categories','products','orders','order_items','profiles','payment_accounts','notification_settings')
+      and table_name in ('categories','products','orders','order_items','profiles','payment_accounts','notification_settings','reviews')
       and is_nullable = 'NO'
       and column_name <> 'id'
   loop
@@ -159,11 +181,12 @@ alter table public.order_items      enable row level security;
 alter table public.profiles         enable row level security;
 alter table public.payment_accounts enable row level security;
 alter table public.notification_settings enable row level security;
+alter table public.reviews enable row level security;
 
 do $$
 declare t text;
 begin
-  foreach t in array array['categories','products','orders','order_items','profiles','payment_accounts','notification_settings']
+  foreach t in array array['categories','products','orders','order_items','profiles','payment_accounts','notification_settings','reviews']
   loop
     execute format('drop policy if exists "Allow All" on public.%I', t);
     execute format('create policy "Allow All" on public.%I for all using (true) with check (true)', t);

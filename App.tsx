@@ -5,7 +5,7 @@ import {
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
   UserPlus, Shield, Wallet, Save, RefreshCw, X,
-  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle
+  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star
 } from 'lucide-react';
 
 interface Category {
@@ -50,6 +50,18 @@ interface Order {
   status: string;
   transaction_id?: string;
   delivered_at?: string | null;
+  paid_amount?: number | null;
+  paid_at?: string | null;
+  created_at: string;
+}
+
+interface Review {
+  id: string;
+  product_id: string;
+  order_id?: string | null;
+  customer_name: string;
+  rating: number;
+  remark: string;
   created_at: string;
 }
 
@@ -76,6 +88,9 @@ const STORE = {
   tagline: 'Original salon-grade hair care & beauty products.'
 };
 
+// Yeh tag login page / admin header / footer mein dikhta hai: agar nazar na aaye to Vercel par purana code chal raha hai.
+const BUILD = 'v4 (18-Oct-2026)';
+
 const HERO_SLIDES = [
   { title: 'Summer Sale Is Live Now', text: 'Original salon-grade hair care at discounted prices.', cta: 'Shop Now', bg: 'from-slate-950 via-slate-900 to-amber-900' },
   { title: 'Trusted by Professionals', text: 'Hair color, masks, shampoos & treatments in one place.', cta: 'Browse Products', bg: 'from-amber-900 via-slate-900 to-slate-950' },
@@ -95,6 +110,15 @@ export default function App() {
   const [heroIndex, setHeroIndex] = useState(0);
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [rvInvoice, setRvInvoice] = useState('');
+  const [rvPhone, setRvPhone] = useState('');
+  const [rvRating, setRvRating] = useState(5);
+  const [rvRemark, setRvRemark] = useState('');
+  const [rvBusy, setRvBusy] = useState(false);
+  const [purchased, setPurchased] = useState<{ order_id: string; customer_name: string; items: { id: string; name: string }[] } | null>(null);
+  const [rateDrafts, setRateDrafts] = useState<Record<string, { rating: number; remark: string; done?: boolean }>>({});
+  const [paymentFilter, setPaymentFilter] = useState<'All' | 'Unpaid' | 'Partial' | 'Paid'>('All');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin Portal States
@@ -102,7 +126,8 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
-  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications'>('products');
+  const [loggedInUserName, setLoggedInUserName] = useState('');
+  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews'>('products');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -172,6 +197,7 @@ export default function App() {
     fetchProducts();
     fetchCategories();
     fetchPaymentAccounts();
+    fetchReviews();
   }, []);
 
   useEffect(() => {
@@ -231,6 +257,115 @@ export default function App() {
     }
     setAdminOrders(list);
   }
+
+  async function fetchReviews() {
+    const { data, error } = await supabase.from('reviews').select('*').order('created_at', { ascending: false });
+    if (error) { console.error('reviews fetch', error); return; }
+    setReviews(data || []);
+  }
+
+  const ratingOf = (pid: string) => {
+    const rs = reviews.filter(r => r.product_id === pid);
+    const count = rs.length;
+    const avg = count ? rs.reduce((a, r) => a + r.rating, 0) / count : 0;
+    return { avg, count };
+  };
+
+  const renderStars = (value: number, cls = 'w-3.5 h-3.5') => (
+    <span className="inline-flex">
+      {[1, 2, 3, 4, 5].map(n => (
+        <Star key={n} className={`${cls} ${n <= Math.round(value) ? 'fill-amber-400 text-amber-400' : 'text-slate-300'}`} />
+      ))}
+    </span>
+  );
+
+  const starPicker = (value: number, onChange: (n: number) => void) => (
+    <span className="inline-flex">
+      {[1, 2, 3, 4, 5].map(n => (
+        <button key={n} type="button" onClick={() => onChange(n)} className="cursor-pointer" aria-label={`${n} star`}>
+          <Star className={`w-6 h-6 ${n <= value ? 'fill-amber-400 text-amber-400' : 'text-slate-300'}`} />
+        </button>
+      ))}
+    </span>
+  );
+
+  async function submitReview(product_id: string, order_id: string | null, customer_name: string, rating: number, remark: string) {
+    if (order_id && reviews.some(r => r.order_id === order_id && r.product_id === product_id)) {
+      alert('Is order ke liye is product ka review pehle se de diya gaya hai.');
+      return false;
+    }
+    const { data, error } = await supabase
+      .from('reviews')
+      .insert([{ product_id, order_id, customer_name, rating, remark: remark.trim() }])
+      .select();
+    if (reportError('review insert', error)) return false;
+    if (data && data[0]) setReviews(prev => [data[0], ...prev]);
+    return true;
+  }
+
+  const handleVerifiedReview = async (product: Product) => {
+    const inv = rvInvoice.trim();
+    const phoneDigits = rvPhone.replace(/\D/g, '');
+    if (!inv || phoneDigits.length < 7) { alert('Invoice number aur phone number likhein.'); return; }
+    setRvBusy(true);
+    try {
+      const { data: ords, error } = await supabase
+        .from('orders').select('id, customer_name, customer_phone').eq('invoice_no', inv).limit(1);
+      if (reportError('review check', error)) return;
+      const ord = ords && ords[0];
+      const ordDigits = ord ? String(ord.customer_phone || '').replace(/\D/g, '') : '';
+      if (!ord || ordDigits.slice(-10) !== phoneDigits.slice(-10)) {
+        alert('Invoice number ya phone number match nahi hua.');
+        return;
+      }
+      const { data: its, error: itErr } = await supabase
+        .from('order_items').select('id').eq('order_id', ord.id).eq('product_id', product.id).limit(1);
+      if (reportError('review check items', itErr)) return;
+      if (!its || its.length === 0) { alert('Is invoice mein yeh product nahi hai.'); return; }
+      const ok = await submitReview(product.id, ord.id, ord.customer_name, rvRating, rvRemark);
+      if (ok) {
+        alert('Shukriya! Aap ka review save ho gaya.');
+        setRvInvoice(''); setRvPhone(''); setRvRemark(''); setRvRating(5);
+      }
+    } finally {
+      setRvBusy(false);
+    }
+  };
+
+  const handleDeleteReview = async (id: string) => {
+    if (!window.confirm('Delete this review?')) return;
+    const { error } = await supabase.from('reviews').delete().eq('id', id);
+    if (reportError('review delete', error)) return;
+    setReviews(prev => prev.filter(r => r.id !== id));
+  };
+
+  // ---- Payments ----
+  const payInfo = (o: Order) => {
+    const total = Number(o.total_amount || 0);
+    const paid = Number(o.paid_amount || 0);
+    const status = total > 0 && paid >= total ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
+    return { total, paid, balance: Math.max(total - paid, 0), status };
+  };
+
+  const savePayment = async (o: Order, newPaid: number) => {
+    const total = Number(o.total_amount || 0);
+    const paid = Math.max(0, Math.min(newPaid, total));
+    const label = total > 0 && paid >= total ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
+    const paid_at = paid > 0 ? new Date().toISOString() : null;
+    const { error } = await supabase
+      .from('orders').update({ paid_amount: paid, payment_status: label, paid_at }).eq('id', o.id);
+    if (reportError('payment update', error)) return;
+    setAdminOrders(prev => prev.map(x => x.id === o.id ? { ...x, paid_amount: paid, payment_status: label, paid_at } : x));
+  };
+
+  const addPartialPayment = (o: Order) => {
+    const info = payInfo(o);
+    const v = window.prompt(`Kitni raqam mili? (Balance: PKR ${info.balance})`);
+    if (!v) return;
+    const n = parseFloat(v);
+    if (isNaN(n) || n <= 0) { alert('Sahi raqam likhein.'); return; }
+    savePayment(o, info.paid + n);
+  };
 
   async function fetchNotifSettings() {
     const { data, error } = await supabase.from('notification_settings').select('*').eq('id', 1).maybeSingle();
@@ -323,7 +458,7 @@ export default function App() {
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
-      .eq('username', adminUsername.trim())
+      .ilike('username', adminUsername.trim().replace(/[%_\\]/g, '\\$&'))
       .eq('password', adminPassword)
       .limit(1);
     if (error) { reportError('login', error); return; }
@@ -334,6 +469,7 @@ export default function App() {
     }
     setIsAdminLoggedIn(true);
     setLoggedInUserRole(user.role);
+    setLoggedInUserName(user.username);
     setCurrentView('admin');
     setNewOrderCount(0);
     fetchOrders();
@@ -451,24 +587,33 @@ export default function App() {
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUsername.trim() || !newUserPassword) return;
+    const uname = newUsername.trim();
+    if (!uname || !newUserPassword) { alert('User ID aur Password dono likhein.'); return; }
 
-    const row = { username: newUsername.trim(), password: newUserPassword, role: newUserRole };
+    // duplicate check (database se)
+    const { data: same, error: sameErr } = await supabase
+      .from('profiles').select('id').ilike('username', uname.replace(/[%_\\]/g, '\\$&'));
+    if (reportError('user check', sameErr)) return;
+    if ((same || []).some((r: any) => r.id !== editingUserId)) {
+      alert('Yeh User ID pehle se maujood hai. Doosri ID chunein.');
+      return;
+    }
+
+    const row = { username: uname, password: newUserPassword, role: newUserRole };
 
     if (editingUserId) {
-      const { data, error } = await supabase.from('profiles').update(row).eq('id', editingUserId).select();
+      const { error } = await supabase.from('profiles').update(row).eq('id', editingUserId);
       if (reportError('user update', error)) return;
-      setAdminUsers(prev => prev.map(u => u.id === editingUserId ? (data && data[0] ? data[0] : { ...u, ...row }) : u));
-      alert('Admin user updated successfully!');
+      alert('Admin user updated and saved in database!');
     } else {
-      const { data, error } = await supabase.from('profiles').insert([row]).select();
+      const { error } = await supabase.from('profiles').insert([row]);
       if (reportError('user insert', error)) return;
-      if (data && data[0]) setAdminUsers(prev => [...prev, data[0]]);
-      alert(`New admin user (${row.username}) created successfully!`);
+      alert(`New admin user (${uname}) saved in database!\nAb isi User ID/Password se login ho sakta hai.`);
     }
     setEditingUserId(null);
     setNewUsername('');
     setNewUserPassword('');
+    await fetchUsers(); // database se wapas parh kar list dikhao
   };
 
   const handleEditUser = (u: AdminUser) => {
@@ -570,7 +715,8 @@ export default function App() {
           shipping_address: fullAddress,
           total_amount: totalAmount,
           payment_method: paymentMethod,
-          payment_status: paymentMethod === 'cod' ? 'Pending COD' : 'Paid Online',
+          payment_status: 'Unpaid',
+          paid_amount: 0,
           transaction_id: paymentMethod === 'cod' ? null : (transactionId || null),
           status: 'Pending'
         }
@@ -608,6 +754,12 @@ export default function App() {
       supabase.functions.invoke('notify-order', { body: { order_id: order.id } })
         .then(({ error: nErr }) => { if (nErr) console.warn('notify-order:', nErr.message); });
 
+      setPurchased({
+        order_id: order.id,
+        customer_name: customerName,
+        items: cart.map(i => ({ id: i.id, name: i.name }))
+      });
+      setRateDrafts({});
       setConfirmedInvoice(order.invoice_no || String(order.id).slice(0, 8).toUpperCase());
       setOrderSuccess(true);
       setCart([]);
@@ -884,9 +1036,25 @@ export default function App() {
                             <span className="text-[11px] text-slate-400 line-through">PKR {product.original_price}</span>
                           )}
                         </div>
-                        {!soldOut && product.stock_quantity <= 5 && (
-                          <p className="text-[11px] font-bold text-red-600 mb-2">Only {product.stock_quantity} left!</p>
-                        )}
+                        {(() => {
+                          const r = ratingOf(product.id);
+                          return (
+                            <div className="flex items-center space-x-1 mb-1.5">
+                              {renderStars(r.avg)}
+                              <span className="text-[11px] text-slate-500">{r.count > 0 ? `${r.avg.toFixed(1)} (${r.count})` : 'No reviews yet'}</span>
+                            </div>
+                          );
+                        })()}
+                        <p className="text-[11px] font-semibold mb-2">
+                          {soldOut ? (
+                            <span className="text-red-600">Out of stock</span>
+                          ) : (
+                            <span className={product.stock_quantity <= 5 ? 'text-red-600' : 'text-emerald-700'}>
+                              In stock: {product.stock_quantity}{product.stock_quantity <= 5 ? ' (almost gone!)' : ''}
+                            </span>
+                          )}
+                          <span className="text-slate-400"> | {product.sold_quantity ?? 0} sold</span>
+                        </p>
                         <button
                           onClick={() => addToCart(product)}
                           disabled={soldOut}
@@ -985,19 +1153,19 @@ export default function App() {
               </div>
             </div>
             <div className="border-t border-slate-800 text-center text-[11px] py-4">
-              &copy; {new Date().getFullYear()} {STORE.name}. All rights reserved.
+              &copy; {new Date().getFullYear()} {STORE.name}. All rights reserved. <span className="opacity-40">{BUILD}</span>
             </div>
           </footer>
 
           {/* Quick view modal */}
           {quickView && (
             <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setQuickView(null)}>
-              <div className="bg-white rounded-2xl max-w-3xl w-full grid md:grid-cols-2 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
+              <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] grid md:grid-cols-2 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
                 <button onClick={() => setQuickView(null)} className="absolute top-3 right-3 bg-white/90 p-1.5 rounded-full shadow z-10 cursor-pointer" aria-label="Close">
                   <X className="w-4 h-4" />
                 </button>
                 <img src={quickView.image_url} alt={quickView.name} className="w-full h-64 md:h-full object-cover bg-slate-100" />
-                <div className="p-6 flex flex-col">
+                <div className="p-6 flex flex-col overflow-y-auto max-h-[90vh]">
                   <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">{quickView.category_name}</span>
                   <h3 className="text-xl font-black text-slate-900 mt-1 mb-2">{quickView.name}</h3>
                   <div className="flex items-baseline space-x-2 mb-3">
@@ -1009,7 +1177,69 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  <p className="text-sm text-slate-600 mb-4 overflow-y-auto max-h-40">{quickView.description}</p>
+                  <p className="text-sm text-slate-600 mb-3">{quickView.description}</p>
+                  <p className="text-xs font-bold mb-3">
+                    {quickView.stock_quantity <= 0
+                      ? <span className="text-red-600">Out of stock</span>
+                      : <span className="text-emerald-700">In stock: {quickView.stock_quantity}</span>}
+                    <span className="text-slate-400"> | {quickView.sold_quantity ?? 0} sold</span>
+                  </p>
+
+                  <div className="border-t pt-3 mb-4">
+                    <div className="flex items-center space-x-2 mb-2">
+                      <h4 className="text-sm font-black text-slate-900">Customer Reviews</h4>
+                      {renderStars(ratingOf(quickView.id).avg)}
+                      <span className="text-xs text-slate-500">({ratingOf(quickView.id).count})</span>
+                    </div>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {reviews.filter(r => r.product_id === quickView.id).length === 0 && (
+                        <p className="text-xs text-slate-400">Abhi koi review nahi. Pehle aap dein!</p>
+                      )}
+                      {reviews.filter(r => r.product_id === quickView.id).map(r => (
+                        <div key={r.id} className="bg-slate-50 rounded-lg p-2.5 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800">{r.customer_name}</span>
+                            {renderStars(r.rating, 'w-3 h-3')}
+                          </div>
+                          {r.remark && <p className="text-slate-600 mt-1">{r.remark}</p>}
+                          <p className="text-[10px] text-slate-400 mt-1">{fmtDateTime(r.created_at)}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 space-y-2">
+                      <p className="text-xs font-bold text-slate-800">Kharidne ke baad review dein</p>
+                      <input
+                        type="text"
+                        placeholder="Invoice No (e.g. ZP-1001)"
+                        value={rvInvoice}
+                        onChange={(e) => setRvInvoice(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-lg text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Order mein diya hua phone number"
+                        value={rvPhone}
+                        onChange={(e) => setRvPhone(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-lg text-xs"
+                      />
+                      {starPicker(rvRating, setRvRating)}
+                      <textarea
+                        rows={2}
+                        placeholder="Remarks (optional)"
+                        value={rvRemark}
+                        onChange={(e) => setRvRemark(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-lg text-xs"
+                      />
+                      <button
+                        onClick={() => handleVerifiedReview(quickView)}
+                        disabled={rvBusy}
+                        className="w-full bg-slate-900 text-amber-400 font-bold text-xs py-2 rounded-lg cursor-pointer disabled:opacity-60"
+                      >
+                        {rvBusy ? 'Checking...' : 'Submit Review'}
+                      </button>
+                    </div>
+                  </div>
                   <button
                     onClick={() => { addToCart(quickView); setQuickView(null); }}
                     disabled={quickView.stock_quantity <= 0}
@@ -1052,11 +1282,48 @@ export default function App() {
                   </div>
                   <div className="flex justify-between py-1 text-sm">
                     <span className="text-slate-500">Payment Status:</span>
-                    <span className="font-bold text-emerald-600">Processing / Verified</span>
+                    <span className="font-bold text-amber-600">Awaiting payment confirmation</span>
                   </div>
                 </div>
+                {purchased && (
+                  <div className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 space-y-4">
+                    <p className="text-sm font-black text-slate-900">Apne products ko rate karein</p>
+                    {purchased.items.map(it => {
+                      const d = rateDrafts[it.id] || { rating: 5, remark: '' };
+                      return (
+                        <div key={it.id} className="border-b last:border-b-0 pb-3 last:pb-0">
+                          <p className="text-xs font-bold text-slate-800 mb-1">{it.name}</p>
+                          {d.done ? (
+                            <p className="text-xs text-emerald-700 font-bold">Review submitted. Shukriya!</p>
+                          ) : (
+                            <>
+                              {starPicker(d.rating, (n) => setRateDrafts(prev => ({ ...prev, [it.id]: { ...d, rating: n } })))}
+                              <textarea
+                                rows={2}
+                                placeholder="Remarks (optional)"
+                                value={d.remark}
+                                onChange={(e) => setRateDrafts(prev => ({ ...prev, [it.id]: { ...d, remark: e.target.value } }))}
+                                className="w-full mt-1 px-3 py-2 border rounded-lg text-xs"
+                              />
+                              <button
+                                onClick={async () => {
+                                  const ok = await submitReview(it.id, purchased.order_id, purchased.customer_name, d.rating, d.remark);
+                                  if (ok) setRateDrafts(prev => ({ ...prev, [it.id]: { ...d, done: true } }));
+                                }}
+                                className="mt-1 bg-slate-900 text-amber-400 font-bold text-xs px-4 py-2 rounded-lg cursor-pointer"
+                              >
+                                Submit Review
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <button
                   onClick={() => {
+                    setPurchased(null);
                     setOrderSuccess(false);
                     setIsCartOpen(false);
                   }}
@@ -1247,6 +1514,7 @@ export default function App() {
               </div>
               <h2 className="text-2xl font-black text-slate-900">Admin Portal Login</h2>
               <p className="text-xs text-slate-500 mt-1">Zorima Enterprise Management Portal</p>
+              <p className="text-[10px] text-slate-400 mt-1">Build: {BUILD}</p>
             </div>
 
             <form onSubmit={handleAdminLogin} className="space-y-4">
@@ -1257,7 +1525,7 @@ export default function App() {
                   <input
                     type="text"
                     required
-                    placeholder="User ID (e.g. zorima / admin)"
+                    placeholder="User ID"
                     value={adminUsername}
                     onChange={(e) => setAdminUsername(e.target.value)}
                     className="w-full pl-9 pr-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
@@ -1272,7 +1540,7 @@ export default function App() {
                   <input
                     type="password"
                     required
-                    placeholder="Password (e.g. 123)"
+                    placeholder="Password"
                     value={adminPassword}
                     onChange={(e) => setAdminPassword(e.target.value)}
                     className="w-full pl-9 pr-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
@@ -1300,7 +1568,7 @@ export default function App() {
                 <LayoutDashboard className="w-6 h-6 mr-2" /> Zorima Admin Control Center
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Role: <span className="text-amber-300 font-bold">{loggedInUserRole}</span> | Manage Products, Categories, Orders, Users & Accounts.
+                User: <span className="text-amber-300 font-bold">{loggedInUserName}</span> | Role: <span className="text-amber-300 font-bold">{loggedInUserRole}</span> | Build: {BUILD}
               </p>
             </div>
             <button
@@ -1369,6 +1637,22 @@ export default function App() {
               }`}
             >
               <Settings className="w-4 h-4 mr-1.5 text-amber-500" /> Order Alerts
+            </button>
+            <button
+              onClick={() => { setAdminTab('payments'); fetchOrders(); }}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'payments' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Payments
+            </button>
+            <button
+              onClick={() => { setAdminTab('reviews'); fetchReviews(); }}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'reviews' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Star className="w-4 h-4 mr-1.5 text-amber-500" /> Reviews ({reviews.length})
             </button>
           </div>
 
@@ -1669,6 +1953,24 @@ export default function App() {
                               Mark Delivered
                             </button>
                           )}
+                          {(() => {
+                            const pi = payInfo(order);
+                            return (
+                              <div className="mt-2">
+                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${pi.status === 'Paid' ? 'bg-emerald-100 text-emerald-800' : pi.status === 'Partial' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-700'}`}>
+                                  {pi.status === 'Paid' ? 'Payment Received' : pi.status === 'Partial' ? `Partial: PKR ${pi.paid}` : 'Payment Pending'}
+                                </span>
+                                {pi.status !== 'Paid' && (
+                                  <button
+                                    onClick={() => savePayment(order, pi.total)}
+                                    className="block mt-1.5 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
+                                  >
+                                    Payment Received
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="p-3.5 text-emerald-700 font-bold whitespace-nowrap">{fmtDateTime(order.delivered_at)}</td>
                       </tr>
@@ -1767,6 +2069,135 @@ export default function App() {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB 7: PAYMENTS */}
+          {adminTab === 'payments' && (() => {
+            const rows = adminOrders
+              .filter(o => o.status !== 'Cancelled')
+              .map(o => ({ o, ...payInfo(o) }));
+            const totalSales = rows.reduce((a, r) => a + r.total, 0);
+            const received = rows.reduce((a, r) => a + Math.min(r.paid, r.total), 0);
+            const pending = totalSales - received;
+            const unpaidCount = rows.filter(r => r.status !== 'Paid').length;
+            const shown = rows.filter(r => paymentFilter === 'All' || r.status === paymentFilter);
+            return (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-white rounded-2xl border p-4"><p className="text-[11px] font-bold text-slate-500 uppercase">Total Sales</p><p className="text-xl font-black text-slate-900">PKR {totalSales}</p></div>
+                  <div className="bg-white rounded-2xl border p-4"><p className="text-[11px] font-bold text-slate-500 uppercase">Payment Received</p><p className="text-xl font-black text-emerald-700">PKR {received}</p></div>
+                  <div className="bg-white rounded-2xl border p-4"><p className="text-[11px] font-bold text-slate-500 uppercase">Pending Balance</p><p className="text-xl font-black text-red-600">PKR {pending}</p></div>
+                  <div className="bg-white rounded-2xl border p-4"><p className="text-[11px] font-bold text-slate-500 uppercase">Orders Not Fully Paid</p><p className="text-xl font-black text-amber-600">{unpaidCount}</p></div>
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 border shadow-sm overflow-x-auto">
+                  <div className="flex items-center justify-between flex-wrap gap-3 mb-4 pb-2 border-b">
+                    <h3 className="text-lg font-extrabold text-slate-900 flex items-center">
+                      <Wallet className="w-5 h-5 text-amber-500 mr-2" /> Payments (kis ki aayi, kis ki nahi)
+                    </h3>
+                    <div className="flex space-x-2">
+                      {(['All', 'Unpaid', 'Partial', 'Paid'] as const).map(f => (
+                        <button
+                          key={f}
+                          onClick={() => setPaymentFilter(f)}
+                          className={`px-3 py-1.5 rounded-full text-xs font-bold cursor-pointer ${paymentFilter === f ? 'bg-slate-900 text-amber-400' : 'bg-slate-100 text-slate-600'}`}
+                        >
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {shown.length === 0 ? (
+                    <div className="text-center py-10 text-slate-400 font-medium">Koi order nahi mila.</div>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
+                        <tr>
+                          <th className="p-3">Invoice</th>
+                          <th className="p-3">Date</th>
+                          <th className="p-3">Customer</th>
+                          <th className="p-3">Method / Txn ID</th>
+                          <th className="p-3">Total</th>
+                          <th className="p-3">Received</th>
+                          <th className="p-3">Balance</th>
+                          <th className="p-3">Status</th>
+                          <th className="p-3">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {shown.map(({ o, total, paid, balance, status }) => (
+                          <tr key={o.id} className="hover:bg-slate-50">
+                            <td className="p-3 font-black">{o.invoice_no || '-'}</td>
+                            <td className="p-3 whitespace-nowrap text-slate-600">{fmtDateTime(o.created_at)}</td>
+                            <td className="p-3"><div className="font-bold">{o.customer_name}</div><div className="text-slate-500">{o.customer_phone}</div></td>
+                            <td className="p-3 uppercase">{o.payment_method}{o.transaction_id ? <div className="normal-case text-slate-500">Txn: {o.transaction_id}</div> : null}</td>
+                            <td className="p-3 font-bold">PKR {total}</td>
+                            <td className="p-3 font-bold text-emerald-700">PKR {paid}{o.paid_at ? <div className="text-[10px] font-normal text-slate-400">{fmtDateTime(o.paid_at)}</div> : null}</td>
+                            <td className="p-3 font-bold text-red-600">PKR {balance}</td>
+                            <td className="p-3">
+                              <span className={`text-[10px] font-black px-2 py-1 rounded-full ${status === 'Paid' ? 'bg-emerald-100 text-emerald-800' : status === 'Partial' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-700'}`}>{status}</span>
+                            </td>
+                            <td className="p-3 space-y-1">
+                              {status !== 'Paid' && (
+                                <button onClick={() => savePayment(o, total)} className="block w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Payment Received (Full)</button>
+                              )}
+                              {status !== 'Paid' && (
+                                <button onClick={() => addPartialPayment(o)} className="block w-full bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">+ Add Partial Amount</button>
+                              )}
+                              {paid > 0 && (
+                                <button onClick={() => { if (window.confirm('Payment reset kar dein?')) savePayment(o, 0); }} className="block w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">Reset to Unpaid</button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* TAB 8: REVIEWS */}
+          {adminTab === 'reviews' && (
+            <div className="bg-white rounded-3xl p-6 border shadow-sm overflow-x-auto">
+              <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
+                <Star className="w-5 h-5 text-amber-500 mr-2" /> Customer Ratings & Remarks
+              </h3>
+              {reviews.length === 0 ? (
+                <div className="text-center py-10 text-slate-400 font-medium">Abhi koi review nahi aaya.</div>
+              ) : (
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900 text-amber-400 uppercase font-bold">
+                    <tr>
+                      <th className="p-3">Product</th>
+                      <th className="p-3">Customer</th>
+                      <th className="p-3">Rating</th>
+                      <th className="p-3">Remarks</th>
+                      <th className="p-3">Date</th>
+                      <th className="p-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {reviews.map(r => (
+                      <tr key={r.id}>
+                        <td className="p-3 font-bold">{products.find(p => p.id === r.product_id)?.name || 'Deleted product'}</td>
+                        <td className="p-3">{r.customer_name}</td>
+                        <td className="p-3">{renderStars(r.rating)}</td>
+                        <td className="p-3 max-w-xs text-slate-600">{r.remark || '-'}</td>
+                        <td className="p-3 whitespace-nowrap text-slate-500">{fmtDateTime(r.created_at)}</td>
+                        <td className="p-3">
+                          <button onClick={() => handleDeleteReview(r.id)} className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg cursor-pointer" title="Delete review">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
 
