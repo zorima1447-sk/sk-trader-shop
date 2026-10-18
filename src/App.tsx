@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
+import SettingsPanel from './SettingsPanel';
+import { InvoiceDocument, InvoiceItem } from './Invoice';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss } from './storeSettings';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
   UserPlus, Shield, Wallet, Save, RefreshCw, X,
-  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown
+  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown, Printer, Mail
 } from 'lucide-react';
 
 interface Category {
@@ -83,6 +86,7 @@ interface Customer {
   province?: string | null;
   city?: string | null;
   address?: string | null;
+  marketing_opt_in?: boolean | null;
   created_at: string;
 }
 
@@ -125,16 +129,8 @@ interface PaymentAccount {
   is_active: boolean;
 }
 
-// ====== STORE SETTINGS (edit your information here) ======
-const STORE = {
-  name: 'ZORIMA PROFESSIONAL',
-  announcement: 'Original Products  |  Cash on Delivery Available  |  Fast Delivery Across Pakistan',
-  whatsapp: '923000000000', // your WhatsApp number with country code
-  tagline: 'Original salon-grade hair care & beauty products.'
-};
-
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v5 (18-Oct-2026)';
+const BUILD = 'v6 (18-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -176,6 +172,16 @@ export default function App() {
   // checkout customer details
   const [geo, setGeo] = useState<GeoValue>(emptyGeo());
   const [customerEmail, setCustomerEmail] = useState('');
+  const [marketingOptIn, setMarketingOptIn] = useState(true);
+  const [settings, setSettings] = useState<StoreSettings>(defaultSettings);
+  const [notifyCustomers, setNotifyCustomers] = useState(false);
+  const [cOptIn, setCOptIn] = useState(true);
+  const [campSubject, setCampSubject] = useState('');
+  const [campMessage, setCampMessage] = useState('');
+  const [campBusy, setCampBusy] = useState(false);
+  const [placedInvoice, setPlacedInvoice] = useState<{ order: any; items: InvoiceItem[] } | null>(null);
+  const [invoiceView, setInvoiceView] = useState<{ order: any; items: InvoiceItem[] } | null>(null);
+  const [invoiceStatus, setInvoiceStatus] = useState('');
   // customers (admin)
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
@@ -216,7 +222,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('products');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -288,7 +294,16 @@ export default function App() {
     fetchPaymentAccounts();
     fetchReviews();
     fetchSlides();
+    fetchStoreSettings(supabase).then(setSettings);
   }, []);
+
+  useEffect(() => {
+    document.title = settings.store_name || 'Online Store';
+  }, [settings.store_name]);
+
+  useEffect(() => {
+    setNotifyCustomers(settings.notify_new_product);
+  }, [settings.notify_new_product]);
 
   useEffect(() => {
     const t = setInterval(() => setHeroIndex(i => i + 1), 5000);
@@ -567,6 +582,7 @@ export default function App() {
   const resetCustomerForm = () => {
     setEditingCustomerId(null);
     setCName(''); setCEmail(''); setCAddress('');
+    setCOptIn(true);
     setCGeo(emptyGeo());
   };
 
@@ -587,7 +603,8 @@ export default function App() {
       province_iso: cGeo.stateIso,
       province: r.stateName,
       city: cGeo.city,
-      address: cAddress.trim()
+      address: cAddress.trim(),
+      marketing_opt_in: cOptIn
     };
 
     const dup = customers.find(c => c.id !== editingCustomerId && c.phone_code === row.phone_code && c.phone === row.phone);
@@ -611,6 +628,7 @@ export default function App() {
     setCName(c.name || '');
     setCEmail(c.email || '');
     setCAddress(c.address || '');
+    setCOptIn(c.marketing_opt_in !== false);
     setCGeo({
       countryIso: c.country_iso || 'PK',
       stateIso: c.province_iso || '',
@@ -708,6 +726,44 @@ export default function App() {
     fetchSlides();
   };
 
+  const adminCreds = () => ({ admin_username: adminUsername.trim(), admin_password: adminPassword });
+
+  const callCustomersFunction = async (payload: any): Promise<string> => {
+    const { data, error } = await supabase.functions.invoke('notify-customers', {
+      body: { ...payload, ...adminCreds(), site_url: window.location.origin }
+    });
+    if (error) return 'Customer emails could not be sent: ' + error.message + ' (is the "notify-customers" Edge Function deployed?)';
+    if (data && data.error) return 'Customer emails failed: ' + data.error;
+    return `Customer emails: ${data.sent} sent, ${data.failed} failed.${data.note ? ' ' + data.note : ''}`;
+  };
+
+  const handleSendCampaign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!campSubject.trim() || !campMessage.trim()) { alert('Please enter a subject and a message.'); return; }
+    if (!window.confirm('Send this email to all customers who agreed to receive offers?')) return;
+    setCampBusy(true);
+    const msg = await callCustomersFunction({ type: 'custom', subject: campSubject.trim(), message: campMessage.trim() });
+    setCampBusy(false);
+    alert(msg);
+    if (msg.startsWith('Customer emails:')) { setCampSubject(''); setCampMessage(''); }
+  };
+
+  const openInvoice = (o: Order) =>
+    setInvoiceView({
+      order: o,
+      items: (o.order_items || []).map((it: any) => ({ product_name: it.product_name, quantity: it.quantity, unit_price: it.unit_price }))
+    });
+
+  const handleEmailInvoice = async (o: any) => {
+    if (!o.customer_email) { alert('This order has no customer email. Use Edit order to add one first.'); return; }
+    const { data, error } = await supabase.functions.invoke('notify-order', {
+      body: { order_id: o.id, resend_invoice: true, site_url: window.location.origin, ...adminCreds() }
+    });
+    if (error) { alert('Could not send: ' + error.message + ' (is the "notify-order" Edge Function deployed?)'); return; }
+    if (data && data.error) { alert('Could not send: ' + data.error); return; }
+    alert('Invoice email result: ' + (data && data.invoice_email ? data.invoice_email : 'unknown'));
+  };
+
   async function fetchNotifSettings() {
     const { data, error } = await supabase.from('notification_settings').select('*').eq('id', 1).maybeSingle();
     if (error) { console.error('notification_settings fetch', error); return; }
@@ -734,13 +790,13 @@ export default function App() {
 
   const sendTestAlert = async () => {
     setNotifBusy(true);
-    const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true } });
+    const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true, ...adminCreds() } });
     setNotifBusy(false);
     if (error) {
       alert('Test alert failed. Is the Edge Function "notify-order" deployed?\n' + error.message);
       return;
     }
-    alert('Test result:\n' + JSON.stringify(data, null, 2));
+    alert(data && data.error ? 'Test failed: ' + data.error : 'Test result:\n' + JSON.stringify(data, null, 2));
   };
 
   function beep() {
@@ -868,7 +924,11 @@ export default function App() {
       const { data, error } = await supabase.from('products').insert([prodData]).select();
       if (reportError('product insert', error)) { setIsUploading(false); return; }
       if (data && data[0]) setProducts(prev => [data[0], ...prev]);
-      alert('New product saved to database!');
+      let msg = 'New product saved to database!';
+      if (notifyCustomers && data && data[0]) {
+        msg += '\n\n' + (await callCustomersFunction({ type: 'product', product_id: data[0].id }));
+      }
+      alert(msg);
     }
 
     setIsUploading(false);
@@ -1065,6 +1125,11 @@ export default function App() {
       return;
     }
 
+    if (!/^\S+@\S+\.\S+$/.test(customerEmail.trim())) {
+      alert('Please enter a valid email address.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -1088,7 +1153,8 @@ export default function App() {
           province_iso: geo.stateIso,
           province: info.stateName,
           city: geo.city,
-          address: shippingAddress.trim()
+          address: shippingAddress.trim(),
+          marketing_opt_in: marketingOptIn
         };
         const { data: found } = await supabase
           .from('customers').select('id').eq('phone_code', info.phoneCode).eq('phone', local).limit(1);
@@ -1148,9 +1214,27 @@ export default function App() {
       }
       fetchProducts();
 
-      // Email / WhatsApp alert to the owner (Edge Function). A failure here does not affect the order.
-      supabase.functions.invoke('notify-order', { body: { order_id: order.id } })
-        .then(({ error: nErr }) => { if (nErr) console.warn('notify-order:', nErr.message); });
+      // Invoice for the customer + order alert to the owner (Edge Function).
+      // A failure here does not affect the order.
+      setPlacedInvoice({
+        order: { ...order },
+        items: cart.map(i => ({ product_name: i.name, quantity: i.quantity, unit_price: i.discounted_price || i.price }))
+      });
+      setInvoiceStatus('Preparing your invoice email...');
+      const emailUsed = customerEmail.trim();
+      supabase.functions.invoke('notify-order', { body: { order_id: order.id, site_url: window.location.origin } })
+        .then(({ data: nData, error: nErr }) => {
+          if (nErr) {
+            console.warn('notify-order:', nErr.message);
+            setInvoiceStatus('We could not email the invoice automatically. You can view or download it below.');
+            return;
+          }
+          setInvoiceStatus(
+            nData && nData.invoice_email === 'sent'
+              ? `Your invoice has been emailed to ${emailUsed}.`
+              : 'The invoice email could not be sent right now. You can view or download it below.'
+          );
+        });
 
       setPurchased({
         order_id: order.id,
@@ -1194,6 +1278,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
+      <style>{accentCss(settings.accent)}</style>
       {dbError && (
         <div className="bg-red-600 text-white text-xs font-bold px-4 py-2 text-center">
           Database problem: {dbError} — run supabase_setup.sql in Supabase SQL Editor.
@@ -1208,9 +1293,9 @@ export default function App() {
         </div>
       )}
 
-      {currentView === 'store' && (
+      {currentView === 'store' && settings.show_announcement && settings.announcement && (
         <div className="bg-slate-950 text-amber-300 text-[11px] md:text-xs font-bold text-center py-2 px-3 tracking-wide">
-          {STORE.announcement}
+          {settings.announcement}
         </div>
       )}
 
@@ -1221,10 +1306,16 @@ export default function App() {
             onClick={() => setCurrentView('store')}
             className="flex items-center space-x-3 cursor-pointer"
           >
-            <Package className="w-8 h-8 text-amber-400" />
+            {settings.logo_url ? (
+              <img src={settings.logo_url} alt={settings.store_name} className="h-10 w-10 object-contain rounded" />
+            ) : (
+              <Package className="w-8 h-8 text-amber-400" />
+            )}
             <div>
-              <span className="text-xl md:text-2xl font-black tracking-wider text-white block">ZORIMA PROFESSIONAL</span>
-              <span className="text-xs text-amber-300 font-medium tracking-widest block -mt-1">PREMIUM BEAUTY & CARE</span>
+              <span className="text-xl md:text-2xl font-black tracking-wider text-white block">{settings.store_name}</span>
+              {settings.header_subtitle && (
+                <span className="text-xs text-amber-300 font-medium tracking-widest block -mt-1">{settings.header_subtitle}</span>
+              )}
             </div>
           </div>
 
@@ -1311,7 +1402,7 @@ export default function App() {
                 >
                   {sl.image_url && <div className="absolute inset-0 bg-black/45" />}
                   <div className="max-w-2xl relative">
-                    <p className="text-amber-400 text-xs font-bold tracking-[0.3em] mb-3">{STORE.name}</p>
+                    <p className="text-amber-400 text-xs font-bold tracking-[0.3em] mb-3">{settings.store_name}</p>
                     <h2 className="text-3xl md:text-6xl font-black text-white mb-3">{sl.title}</h2>
                     <p className="text-slate-200 text-sm md:text-lg mb-6">{sl.text}</p>
                     <button
@@ -1479,6 +1570,7 @@ export default function App() {
           </main>
 
           {/* Trust badges */}
+          {settings.show_trust && (
           <section className="bg-white border-y">
             <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
               {[
@@ -1495,9 +1587,10 @@ export default function App() {
               ))}
             </div>
           </section>
+          )}
 
           {/* Shop by category */}
-          {categories.length > 0 && (
+          {settings.show_categories && categories.length > 0 && (
             <section className="max-w-7xl mx-auto px-4 py-10">
               <h2 className="text-xl md:text-2xl font-black text-center text-slate-900 mb-6">Shop by Category</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1518,6 +1611,7 @@ export default function App() {
           )}
 
           {/* WhatsApp contact strip */}
+          {settings.show_whatsapp_strip && (
           <section className="bg-slate-900 text-white">
             <div className="max-w-7xl mx-auto px-4 py-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
               <div>
@@ -1525,7 +1619,7 @@ export default function App() {
                 <p className="text-sm text-slate-300">Message us on WhatsApp and we will help you.</p>
               </div>
               <a
-                href={waLink(STORE.whatsapp, 'Hello, I would like some information about your products.')}
+                href={waLink(settings.whatsapp, 'Hello, I would like some information about your products.')}
                 target="_blank"
                 rel="noreferrer"
                 className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm px-6 py-3 rounded-full flex items-center"
@@ -1534,13 +1628,29 @@ export default function App() {
               </a>
             </div>
           </section>
+          )}
 
           {/* Footer */}
           <footer className="bg-slate-950 text-slate-400">
             <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
               <div>
-                <h4 className="text-white font-black mb-2">{STORE.name}</h4>
-                <p className="text-xs">{STORE.tagline}</p>
+                <div className="flex items-center space-x-2 mb-2">
+                  {settings.logo_url && <img src={settings.logo_url} alt="" className="h-8 w-8 object-contain rounded" />}
+                  <h4 className="text-white font-black">{settings.store_name}</h4>
+                </div>
+                <p className="text-xs mb-2">{settings.tagline}</p>
+                <div className="text-xs space-y-0.5">
+                  {settings.address && <p className="whitespace-pre-line">{settings.address}</p>}
+                  {settings.phone && <p>Phone: {settings.phone}</p>}
+                  {settings.email && <p>Email: {settings.email}</p>}
+                </div>
+                {(settings.facebook || settings.instagram || settings.tiktok) && (
+                  <div className="flex gap-3 mt-3 text-xs font-bold">
+                    {settings.facebook && <a href={settings.facebook} target="_blank" rel="noreferrer" className="hover:text-amber-400">Facebook</a>}
+                    {settings.instagram && <a href={settings.instagram} target="_blank" rel="noreferrer" className="hover:text-amber-400">Instagram</a>}
+                    {settings.tiktok && <a href={settings.tiktok} target="_blank" rel="noreferrer" className="hover:text-amber-400">TikTok</a>}
+                  </div>
+                )}
               </div>
               <div>
                 <h4 className="text-white font-black mb-2">Quick Links</h4>
@@ -1561,7 +1671,8 @@ export default function App() {
               </div>
             </div>
             <div className="border-t border-slate-800 text-center text-[11px] py-4">
-              &copy; {new Date().getFullYear()} {STORE.name}. All rights reserved. <span className="opacity-40">{BUILD}</span>
+              {settings.footer_text && <p className="mb-1 whitespace-pre-line">{settings.footer_text}</p>}
+              &copy; {new Date().getFullYear()} {settings.store_name}. All rights reserved. <span className="opacity-40">{BUILD}</span>
             </div>
           </footer>
 
@@ -1686,6 +1797,38 @@ export default function App() {
         </div>
       )}
 
+      {/* INVOICE MODAL */}
+      {invoiceView && (
+        <div className="fixed inset-0 z-[70] bg-black/60 overflow-y-auto p-4" onClick={() => setInvoiceView(null)}>
+          <div className="max-w-3xl mx-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap justify-end gap-2 mb-2 no-print">
+              <button onClick={() => window.print()} className="bg-slate-900 text-amber-400 font-bold text-xs px-4 py-2 rounded-xl flex items-center cursor-pointer">
+                <Printer className="w-4 h-4 mr-1.5" /> Print / Save as PDF
+              </button>
+              {isAdminLoggedIn && currentView === 'admin' && (
+                <>
+                  <a
+                    href={waLink(invoiceView.order.customer_phone, `Hello ${invoiceView.order.customer_name}, here is your invoice ${invoiceView.order.invoice_no || ''} from ${settings.store_name}: ${window.location.origin}/?invoice=${invoiceView.order.id}`)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center"
+                  >
+                    <MessageCircle className="w-4 h-4 mr-1.5" /> Send on WhatsApp
+                  </a>
+                  <button onClick={() => handleEmailInvoice(invoiceView.order)} className="bg-blue-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center cursor-pointer">
+                    <Mail className="w-4 h-4 mr-1.5" /> Email Invoice
+                  </button>
+                </>
+              )}
+              <button onClick={() => setInvoiceView(null)} className="bg-white text-slate-700 font-bold text-xs px-4 py-2 rounded-xl cursor-pointer">Close</button>
+            </div>
+            <div id="invoice-print" className="shadow-xl">
+              <InvoiceDocument order={invoiceView.order} items={invoiceView.items} settings={settings} accounts={paymentAccounts} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* RECORD PAYMENT MODAL */}
       {payModal && (() => {
         const info = payInfo(payModal);
@@ -1802,6 +1945,27 @@ export default function App() {
                     <span className="font-bold text-amber-600">Awaiting payment confirmation</span>
                   </div>
                 </div>
+                {placedInvoice && (
+                  <div className="mb-4 space-y-2 text-left">
+                    {invoiceStatus && <p className="text-xs text-slate-600">{invoiceStatus}</p>}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setInvoiceView(placedInvoice)}
+                        className="bg-slate-900 text-amber-400 font-bold text-xs py-2.5 rounded-xl flex items-center justify-center cursor-pointer"
+                      >
+                        <Printer className="w-4 h-4 mr-1.5" /> View / Print Invoice
+                      </button>
+                      <a
+                        href={`https://wa.me/?text=${encodeURIComponent(`My invoice ${placedInvoice.order.invoice_no || ''} from ${settings.store_name}: ${window.location.origin}/?invoice=${placedInvoice.order.id}`)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="bg-emerald-600 text-white font-bold text-xs py-2.5 rounded-xl flex items-center justify-center"
+                      >
+                        <MessageCircle className="w-4 h-4 mr-1.5" /> Share on WhatsApp
+                      </a>
+                    </div>
+                  </div>
+                )}
                 {purchased && (
                   <div className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 space-y-4">
                     <p className="text-sm font-black text-slate-900">Rate your products</p>
@@ -1918,9 +2082,10 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Email (optional)</label>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Email *</label>
                       <input
                         type="email"
+                        required
                         placeholder="name@email.com"
                         value={customerEmail}
                         onChange={(e) => setCustomerEmail(e.target.value)}
@@ -1953,6 +2118,11 @@ export default function App() {
                       className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                     />
                   </div>
+
+                  <label className="flex items-start space-x-2 text-xs text-slate-600 cursor-pointer">
+                    <input type="checkbox" checked={marketingOptIn} onChange={(e) => setMarketingOptIn(e.target.checked)} className="mt-0.5" />
+                    <span>Email me about new products and deals (you can unsubscribe any time).</span>
+                  </label>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-2">Select Payment Method</label>
@@ -2035,7 +2205,7 @@ export default function App() {
                 <Lock className="w-8 h-8 text-amber-400" />
               </div>
               <h2 className="text-2xl font-black text-slate-900">Admin Portal Login</h2>
-              <p className="text-xs text-slate-500 mt-1">Zorima Enterprise Management Portal</p>
+              <p className="text-xs text-slate-500 mt-1">{settings.store_name} Management Portal</p>
               <p className="text-[10px] text-slate-400 mt-1">Build: {BUILD}</p>
             </div>
 
@@ -2087,7 +2257,7 @@ export default function App() {
           <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-2xl font-black text-amber-400 flex items-center">
-                <LayoutDashboard className="w-6 h-6 mr-2" /> Zorima Admin Control Center
+                <LayoutDashboard className="w-6 h-6 mr-2" /> {settings.store_name} Admin Control Center
               </h2>
               <p className="text-xs text-slate-400 mt-1">
                 User: <span className="text-amber-300 font-bold">{loggedInUserName}</span> | Role: <span className="text-amber-300 font-bold">{loggedInUserRole}</span> | Build: {BUILD}
@@ -2192,6 +2362,14 @@ export default function App() {
             >
               <ImageIcon className="w-4 h-4 mr-1.5 text-amber-500" /> Home Slides
             </button>
+            <button
+              onClick={() => setAdminTab('settings')}
+              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
+                adminTab === 'settings' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Settings className="w-4 h-4 mr-1.5 text-amber-500" /> Settings
+            </button>
           </div>
 
           {/* TAB 1: PRODUCTS MANAGER */}
@@ -2287,6 +2465,13 @@ export default function App() {
                     />
                     <p className="text-[11px] text-slate-400 mt-1">When editing, enter the stock that is left now. The sold count updates automatically.</p>
                   </div>
+
+                  {!editingProductId && (
+                    <label className="flex items-start space-x-2 text-xs font-bold text-slate-700 cursor-pointer bg-amber-50 border border-amber-200 rounded-xl p-3">
+                      <input type="checkbox" checked={notifyCustomers} onChange={(e) => setNotifyCustomers(e.target.checked)} className="mt-0.5" />
+                      <span>Email customers about this new product after saving (only customers who agreed to receive offers)</span>
+                    </label>
+                  )}
 
                   <div className="bg-slate-50 p-4 rounded-2xl border space-y-3">
                     <label className="block text-xs font-bold text-slate-800 mb-1">
@@ -2462,6 +2647,12 @@ export default function App() {
                           >
                             <Edit className="w-3 h-3 mr-1" /> Edit order
                           </button>
+                          <button
+                            onClick={() => openInvoice(order)}
+                            className="mt-1 flex items-center text-[10px] font-bold text-slate-700 hover:underline cursor-pointer"
+                          >
+                            <Printer className="w-3 h-3 mr-1" /> Invoice
+                          </button>
                         </td>
                         <td className="p-3.5 text-slate-600">
                           {order.customer_phone}
@@ -2617,6 +2808,16 @@ export default function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* TAB 11: SETTINGS */}
+          {adminTab === 'settings' && (
+            <SettingsPanel
+              settings={settings}
+              accounts={paymentAccounts}
+              onSaved={setSettings}
+              onOpenAccounts={() => setAdminTab('accounts')}
+            />
           )}
 
           {/* TAB 7: PAYMENTS */}
@@ -2784,7 +2985,38 @@ export default function App() {
 
           {/* TAB 9: CUSTOMERS */}
           {adminTab === 'customers' && (
-            <div className="grid lg:grid-cols-3 gap-6">
+            <div className="space-y-6">
+              <form onSubmit={handleSendCampaign} className="bg-white rounded-3xl p-6 border shadow-sm space-y-3">
+                <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b flex items-center">
+                  <Mail className="w-5 h-5 text-amber-500 mr-2" /> Send a deal / announcement email
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Goes to all customers who have an email and agreed to receive offers ({customers.filter(c => c.email && c.marketing_opt_in !== false).length} customers).
+                </p>
+                <input
+                  type="text"
+                  placeholder="Subject (e.g. 20% off all hair masks this week)"
+                  value={campSubject}
+                  onChange={(e) => setCampSubject(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-xl text-sm"
+                />
+                <textarea
+                  rows={3}
+                  placeholder="Message"
+                  value={campMessage}
+                  onChange={(e) => setCampMessage(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-xl text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={campBusy}
+                  className="bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm px-6 py-2.5 rounded-xl cursor-pointer disabled:opacity-60"
+                >
+                  {campBusy ? 'Sending...' : 'Send to All Customers'}
+                </button>
+              </form>
+
+              <div className="grid lg:grid-cols-3 gap-6">
               <form onSubmit={handleSaveCustomer} className="bg-white rounded-3xl p-6 border shadow-sm space-y-3 h-fit">
                 <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b flex items-center">
                   <Users className="w-5 h-5 text-amber-500 mr-2" /> {editingCustomerId ? 'Edit Customer' : 'Add Customer'}
@@ -2802,6 +3034,10 @@ export default function App() {
                   <label className="block text-xs font-semibold text-slate-600 mb-1">Street Address</label>
                   <input type="text" value={cAddress} onChange={(e) => setCAddress(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
                 </div>
+                <label className="flex items-center space-x-2 text-xs font-bold text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={cOptIn} onChange={(e) => setCOptIn(e.target.checked)} />
+                  <span>Customer agreed to receive offers by email</span>
+                </label>
                 <div className="flex space-x-2">
                   <button type="submit" className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer">
                     {editingCustomerId ? 'Update Customer' : 'Save Customer'}
@@ -2872,6 +3108,7 @@ export default function App() {
                     </table>
                   );
                 })()}
+              </div>
               </div>
             </div>
           )}
@@ -3145,7 +3382,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
-        © 2026 ZORIMA PROFESSIONAL - Premium Enterprise Management System. All Rights Reserved.
+        &copy; {new Date().getFullYear()} {settings.store_name} - Management System. All Rights Reserved.
       </footer>
     </div>
   );

@@ -60,7 +60,8 @@ alter table public.customers
   add column if not exists province_iso text,
   add column if not exists province text,
   add column if not exists city text,
-  add column if not exists address text;
+  add column if not exists address text,
+  add column if not exists marketing_opt_in boolean default true;
 
 -- ---------- 4. ORDERS ----------
 create sequence if not exists public.invoice_seq start 1001;
@@ -84,6 +85,7 @@ alter table public.orders
   add column if not exists paid_amount numeric default 0,
   add column if not exists paid_at timestamptz,
   add column if not exists notified boolean default false,
+  add column if not exists invoice_sent boolean default false,
   add column if not exists status text default 'Pending';
 
 alter table public.orders
@@ -187,6 +189,62 @@ alter table public.hero_slides
   add column if not exists sort_order int default 0,
   add column if not exists active boolean default true;
 
+-- ---------- 11b. STORE SETTINGS (logo, name, contact, look, invoice options) ----------
+create table if not exists public.store_settings (
+  id int primary key default 1,
+  updated_at timestamptz default now()
+);
+alter table public.store_settings
+  add column if not exists store_name text,
+  add column if not exists header_subtitle text,
+  add column if not exists tagline text,
+  add column if not exists logo_url text,
+  add column if not exists phone text,
+  add column if not exists email text,
+  add column if not exists address text,
+  add column if not exists whatsapp text,
+  add column if not exists facebook text,
+  add column if not exists instagram text,
+  add column if not exists tiktok text,
+  add column if not exists announcement text,
+  add column if not exists show_announcement boolean,
+  add column if not exists accent text,
+  add column if not exists footer_text text,
+  add column if not exists show_trust boolean,
+  add column if not exists show_categories boolean,
+  add column if not exists show_whatsapp_strip boolean,
+  add column if not exists invoice_header_note text,
+  add column if not exists invoice_footer_note text,
+  add column if not exists invoice_tax_id text,
+  add column if not exists invoice_account_ids jsonb default '[]'::jsonb,
+  add column if not exists invoice_show_logo boolean,
+  add column if not exists invoice_show_accounts boolean,
+  add column if not exists email_invoice_enabled boolean,
+  add column if not exists email_from text,
+  add column if not exists customer_msg_mode text,
+  add column if not exists notify_new_product boolean;
+
+insert into public.store_settings (id)
+select 1 where not exists (select 1 from public.store_settings where id = 1);
+
+-- ---------- 11c. STORAGE bucket for the logo (public, so it also shows inside emails) ----------
+do $$
+begin
+  insert into storage.buckets (id, name, public) values ('site-assets', 'site-assets', true)
+  on conflict (id) do update set public = true;
+
+  drop policy if exists "site-assets read"   on storage.objects;
+  drop policy if exists "site-assets insert" on storage.objects;
+  drop policy if exists "site-assets update" on storage.objects;
+  drop policy if exists "site-assets delete" on storage.objects;
+  create policy "site-assets read"   on storage.objects for select using (bucket_id = 'site-assets');
+  create policy "site-assets insert" on storage.objects for insert with check (bucket_id = 'site-assets');
+  create policy "site-assets update" on storage.objects for update using (bucket_id = 'site-assets');
+  create policy "site-assets delete" on storage.objects for delete using (bucket_id = 'site-assets');
+exception when others then
+  raise notice 'Storage bucket setup skipped: %', sqlerrm;
+end $$;
+
 -- ---------- 12. STOCK: decrease stock and increase sold on every order ----------
 create or replace function public.decrement_stock(p_id uuid, p_qty int)
 returns void
@@ -209,7 +267,7 @@ begin
     from information_schema.columns
     where table_schema = 'public'
       and table_name in ('categories','products','customers','orders','order_items','payments','reviews',
-                         'profiles','payment_accounts','notification_settings','hero_slides')
+                         'profiles','payment_accounts','notification_settings','hero_slides','store_settings')
       and is_nullable = 'NO'
       and column_name <> 'id'
   loop
@@ -229,12 +287,13 @@ alter table public.profiles              enable row level security;
 alter table public.payment_accounts      enable row level security;
 alter table public.notification_settings enable row level security;
 alter table public.hero_slides           enable row level security;
+alter table public.store_settings        enable row level security;
 
 do $$
 declare t text;
 begin
   foreach t in array array['categories','products','customers','orders','order_items','payments','reviews',
-                           'profiles','payment_accounts','notification_settings','hero_slides']
+                           'profiles','payment_accounts','notification_settings','hero_slides','store_settings']
   loop
     execute format('drop policy if exists "Allow All" on public.%I', t);
     execute format('create policy "Allow All" on public.%I for all using (true) with check (true)', t);
