@@ -1,9 +1,9 @@
 // Supabase Edge Function: notify-order
-// Naya order aane par owner ko Email (Resend) aur WhatsApp (CallMeBot) alert bhejta hai.
+// Sends the owner an Email (Resend) and a WhatsApp (CallMeBot) alert when a new order arrives.
 // Secrets (Supabase > Edge Functions > Secrets):
-//   RESEND_API_KEY    -> resend.com se free API key
-//   CALLMEBOT_APIKEY  -> callmebot.com se WhatsApp activation ke baad mili key
-// SUPABASE_URL aur SUPABASE_SERVICE_ROLE_KEY Supabase khud deta hai.
+//   RESEND_API_KEY    -> free API key from resend.com
+//   CALLMEBOT_APIKEY  -> key received from callmebot.com after WhatsApp activation
+// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided by Supabase automatically.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cors = {
@@ -26,14 +26,14 @@ Deno.serve(async (req) => {
     );
 
     const { data: s } = await supabase.from('notification_settings').select('*').eq('id', 1).maybeSingle();
-    if (!s) return json({ error: 'notification_settings row nahi mili. supabase_setup.sql chalayein.' }, 400);
+    if (!s) return json({ error: 'notification_settings row not found. Run supabase_setup.sql.' }, 400);
 
     let text: string;
     let subject: string;
 
     if (test) {
       subject = 'Test alert - SK Trader Shop';
-      text = 'Test alert: email/WhatsApp alerts theek kaam kar rahe hain.';
+      text = 'Test alert: email / WhatsApp alerts are working.';
     } else {
       if (!order_id) return json({ error: 'order_id required' }, 400);
 
@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
     if (s.email_enabled && s.email_to) {
       const key = Deno.env.get('RESEND_API_KEY');
       if (!key) {
-        result.email = 'RESEND_API_KEY secret set nahi hai';
+        result.email = 'RESEND_API_KEY secret is not set';
       } else {
         const r = await fetch('https://api.resend.com/emails', {
           method: 'POST',
@@ -86,7 +86,7 @@ Deno.serve(async (req) => {
     if (s.whatsapp_enabled && s.whatsapp_phone) {
       const key = Deno.env.get('CALLMEBOT_APIKEY');
       if (!key) {
-        result.whatsapp = 'CALLMEBOT_APIKEY secret set nahi hai';
+        result.whatsapp = 'CALLMEBOT_APIKEY secret is not set';
       } else {
         const phone = '+' + String(s.whatsapp_phone).replace(/\D/g, '');
         const url =

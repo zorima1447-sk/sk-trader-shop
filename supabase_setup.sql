@@ -1,7 +1,7 @@
 -- =====================================================================
 -- SK Trader Shop - Supabase setup (SAFE to run more than once)
--- Supabase Dashboard > SQL Editor > New query > paste all > Run
--- Purani tables/data delete nahi hoga; sirf missing tables/columns banenge.
+-- Supabase Dashboard > SQL Editor > New query > paste everything > Run
+-- Existing tables and data are NOT deleted; only missing tables/columns are created.
 -- =====================================================================
 
 create extension if not exists pgcrypto;
@@ -9,10 +9,9 @@ create extension if not exists pgcrypto;
 -- ---------- 1. CATEGORIES ----------
 create table if not exists public.categories (
   id uuid default gen_random_uuid() primary key,
-  name text not null unique,
+  name text not null,
   created_at timestamptz default now() not null
 );
-
 alter table public.categories
   add column if not exists name text,
   add column if not exists created_at timestamptz default now();
@@ -35,7 +34,7 @@ alter table public.products
 
 update public.products set sold_quantity = 0 where sold_quantity is null;
 
--- Agar purani table mein category_id NOT NULL tha to wo insert rok deta hai
+-- An old category_id column that is NOT NULL would block inserts
 do $$
 begin
   if exists (select 1 from information_schema.columns
@@ -44,7 +43,26 @@ begin
   end if;
 end $$;
 
--- ---------- 3. ORDERS ----------
+-- ---------- 3. CUSTOMERS ----------
+create table if not exists public.customers (
+  id uuid default gen_random_uuid() primary key,
+  name text,
+  created_at timestamptz default now() not null
+);
+alter table public.customers
+  add column if not exists name text,
+  add column if not exists email text,
+  add column if not exists phone_iso text,
+  add column if not exists phone_code text,
+  add column if not exists phone text,
+  add column if not exists country_iso text,
+  add column if not exists country text,
+  add column if not exists province_iso text,
+  add column if not exists province text,
+  add column if not exists city text,
+  add column if not exists address text;
+
+-- ---------- 4. ORDERS ----------
 create sequence if not exists public.invoice_seq start 1001;
 
 create table if not exists public.orders (
@@ -53,12 +71,14 @@ create table if not exists public.orders (
 );
 alter table public.orders
   add column if not exists invoice_no text unique default ('ZP-' || nextval('public.invoice_seq')),
+  add column if not exists customer_id uuid,
   add column if not exists customer_name text,
   add column if not exists customer_phone text,
+  add column if not exists customer_email text,
   add column if not exists shipping_address text,
   add column if not exists total_amount numeric default 0,
   add column if not exists payment_method text default 'cod',
-  add column if not exists payment_status text default 'Pending',
+  add column if not exists payment_status text default 'Unpaid',
   add column if not exists transaction_id text,
   add column if not exists delivered_at timestamptz,
   add column if not exists paid_amount numeric default 0,
@@ -69,14 +89,12 @@ alter table public.orders
 alter table public.orders
   alter column invoice_no set default ('ZP-' || nextval('public.invoice_seq'));
 
--- ---------- 4. ORDER ITEMS (har order ki products) ----------
+update public.orders set paid_amount = 0 where paid_amount is null;
+
+-- ---------- 5. ORDER ITEMS ----------
 create table if not exists public.order_items (
   id uuid default gen_random_uuid() primary key,
-  order_id uuid not null references public.orders(id) on delete cascade,
-  product_id uuid,
-  product_name text not null,
-  quantity int not null default 1,
-  unit_price numeric not null default 0,
+  order_id uuid,
   created_at timestamptz default now() not null
 );
 alter table public.order_items
@@ -88,21 +106,52 @@ alter table public.order_items
 
 create index if not exists order_items_order_id_idx on public.order_items(order_id);
 
--- ---------- 5. PROFILES (admin users: add / edit / delete) ----------
-create table if not exists public.profiles (
+-- ---------- 6. PAYMENTS (every payment received) ----------
+create table if not exists public.payments (
   id uuid default gen_random_uuid() primary key,
-  username text not null unique,
-  password text not null,
-  role text not null default 'Staff Admin',
+  order_id uuid,
+  amount numeric not null default 0,
   created_at timestamptz default now() not null
 );
+alter table public.payments
+  add column if not exists order_id uuid,
+  add column if not exists amount numeric default 0,
+  add column if not exists method text,
+  add column if not exists category text,
+  add column if not exists account_id text,
+  add column if not exists account_label text,
+  add column if not exists reference text,
+  add column if not exists note text,
+  add column if not exists received_at timestamptz default now();
 
+create index if not exists payments_order_id_idx on public.payments(order_id);
+
+-- ---------- 7. REVIEWS ----------
+create table if not exists public.reviews (
+  id uuid default gen_random_uuid() primary key,
+  created_at timestamptz default now() not null
+);
+alter table public.reviews
+  add column if not exists product_id uuid,
+  add column if not exists order_id uuid,
+  add column if not exists customer_name text,
+  add column if not exists customer_email text,
+  add column if not exists customer_phone text,
+  add column if not exists rating int default 5,
+  add column if not exists remark text;
+create index if not exists reviews_product_id_idx on public.reviews(product_id);
+
+-- ---------- 8. PROFILES (admin users) ----------
+create table if not exists public.profiles (
+  id uuid default gen_random_uuid() primary key,
+  created_at timestamptz default now() not null
+);
 alter table public.profiles
   add column if not exists username text,
   add column if not exists password text,
   add column if not exists role text default 'Staff Admin';
 
--- ---------- 6. PAYMENT ACCOUNTS ----------
+-- ---------- 9. PAYMENT ACCOUNTS (bank / wallet accounts shown at checkout) ----------
 create table if not exists public.payment_accounts (
   id uuid default gen_random_uuid() primary key,
   type text not null,
@@ -112,27 +161,7 @@ create table if not exists public.payment_accounts (
   created_at timestamptz default now() not null
 );
 
--- ---------- 5b. REVIEWS (customer rating + remarks) ----------
-create table if not exists public.reviews (
-  id uuid default gen_random_uuid() primary key,
-  product_id uuid not null,
-  order_id uuid,
-  customer_name text,
-  rating int not null default 5,
-  remark text,
-  created_at timestamptz default now() not null
-);
-alter table public.reviews
-  add column if not exists product_id uuid,
-  add column if not exists order_id uuid,
-  add column if not exists customer_name text,
-  add column if not exists rating int default 5,
-  add column if not exists remark text;
-create index if not exists reviews_product_id_idx on public.reviews(product_id);
-
-update public.orders set paid_amount = 0 where paid_amount is null;
-
--- ---------- 6a. ORDER ALERT SETTINGS (email / whatsapp on-off) ----------
+-- ---------- 10. ORDER ALERT SETTINGS ----------
 create table if not exists public.notification_settings (
   id int primary key default 1,
   email_enabled boolean default false,
@@ -144,7 +173,21 @@ create table if not exists public.notification_settings (
 insert into public.notification_settings (id)
 select 1 where not exists (select 1 from public.notification_settings where id = 1);
 
--- ---------- 6a2. STOCK KAM + SOLD ZYADA (order ke waqt) ----------
+-- ---------- 11. HOME PAGE SLIDES ----------
+create table if not exists public.hero_slides (
+  id uuid default gen_random_uuid() primary key,
+  created_at timestamptz default now() not null
+);
+alter table public.hero_slides
+  add column if not exists title text,
+  add column if not exists text text,
+  add column if not exists cta text default 'Shop Now',
+  add column if not exists bg text default 'gold',
+  add column if not exists image_url text,
+  add column if not exists sort_order int default 0,
+  add column if not exists active boolean default true;
+
+-- ---------- 12. STOCK: decrease stock and increase sold on every order ----------
 create or replace function public.decrement_stock(p_id uuid, p_qty int)
 returns void
 language sql
@@ -155,9 +198,9 @@ as $$
   where id = p_id;
 $$;
 
--- ---------- 6b. PURANE NOT NULL CONSTRAINTS HATAO ----------
--- Purani tables mein extra columns (jaise profiles.email) NOT NULL ho sakte hain
--- aur insert rok dete hain. 'id' ke ilawa sab columns nullable kar diye jate hain.
+-- ---------- 13. Remove old NOT NULL constraints ----------
+-- Old tables may contain extra columns (for example profiles.email) that are NOT NULL
+-- and block inserts. Every column except "id" is made nullable.
 do $$
 declare r record;
 begin
@@ -165,7 +208,8 @@ begin
     select table_name, column_name
     from information_schema.columns
     where table_schema = 'public'
-      and table_name in ('categories','products','orders','order_items','profiles','payment_accounts','notification_settings','reviews')
+      and table_name in ('categories','products','customers','orders','order_items','payments','reviews',
+                         'profiles','payment_accounts','notification_settings','hero_slides')
       and is_nullable = 'NO'
       and column_name <> 'id'
   loop
@@ -173,34 +217,38 @@ begin
   end loop;
 end $$;
 
--- ---------- 7. RLS (open access, jaisa aap ne kaha) ----------
-alter table public.categories       enable row level security;
-alter table public.products         enable row level security;
-alter table public.orders           enable row level security;
-alter table public.order_items      enable row level security;
-alter table public.profiles         enable row level security;
-alter table public.payment_accounts enable row level security;
+-- ---------- 14. RLS (open access) ----------
+alter table public.categories            enable row level security;
+alter table public.products              enable row level security;
+alter table public.customers             enable row level security;
+alter table public.orders                enable row level security;
+alter table public.order_items           enable row level security;
+alter table public.payments              enable row level security;
+alter table public.reviews               enable row level security;
+alter table public.profiles              enable row level security;
+alter table public.payment_accounts      enable row level security;
 alter table public.notification_settings enable row level security;
-alter table public.reviews enable row level security;
+alter table public.hero_slides           enable row level security;
 
 do $$
 declare t text;
 begin
-  foreach t in array array['categories','products','orders','order_items','profiles','payment_accounts','notification_settings','reviews']
+  foreach t in array array['categories','products','customers','orders','order_items','payments','reviews',
+                           'profiles','payment_accounts','notification_settings','hero_slides']
   loop
     execute format('drop policy if exists "Allow All" on public.%I', t);
     execute format('create policy "Allow All" on public.%I for all using (true) with check (true)', t);
   end loop;
 end $$;
 
--- ---------- 8. STARTING DATA ----------
+-- ---------- 15. STARTING DATA ----------
 insert into public.categories (name)
 select v.name from (values ('Hair Care'), ('Bleach & Color'), ('Skin Care')) as v(name)
 where not exists (select 1 from public.categories c where c.name = v.name);
 
--- Pehla admin login (SIRF tab banta hai jab koi admin maujood na ho):
--- username = zorima / password = 123. Login ke baad Admin Users tab se badal dein.
--- Dobara run karne par purane naam/password wapas NAHI aayenge.
+-- First admin login (created ONLY when no admin exists yet): zorima / 123
+-- Change the password from the Admin Users tab after logging in.
+-- Running this file again will NOT bring old names/passwords back.
 insert into public.profiles (username, password, role)
 select v.username, v.password, v.role from (values
   ('zorima', '123', 'Super Admin'),
@@ -217,7 +265,7 @@ select * from (values
 ) as v(type, account_number, account_title)
 where not exists (select 1 from public.payment_accounts);
 
--- ---------- 9. REALTIME (naye order ka live alert) ----------
+-- ---------- 16. REALTIME (live alert for new orders) ----------
 do $$
 begin
   begin
@@ -228,5 +276,5 @@ begin
   end;
 end $$;
 
--- API ko naye columns/tables ka pata chal jaye
+-- Let the API see the new tables / columns
 notify pgrst, 'reload schema';
