@@ -1,14 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../supabaseClient';
 
 export default function ProductForm({ onAddProduct }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
   const [stockQuantity, setStockQuantity] = useState('');
+  const [categories, setCategories] = useState([]);
   const [categoryId, setCategoryId] = useState('');
   const [imageBase64, setImageBase64] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  // Direct image file ko Base64 mein convert karne ka function (URL ka option hamesha ke liye khatam)
+  // Categories fetch karna taake dropdown se sahi ID select ho
+  useEffect(() => {
+    async function fetchCategories() {
+      const { data } = await supabase.from('categories').select('*');
+      if (data) {
+        setCategories(data);
+      }
+    }
+    fetchCategories();
+  }, []);
+
+  // Direct Image File ko convert karne ka function (URL ka option khatam)
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -20,8 +34,9 @@ export default function ProductForm({ onAddProduct }) {
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
     
     const newProduct = {
       name,
@@ -29,10 +44,11 @@ export default function ProductForm({ onAddProduct }) {
       price: parseFloat(price) || 0,
       stock_quantity: parseInt(stockQuantity) || 0,
       category_id: categoryId,
-      image_url: imageBase64 // Direct uploaded image data
+      image_url: imageBase64
     };
 
-    onAddProduct(newProduct);
+    await onAddProduct(newProduct);
+    setLoading(false);
   };
 
   return (
@@ -65,6 +81,7 @@ export default function ProductForm({ onAddProduct }) {
         <label className="block text-sm font-medium">Price</label>
         <input 
           type="number" 
+          step="0.01"
           value={price} 
           onChange={(e) => setPrice(e.target.value)} 
           className="w-full p-2 border rounded" 
@@ -72,6 +89,7 @@ export default function ProductForm({ onAddProduct }) {
         />
       </div>
 
+      {/* Stock Quantity ka option */}
       <div>
         <label className="block text-sm font-medium">Stock Quantity</label>
         <input 
@@ -83,19 +101,23 @@ export default function ProductForm({ onAddProduct }) {
         />
       </div>
 
+      {/* Category Dropdown */}
       <div>
-        <label className="block text-sm font-medium">Category ID</label>
-        <input 
-          type="text" 
+        <label className="block text-sm font-medium">Select Category</label>
+        <select 
           value={categoryId} 
           onChange={(e) => setCategoryId(e.target.value)} 
-          className="w-full p-2 border rounded text-sm" 
-          placeholder="Enter category UUID"
-          required 
-        />
+          className="w-full p-2 border rounded" 
+          required
+        >
+          <option value="">-- Select Category --</option>
+          {categories.map((cat) => (
+            <option key={cat.id} value={cat.id}>{cat.name}</option>
+          ))}
+        </select>
       </div>
 
-      {/* Sirf Direct File Upload ka option (URL ka naamo-nishan nahi hai) */}
+      {/* Sirf Direct File Upload (URL ka koi option nahi) */}
       <div>
         <label className="block text-sm font-medium">Upload Product Image</label>
         <input 
@@ -106,15 +128,16 @@ export default function ProductForm({ onAddProduct }) {
           required 
         />
         {imageBase64 && (
-          <p className="text-green-600 text-sm mt-1">✓ Image uploaded successfully!</p>
+          <p className="text-green-600 text-sm mt-1">✓ Image ready to upload!</p>
         )}
       </div>
 
       <button 
         type="submit" 
+        disabled={loading}
         className="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700"
       >
-        Save Product
+        {loading ? 'Saving...' : 'Save Product'}
       </button>
     </form>
   );
