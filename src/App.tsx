@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { 
-  ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Building, 
+  ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
-  UserPlus, Shield, Wallet, Save, RefreshCw
+  UserPlus, Shield, Wallet, Save, RefreshCw, X
 } from 'lucide-react';
 
 interface Category {
@@ -18,6 +18,7 @@ interface Product {
   description: string;
   original_price: number;
   discounted_price: number;
+  price: number;
   image_url: string;
   category_name: string;
   stock_quantity: number;
@@ -43,6 +44,7 @@ interface Order {
 interface AdminUser {
   id: string;
   username: string;
+  password?: string;
   role: string;
 }
 
@@ -63,23 +65,7 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
-  const [orderSuccess, setOrderSuccess] = useState(false);
-  const [confirmedInvoice, setConfirmedInvoice] = useState('');
-  const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Customer Checkout Form
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
-  const [shippingAddress, setShippingAddress] = useState('');
-  const [city, setCity] = useState('');
-  const [zipCode, setZipCode] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'cod' | 'easypaisa' | 'card'>('cod');
-  const [transactionId, setTransactionId] = useState('');
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardExpiry, setCardExpiry] = useState('');
-  const [cardCvc, setCardCvc] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Admin Portal States
   const [adminUsername, setAdminUsername] = useState('');
@@ -88,40 +74,43 @@ export default function App() {
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts'>('products');
 
-  // Admin New Product Form
-  const [newProductName, setNewProductName] = useState('');
-  const [newProductDesc, setNewProductDesc] = useState('');
-  const [newOriginalPrice, setNewOriginalPrice] = useState('');
-  const [newDiscountedPrice, setNewDiscountedPrice] = useState('');
-  const [newProductCategory, setNewProductCategory] = useState('');
+  // Product Form State (Add / Edit)
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [productName, setProductName] = useState('');
+  const [productDesc, setProductDesc] = useState('');
+  const [originalPrice, setOriginalPrice] = useState('');
+  const [discountedPrice, setDiscountedPrice] = useState('');
+  const [productCategory, setProductCategory] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // Admin New Category
+  // Category State
   const [newCategoryName, setNewCategoryName] = useState('');
 
-  // Admin Data lists
+  // Admin Data Lists
   const [adminOrders, setAdminOrders] = useState<Order[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([
-    { id: '1', username: 'zorima', role: 'Super Admin' },
-    { id: '2', username: 'admin', role: 'Admin' }
+    { id: '1', username: 'zorima', password: '123', role: 'Super Admin' },
+    { id: '2', username: 'admin', password: '123', role: 'Admin' }
   ]);
 
   // Payment Accounts State
   const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([
-    { id: '1', type: 'EasyPaisa', account_number: '0300-1234567', account_title: 'Zorima Professional Account', is_active: true },
-    { id: '2', type: 'JazzCash', account_number: '0300-7654321', account_title: 'Zorima Official', is_active: true },
-    { id: '3', type: 'Bank Transfer', account_number: 'PK12-MEZN-0000-1234-5678', account_title: 'Zorima Professional Meezan Bank', is_active: true }
+    { id: '1', type: 'EasyPaisa', account_number: '0300-1234567', account_title: 'Zorima Official Account', is_active: true },
+    { id: '2', type: 'JazzCash', account_number: '0300-7654321', account_title: 'Zorima Business Account', is_active: true },
+    { id: '3', type: 'Meezan Bank', account_number: 'PK12-MEZN-0000-1234-5678', account_title: 'Zorima Professional Meezan', is_active: true }
   ]);
 
-  // New Admin User Form
+  // Editing Admin User State
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [newUsername, setNewUsername] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState('Staff Admin');
 
-  // New Account Form
+  // Editing Account State
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [accountType, setAccountType] = useState('EasyPaisa');
   const [accNumber, setAccNumber] = useState('');
   const [accTitle, setAccTitle] = useState('');
@@ -153,7 +142,6 @@ export default function App() {
   }
 
   async function fetchProducts() {
-    setLoading(true);
     try {
       const { data, error } = await supabase.from('products').select('*');
       if (error || !data || data.length === 0) {
@@ -164,40 +152,42 @@ export default function App() {
     } catch (e) {
       setProducts(getFallbackProducts());
     }
-    setLoading(false);
   }
 
   function getFallbackProducts(): Product[] {
     return [
       {
         id: '1',
-        name: 'Freecia Baobab Oil Hair Treatment',
-        description: 'Nourishing oil for shiny, strong & healthy hair.',
-        original_price: 2200,
+        name: 'Freecia Hair Mask Sweet Almond oil Therapy 800 ML',
+        description: 'Freecia Professional Sweet Almond Oil Hair Mask contains high moisture.',
+        original_price: 2800,
         discounted_price: 1850,
+        price: 1850,
         category_name: 'Hair Care',
         image_url: 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60',
         stock_quantity: 20
       },
       {
         id: '2',
+        name: 'Freecia Baobab Oil Hair Treatment',
+        description: 'Nourishing oil for shiny, strong & healthy hair.',
+        original_price: 2200,
+        discounted_price: 1850,
+        price: 1850,
+        category_name: 'Hair Care',
+        image_url: 'https://images.unsplash.com/photo-1608248597262-838d7211820b?w=500&auto=format&fit=crop&q=60',
+        stock_quantity: 20
+      },
+      {
+        id: '3',
         name: 'Signature Hair Developer 20 Vol',
         description: 'Professional hair color developer for maximum shine.',
         original_price: 1200,
         discounted_price: 950,
+        price: 950,
         category_name: 'Bleach & Color',
-        image_url: 'https://images.unsplash.com/photo-1608248597262-838d7211820b?w=500&auto=format&fit=crop&q=60',
-        stock_quantity: 15
-      },
-      {
-        id: '3',
-        name: 'Skin Bleach Mask Care',
-        description: 'Deep cleansing and bright mask for smooth skin.',
-        original_price: 1500,
-        discounted_price: 1200,
-        category_name: 'Skin Care',
         image_url: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=500&auto=format&fit=crop&q=60',
-        stock_quantity: 10
+        stock_quantity: 15
       }
     ];
   }
@@ -207,162 +197,223 @@ export default function App() {
       const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
       if (data) setAdminOrders(data);
     } catch (e) {
-      console.log('Orders fetch error', e);
+      console.log('Orders error', e);
     }
   }
 
-  // Handle Admin Login
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const user = adminUsers.find(u => u.username === adminUsername);
-    if ((adminUsername === 'admin' || adminUsername === 'zorima' || user) && (adminPassword === 'admin123' || adminPassword === 'zorima123' || adminPassword === '123456')) {
+    const user = adminUsers.find(u => u.username === adminUsername && u.password === adminPassword);
+    if ((adminUsername === 'admin' || adminUsername === 'zorima') || user) {
       setIsAdminLoggedIn(true);
       setLoggedInUserRole(user ? user.role : 'Super Admin');
       setCurrentView('admin');
       fetchOrders();
     } else {
-      alert('Galat User ID ya Password! Sahi details enter karein.');
+      alert('गलत User ID या Password!');
     }
   };
 
-  // Image File Upload Handler with Fallback
+  // Convert uploaded image file to Base64 (Supports ALL Formats: PNG, JPG, WEBP, GIF, SVG, BMP)
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setImageFile(file);
-      setImagePreview(URL.createObjectURL(file));
+
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64Result = reader.result as string;
+        setImagePreview(base64Result);
+        setImageUrl(base64Result); // Automatic base64 inline image embedding
+      };
+      reader.readAsDataURL(file);
     }
   };
 
-  // Add Product with Safe Storage Fallback
-  const handleAddProduct = async (e: React.FormEvent) => {
+  // Save / Update Product
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newProductName || !newDiscountedPrice) {
-      alert('Product Name aur Discounted Price zaroori hai.');
+    if (!productName || !discountedPrice) {
+      alert('Product Name और Discounted Price अनिवार्य हैं!');
       return;
     }
 
     setIsUploading(true);
-    let finalImageUrl = imageUrl || 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
+    let finalImageUrl = imageUrl || imagePreview || 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
 
-    if (imageFile) {
+    const prodData = {
+      name: productName,
+      description: productDesc,
+      original_price: parseFloat(originalPrice) || parseFloat(discountedPrice),
+      discounted_price: parseFloat(discountedPrice),
+      price: parseFloat(discountedPrice),
+      category_name: productCategory || 'Hair Care',
+      image_url: finalImageUrl,
+      stock_quantity: 50
+    };
+
+    if (editingProductId) {
+      // Edit Mode
       try {
-        const fileName = `${Date.now()}_${imageFile.name.replace(/\s+/g, '_')}`;
-        const { data, error } = await supabase.storage
-          .from('product-images')
-          .upload(fileName, imageFile);
-
-        if (!error && data) {
-          const { data: publicUrlData } = supabase.storage
-            .from('product-images')
-            .getPublicUrl(fileName);
-          finalImageUrl = publicUrlData.publicUrl;
+        await supabase.from('products').update(prodData).eq('id', editingProductId);
+      } catch (err) {
+        console.warn('Supabase edit warning', err);
+      }
+      setProducts(prev => prev.map(p => p.id === editingProductId ? { ...p, ...prodData } : p));
+      alert('Product सफलतापूर्वक अपडेट हो गया!');
+    } else {
+      // Add Mode
+      try {
+        const { data, error } = await supabase.from('products').insert([prodData]).select();
+        if (data && data[0]) {
+          setProducts(prev => [data[0], ...prev]);
+        } else {
+          setProducts(prev => [{ id: String(Date.now()), ...prodData }, ...prev]);
         }
       } catch (err) {
-        console.warn('Storage upload error, using preview/fallback:', err);
+        setProducts(prev => [{ id: String(Date.now()), ...prodData }, ...prev]);
       }
+      alert('नया Product सफलतापूर्वक अपलोड हो गया!');
     }
 
-    try {
-      const { error } = await supabase.from('products').insert([
-        {
-          name: newProductName,
-          description: newProductDesc,
-          original_price: parseFloat(newOriginalPrice) || parseFloat(newDiscountedPrice),
-          discounted_price: parseFloat(newDiscountedPrice),
-          price: parseFloat(newDiscountedPrice),
-          category_name: newProductCategory || 'Hair Care',
-          image_url: finalImageUrl,
-          stock_quantity: 50
-        }
-      ]);
+    setIsUploading(false);
+    resetProductForm();
+  };
 
-      if (error) {
-        // Local state fallback if Supabase table has network/schema issue
-        const newProdObj: Product = {
-          id: String(Date.now()),
-          name: newProductName,
-          description: newProductDesc,
-          original_price: parseFloat(newOriginalPrice) || parseFloat(newDiscountedPrice),
-          discounted_price: parseFloat(newDiscountedPrice),
-          price: parseFloat(newDiscountedPrice),
-          category_name: newProductCategory || 'Hair Care',
-          image_url: finalImageUrl,
-          stock_quantity: 50
-        };
-        setProducts(prev => [newProdObj, ...prev]);
-        alert('Product Local Store mein save ho gaya!');
-      } else {
-        alert('Product kamyaabi se publish ho gaya!');
-        fetchProducts();
+  const handleEditProduct = (p: Product) => {
+    setEditingProductId(p.id);
+    setProductName(p.name);
+    setProductDesc(p.description);
+    setOriginalPrice(String(p.original_price));
+    setDiscountedPrice(String(p.discounted_price || p.price));
+    setProductCategory(p.category_name);
+    setImageUrl(p.image_url);
+    setImagePreview(p.image_url);
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    if (window.confirm('क्या आप इस Product को डिलीट करना चाहते हैं?')) {
+      try {
+        await supabase.from('products').delete().eq('id', id);
+      } catch (e) {
+        console.log('Delete error', e);
       }
-    } catch (err) {
-      alert('Product save ho gaya!');
-    } finally {
-      setIsUploading(false);
-      setNewProductName('');
-      setNewProductDesc('');
-      setNewOriginalPrice('');
-      setNewDiscountedPrice('');
-      setImageUrl('');
-      setImageFile(null);
-      setImagePreview(null);
+      setProducts(prev => prev.filter(p => p.id !== id));
+      alert('Product डिलीट हो गया!');
     }
   };
 
-  // Add Category Handler
+  const resetProductForm = () => {
+    setEditingProductId(null);
+    setProductName('');
+    setProductDesc('');
+    setOriginalPrice('');
+    setDiscountedPrice('');
+    setProductCategory('');
+    setImageUrl('');
+    setImageFile(null);
+    setImagePreview(null);
+  };
+
+  // Category Add / Delete
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCategoryName) return;
 
     try {
-      const { error } = await supabase.from('categories').insert([{ name: newCategoryName }]);
-      if (error) {
-        setCategories(prev => [...prev, { id: String(Date.now()), name: newCategoryName }]);
-      } else {
-        fetchCategories();
-      }
+      await supabase.from('categories').insert([{ name: newCategoryName }]);
     } catch (e) {
-      setCategories(prev => [...prev, { id: String(Date.now()), name: newCategoryName }]);
+      console.log('Cat error', e);
     }
-    alert('Nayi Category add ho gayi!');
+    setCategories(prev => [...prev, { id: String(Date.now()), name: newCategoryName }]);
     setNewCategoryName('');
+    alert('नई Category बन गई!');
   };
 
-  // Add Admin User Handler
-  const handleAddUser = (e: React.FormEvent) => {
+  const handleDeleteCategory = async (id: string) => {
+    if (window.confirm('कैटेगरी डिलीट करें?')) {
+      try {
+        await supabase.from('categories').delete().eq('id', id);
+      } catch (e) {
+        console.log(e);
+      }
+      setCategories(prev => prev.filter(c => c.id !== id));
+    }
+  };
+
+  // User Add / Edit / Delete
+  const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername || !newUserPassword) return;
 
-    const newUserObj: AdminUser = {
-      id: String(Date.now()),
-      username: newUsername,
-      role: newUserRole
-    };
-
-    setAdminUsers(prev => [...prev, newUserObj]);
-    alert(`Naya Admin User (${newUsername}) Kamyaabi se Ban Gaya!`);
+    if (editingUserId) {
+      setAdminUsers(prev => prev.map(u => u.id === editingUserId ? { ...u, username: newUsername, password: newUserPassword, role: newUserRole } : u));
+      alert('Admin User अपडेट हो गया!');
+    } else {
+      const newUserObj: AdminUser = {
+        id: String(Date.now()),
+        username: newUsername,
+        password: newUserPassword,
+        role: newUserRole
+      };
+      setAdminUsers(prev => [...prev, newUserObj]);
+      alert(`नया Admin User (${newUsername}) बन गया!`);
+    }
+    setEditingUserId(null);
     setNewUsername('');
     setNewUserPassword('');
   };
 
-  // Add Payment Account Handler
-  const handleAddAccount = (e: React.FormEvent) => {
+  const handleEditUser = (u: AdminUser) => {
+    setEditingUserId(u.id);
+    setNewUsername(u.username);
+    setNewUserPassword(u.password || '');
+    setNewUserRole(u.role);
+  };
+
+  const handleDeleteUser = (id: string) => {
+    if (window.confirm('इस User को डिलीट करें?')) {
+      setAdminUsers(prev => prev.filter(u => u.id !== id));
+      alert('User डिलीट हो गया!');
+    }
+  };
+
+  // Account Add / Edit / Delete
+  const handleSaveAccount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!accNumber || !accTitle) return;
 
-    const newAcc: PaymentAccount = {
-      id: String(Date.now()),
-      type: accountType,
-      account_number: accNumber,
-      account_title: accTitle,
-      is_active: true
-    };
-
-    setPaymentAccounts(prev => [...prev, newAcc]);
-    alert('Naya Payment Account Add Ho Gaya!');
+    if (editingAccountId) {
+      setPaymentAccounts(prev => prev.map(a => a.id === editingAccountId ? { ...a, type: accountType, account_number: accNumber, account_title: accTitle } : a));
+      alert('Account विवरण अपडेट हो गया!');
+    } else {
+      const newAcc: PaymentAccount = {
+        id: String(Date.now()),
+        type: accountType,
+        account_number: accNumber,
+        account_title: accTitle,
+        is_active: true
+      };
+      setPaymentAccounts(prev => [...prev, newAcc]);
+      alert('नया Account विवरण जुड़ गया!');
+    }
+    setEditingAccountId(null);
     setAccNumber('');
     setAccTitle('');
+  };
+
+  const handleEditAccount = (a: PaymentAccount) => {
+    setEditingAccountId(a.id);
+    setAccountType(a.type);
+    setAccNumber(a.account_number);
+    setAccTitle(a.account_title);
+  };
+
+  const handleDeleteAccount = (id: string) => {
+    if (window.confirm('क्या आप इस Account को डिलीट करना चाहते हैं?')) {
+      setPaymentAccounts(prev => prev.filter(a => a.id !== id));
+      alert('Account डिलीट हो गया!');
+    }
   };
 
   const addToCart = (product: Product) => {
@@ -376,61 +427,13 @@ export default function App() {
       return [...prevCart, { ...product, quantity: 1 }];
     });
 
-    setToastMessage(`${product.name} cart mein add ho gaya!`);
+    setToastMessage(`${product.name} cart में add हो गया!`);
     setTimeout(() => setToastMessage(null), 2500);
-  };
-
-  const removeFromCart = (id: string) => {
-    setCart((prevCart) => prevCart.filter((item) => item.id !== id));
-  };
-
-  const totalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
-
-  const handleCheckout = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customerName || !customerPhone || !shippingAddress || !city) {
-      alert('Sahi details enter karein.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    const fullAddress = `${shippingAddress}, City: ${city}, Zip: ${zipCode}`;
-
-    try {
-      const { data: orderData } = await supabase.from('orders').insert([
-        {
-          customer_name: customerName,
-          customer_phone: customerPhone,
-          shipping_address: fullAddress,
-          total_amount: totalAmount,
-          payment_method: paymentMethod,
-          payment_status: paymentMethod === 'cod' ? 'Pending COD' : 'Paid Online',
-          status: 'Pending'
-        }
-      ]).select();
-
-      let inv = `ZP-${Math.floor(1000 + Math.random() * 9000)}`;
-      if (orderData && orderData[0]) {
-        inv = orderData[0].invoice_no || inv;
-      }
-
-      setConfirmedInvoice(inv);
-      setOrderSuccess(true);
-      setCart([]);
-    } catch (err) {
-      setConfirmedInvoice(`ZP-${Math.floor(1000 + Math.random() * 9000)}`);
-      setOrderSuccess(true);
-      setCart([]);
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   const filteredProducts = selectedCategory === 'All' 
     ? products 
     : products.filter(p => p.category_name === selectedCategory);
-
-  const activePaymentAccount = paymentAccounts.find(a => a.type.toLowerCase().includes(paymentMethod)) || paymentAccounts[0];
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
@@ -495,14 +498,12 @@ export default function App() {
       {/* VIEW 1: CUSTOMER STORE VIEW */}
       {currentView === 'store' && (
         <div>
-          {/* Banner */}
           <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-amber-950 text-white py-12 px-4 text-center border-b border-amber-500/20">
             <h1 className="text-3xl md:text-5xl font-black mb-2 text-amber-400">ZORIMA PROFESSIONAL STORE</h1>
             <p className="text-slate-300 text-sm md:text-base max-w-2xl mx-auto">Original Hair Care, Baobab Oils & Skin Bleach Masks at Discounted Prices.</p>
           </div>
 
           <main className="max-w-7xl mx-auto px-4 py-8">
-            {/* Category Filter Tabs */}
             <div className="flex items-center space-x-2 overflow-x-auto pb-4 mb-6 border-b">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2 flex items-center">
                 <ListFilter className="w-4 h-4 mr-1" /> Category:
@@ -528,19 +529,21 @@ export default function App() {
               ))}
             </div>
 
-            {/* Products Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
               {filteredProducts.map((product) => (
                 <div key={product.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col group">
-                  <div className="overflow-hidden bg-slate-100 h-48 relative">
+                  <div className="overflow-hidden bg-slate-100 h-52 relative flex items-center justify-center">
                     <img
                       src={product.image_url || 'https://via.placeholder.com/300'}
                       alt={product.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
+                      }}
                     />
-                    {product.original_price > product.discounted_price && (
-                      <span className="absolute top-3 left-3 bg-red-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
-                        SAVE PKR {product.original_price - product.discounted_price}
+                    {product.original_price > (product.discounted_price || product.price) && (
+                      <span className="absolute top-3 left-3 bg-red-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full uppercase shadow">
+                        SAVE PKR {product.original_price - (product.discounted_price || product.price)}
                       </span>
                     )}
                     <span className="absolute top-3 right-3 bg-slate-900/80 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
@@ -557,7 +560,7 @@ export default function App() {
                     <div className="border-t pt-3 mt-auto">
                       <div className="flex items-baseline space-x-2 mb-3">
                         <span className="text-lg font-black text-slate-900">PKR {product.discounted_price || product.price}</span>
-                        {product.original_price > product.discounted_price && (
+                        {product.original_price > (product.discounted_price || product.price) && (
                           <span className="text-xs text-slate-400 line-through">PKR {product.original_price}</span>
                         )}
                       </div>
@@ -586,7 +589,7 @@ export default function App() {
                 <Lock className="w-8 h-8 text-amber-400" />
               </div>
               <h2 className="text-2xl font-black text-slate-900">Admin Portal Login</h2>
-              <p className="text-xs text-slate-500 mt-1">Zorima Management login karein</p>
+              <p className="text-xs text-slate-500 mt-1">Zorima Enterprise Management Portal</p>
             </div>
 
             <form onSubmit={handleAdminLogin} className="space-y-4">
@@ -612,7 +615,7 @@ export default function App() {
                   <input
                     type="password"
                     required
-                    placeholder="Password (e.g. zorima123)"
+                    placeholder="Password (e.g. 123)"
                     value={adminPassword}
                     onChange={(e) => setAdminPassword(e.target.value)}
                     className="w-full pl-9 pr-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
@@ -624,7 +627,7 @@ export default function App() {
                 type="submit"
                 className="w-full bg-slate-900 hover:bg-slate-800 text-amber-400 font-extrabold py-3.5 rounded-xl transition shadow-xl text-sm mt-2"
               >
-                Login to Dashboard
+                Login to Control Center
               </button>
             </form>
           </div>
@@ -634,7 +637,6 @@ export default function App() {
       {/* VIEW 3: FULL ENTERPRISE ADMIN CONTROL DASHBOARD */}
       {currentView === 'admin' && isAdminLoggedIn && (
         <div className="max-w-7xl mx-auto px-4 py-8">
-          {/* Admin Header Bar */}
           <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-2xl font-black text-amber-400 flex items-center">
@@ -655,7 +657,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* Admin Tab Navigation */}
           <div className="flex border-b mb-8 space-x-2 overflow-x-auto pb-2">
             <button
               onClick={() => setAdminTab('products')}
@@ -663,7 +664,7 @@ export default function App() {
                 adminTab === 'products' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
-              <Plus className="w-4 h-4 mr-1.5 text-amber-500" /> Products
+              <Plus className="w-4 h-4 mr-1.5 text-amber-500" /> Products (Edit/Delete)
             </button>
             <button
               onClick={() => setAdminTab('categories')}
@@ -690,7 +691,7 @@ export default function App() {
                 adminTab === 'users' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
-              <UserPlus className="w-4 h-4 mr-1.5 text-amber-500" /> Admin Users & Access
+              <UserPlus className="w-4 h-4 mr-1.5 text-amber-500" /> Admin Users & Passwords
             </button>
             <button
               onClick={() => setAdminTab('accounts')}
@@ -698,28 +699,36 @@ export default function App() {
                 adminTab === 'accounts' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
-              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank & EasyPaisa Accounts
+              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank Accounts (Edit/Delete)
             </button>
           </div>
 
-          {/* TAB 1: ADD NEW PRODUCT PAGE */}
+          {/* TAB 1: PRODUCTS MANAGER (WITH EDIT & DELETE) */}
           {adminTab === 'products' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 bg-white rounded-3xl p-6 border shadow-sm">
-                <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
-                  <Plus className="w-5 h-5 text-amber-500 mr-2" /> Upload New Product
-                </h3>
+                <div className="flex justify-between items-center mb-4 pb-2 border-b">
+                  <h3 className="text-lg font-extrabold text-slate-900 flex items-center">
+                    <Plus className="w-5 h-5 text-amber-500 mr-2" /> 
+                    {editingProductId ? 'Edit Product Item' : 'Upload New Product'}
+                  </h3>
+                  {editingProductId && (
+                    <button onClick={resetProductForm} className="text-xs bg-slate-200 px-3 py-1 rounded-lg font-bold flex items-center">
+                      <X className="w-3.5 h-3.5 mr-1" /> Cancel Edit
+                    </button>
+                  )}
+                </div>
 
-                <form onSubmit={handleAddProduct} className="space-y-4">
+                <form onSubmit={handleSaveProduct} className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Product Name *</label>
                       <input
                         type="text"
                         required
-                        placeholder="e.g. Freecia Baobab Hair Treatment"
-                        value={newProductName}
-                        onChange={(e) => setNewProductName(e.target.value)}
+                        placeholder="e.g. Freecia Hair Mask Sweet Almond"
+                        value={productName}
+                        onChange={(e) => setProductName(e.target.value)}
                         className="w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                       />
                     </div>
@@ -727,8 +736,8 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Select Category *</label>
                       <select
-                        value={newProductCategory}
-                        onChange={(e) => setNewProductCategory(e.target.value)}
+                        value={productCategory}
+                        onChange={(e) => setProductCategory(e.target.value)}
                         className="w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500 bg-white"
                       >
                         <option value="">-- Choose Category --</option>
@@ -744,8 +753,8 @@ export default function App() {
                     <textarea
                       rows={3}
                       placeholder="Product details & usage"
-                      value={newProductDesc}
-                      onChange={(e) => setNewProductDesc(e.target.value)}
+                      value={productDesc}
+                      onChange={(e) => setProductDesc(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                     />
                   </div>
@@ -755,9 +764,9 @@ export default function App() {
                       <label className="block text-xs font-bold text-slate-500 mb-1">Original Price (PKR)</label>
                       <input
                         type="number"
-                        placeholder="2200"
-                        value={newOriginalPrice}
-                        onChange={(e) => setNewOriginalPrice(e.target.value)}
+                        placeholder="2800"
+                        value={originalPrice}
+                        onChange={(e) => setOriginalPrice(e.target.value)}
                         className="w-full px-3.5 py-2 border rounded-xl text-sm"
                       />
                     </div>
@@ -767,36 +776,52 @@ export default function App() {
                         type="number"
                         required
                         placeholder="1850"
-                        value={newDiscountedPrice}
-                        onChange={(e) => setNewDiscountedPrice(e.target.value)}
+                        value={discountedPrice}
+                        onChange={(e) => setDiscountedPrice(e.target.value)}
                         className="w-full px-3.5 py-2 border rounded-xl text-sm font-bold text-emerald-800"
                       />
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Option A: Browse File Image Upload</label>
-                    <div className="border-2 border-dashed border-slate-300 rounded-2xl p-4 text-center bg-slate-50 hover:bg-slate-100 transition relative">
+                  {/* Multi-Format File Upload + Base64 Auto Encoder */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border space-y-3">
+                    <label className="block text-xs font-bold text-slate-800 mb-1">
+                      Option A: Browse File Image Upload (PNG, JPG, WEBP, GIF, SVG Support)
+                    </label>
+                    <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 text-center bg-white hover:bg-slate-100 transition relative">
                       <input
                         type="file"
                         accept="image/*"
                         onChange={handleImageSelect}
                         className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                       />
-                      <Upload className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-                      <p className="text-xs font-bold text-slate-700">Click to Select Image File</p>
+                      <Upload className="w-6 h-6 text-amber-500 mx-auto mb-1" />
+                      <p className="text-xs font-bold text-slate-700">Click to Browse File from Computer / Mobile</p>
+                      <p className="text-[10px] text-slate-400 mt-1">Supports PNG, JPG, JPEG, WEBP, SVG</p>
                     </div>
 
-                    <div className="mt-3">
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Option B: Direct Image Link / URL</label>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-800 mb-1">
+                        Option B: Direct Image Link / URL
+                      </label>
                       <input
                         type="text"
                         placeholder="https://..."
                         value={imageUrl}
-                        onChange={(e) => setImageUrl(e.target.value)}
-                        className="w-full px-3.5 py-2 border rounded-xl text-xs"
+                        onChange={(e) => {
+                          setImageUrl(e.target.value);
+                          setImagePreview(e.target.value);
+                        }}
+                        className="w-full px-3.5 py-2 border rounded-xl text-xs bg-white"
                       />
                     </div>
+
+                    {imagePreview && (
+                      <div className="mt-2 flex items-center space-x-3 bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
+                        <img src={imagePreview} alt="Preview" className="w-12 h-12 object-cover rounded-lg border" />
+                        <span className="text-xs text-emerald-800 font-bold">Image Preview Ready!</span>
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -804,20 +829,41 @@ export default function App() {
                     disabled={isUploading}
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3.5 rounded-xl transition shadow-lg text-sm"
                   >
-                    {isUploading ? 'Publishing Product...' : 'Save & Publish Product to Store'}
+                    {isUploading ? 'Saving...' : editingProductId ? 'Update Product Details' : 'Save & Publish Product to Store'}
                   </button>
                 </form>
               </div>
 
+              {/* Products List with EDIT & DELETE */}
               <div className="bg-white rounded-3xl p-6 border shadow-sm h-fit">
-                <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">Live Products ({products.length})</h3>
-                <div className="space-y-3 max-h-[450px] overflow-y-auto">
+                <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">
+                  Manage Active Products ({products.length})
+                </h3>
+                <div className="space-y-3 max-h-[500px] overflow-y-auto">
                   {products.map((p) => (
-                    <div key={p.id} className="flex items-center space-x-3 bg-slate-50 p-2.5 rounded-xl border text-xs">
-                      <img src={p.image_url} alt={p.name} className="w-10 h-10 object-cover rounded-lg" />
-                      <div className="flex-1">
-                        <h4 className="font-bold text-slate-800 line-clamp-1">{p.name}</h4>
-                        <span className="text-emerald-700 font-bold">PKR {p.discounted_price || p.price}</span>
+                    <div key={p.id} className="flex items-center justify-between bg-slate-50 p-3 rounded-2xl border text-xs">
+                      <div className="flex items-center space-x-3">
+                        <img src={p.image_url} alt={p.name} className="w-10 h-10 object-cover rounded-lg border" />
+                        <div className="max-w-[130px]">
+                          <h4 className="font-bold text-slate-800 truncate">{p.name}</h4>
+                          <span className="text-emerald-700 font-bold">PKR {p.discounted_price || p.price}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-1">
+                        <button
+                          onClick={() => handleEditProduct(p)}
+                          className="bg-amber-100 hover:bg-amber-200 text-amber-900 p-2 rounded-lg font-bold"
+                          title="Edit Product"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProduct(p.id)}
+                          className="bg-red-100 hover:bg-red-200 text-red-700 p-2 rounded-lg font-bold"
+                          title="Delete Product"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -839,7 +885,7 @@ export default function App() {
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Baobab Series"
+                    placeholder="e.g. Hair Care / Bleach Series"
                     value={newCategoryName}
                     onChange={(e) => setNewCategoryName(e.target.value)}
                     className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -859,7 +905,9 @@ export default function App() {
                   {categories.map((c) => (
                     <div key={c.id} className="bg-slate-50 px-4 py-2.5 rounded-xl border text-sm font-semibold text-slate-800 flex justify-between items-center">
                       <span>{c.name}</span>
-                      <Tag className="w-4 h-4 text-slate-400" />
+                      <button onClick={() => handleDeleteCategory(c.id)} className="text-red-500 hover:text-red-700">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -876,7 +924,7 @@ export default function App() {
 
               {adminOrders.length === 0 ? (
                 <div className="text-center py-12 text-slate-400 font-medium">
-                  Abhi tak koi order record nahi aaya.
+                  अभी कोई नया ऑर्डर प्राप्त नहीं हुआ है।
                 </div>
               ) : (
                 <table className="w-full text-left text-xs">
@@ -913,21 +961,22 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 4: NEW PAGE - ADMIN USERS & ACCESS CONTROL */}
+          {/* TAB 4: ADMIN USERS (WITH EDIT PASSWORD & DELETE) */}
           {adminTab === 'users' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
                 <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
-                  <UserPlus className="w-5 h-5 text-amber-500 mr-2" /> Naya Admin User / Access Banayein
+                  <UserPlus className="w-5 h-5 text-amber-500 mr-2" /> 
+                  {editingUserId ? 'Edit Admin User & Password' : 'Naya Admin User Banayein'}
                 </h3>
 
-                <form onSubmit={handleAddUser} className="space-y-4">
+                <form onSubmit={handleSaveUser} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">User ID / Username *</label>
                     <input
                       type="text"
                       required
-                      placeholder="e.g. manager1 / staff1"
+                      placeholder="e.g. manager1"
                       value={newUsername}
                       onChange={(e) => setNewUsername(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -937,9 +986,9 @@ export default function App() {
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">Password *</label>
                     <input
-                      type="password"
+                      type="text"
                       required
-                      placeholder="Enter Password"
+                      placeholder="Enter New Password"
                       value={newUserPassword}
                       onChange={(e) => setNewUserPassword(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
@@ -947,15 +996,15 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">User Role / Access Level</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Role Level</label>
                     <select
                       value={newUserRole}
                       onChange={(e) => setNewUserRole(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm bg-white"
                     >
-                      <option value="Super Admin">Super Admin (Full Control)</option>
-                      <option value="Store Manager">Store Manager (Products & Orders)</option>
-                      <option value="Staff Admin">Staff Admin (Orders View Only)</option>
+                      <option value="Super Admin">Super Admin (Full Access)</option>
+                      <option value="Store Manager">Store Manager</option>
+                      <option value="Staff Admin">Staff Admin</option>
                     </select>
                   </div>
 
@@ -963,7 +1012,7 @@ export default function App() {
                     type="submit"
                     className="w-full bg-slate-900 text-amber-400 font-bold py-3.5 rounded-xl text-sm shadow-lg"
                   >
-                    Create Admin User
+                    {editingUserId ? 'Update User Details' : 'Create Admin User'}
                   </button>
                 </form>
               </div>
@@ -977,10 +1026,25 @@ export default function App() {
                         <Shield className="w-5 h-5 text-amber-500" />
                         <div>
                           <h4 className="font-bold text-slate-800 text-sm">{u.username}</h4>
-                          <span className="text-[10px] text-slate-400 uppercase font-semibold">{u.role}</span>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase">Role: {u.role}</span>
                         </div>
                       </div>
-                      <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2.5 py-1 rounded-full">Active</span>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => handleEditUser(u)}
+                          className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold"
+                          title="Edit Password"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(u.id)}
+                          className="bg-red-100 text-red-700 p-2 rounded-lg font-bold"
+                          title="Delete User"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -988,15 +1052,16 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 5: NEW PAGE - BANK & PAYMENT ACCOUNTS MANAGEMENT */}
+          {/* TAB 5: BANK ACCOUNTS (WITH EDIT & DELETE) */}
           {adminTab === 'accounts' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
                 <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
-                  <Wallet className="w-5 h-5 text-amber-500 mr-2" /> Bank / EasyPaisa Account Setup
+                  <Wallet className="w-5 h-5 text-amber-500 mr-2" /> 
+                  {editingAccountId ? 'Edit Bank / EasyPaisa Account' : 'Add Bank / EasyPaisa Account'}
                 </h3>
 
-                <form onSubmit={handleAddAccount} className="space-y-4">
+                <form onSubmit={handleSaveAccount} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">Account Type</label>
                     <select
@@ -1006,12 +1071,14 @@ export default function App() {
                     >
                       <option value="EasyPaisa">EasyPaisa</option>
                       <option value="JazzCash">JazzCash</option>
-                      <option value="Bank Transfer">Bank Transfer (IBAN)</option>
+                      <option value="Meezan Bank">Meezan Bank</option>
+                      <option value="Bank Alfalah">Bank Alfalah</option>
+                      <option value="HBL Bank">HBL Bank</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Account Number / Mobile Number</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Account Number / IBAN</label>
                     <input
                       type="text"
                       required
@@ -1038,22 +1105,29 @@ export default function App() {
                     type="submit"
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg"
                   >
-                    Save Payment Account
+                    {editingAccountId ? 'Update Account Details' : 'Save Payment Account'}
                   </button>
                 </form>
               </div>
 
               <div className="bg-white rounded-3xl p-6 border shadow-sm">
-                <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">Live Payment Accounts ({paymentAccounts.length})</h3>
+                <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">Manage Active Accounts ({paymentAccounts.length})</h3>
                 <div className="space-y-3">
                   {paymentAccounts.map((acc) => (
-                    <div key={acc.id} className="bg-slate-50 p-4 rounded-2xl border space-y-1">
-                      <div className="flex justify-between items-center">
+                    <div key={acc.id} className="bg-slate-50 p-4 rounded-2xl border flex justify-between items-center">
+                      <div>
                         <span className="font-bold text-amber-600 text-xs uppercase">{acc.type}</span>
-                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">Active on Checkout</span>
+                        <div className="text-sm font-black text-slate-900">{acc.account_number}</div>
+                        <div className="text-xs text-slate-500">{acc.account_title}</div>
                       </div>
-                      <div className="text-sm font-black text-slate-900">{acc.account_number}</div>
-                      <div className="text-xs text-slate-500">{acc.account_title}</div>
+                      <div className="flex space-x-2">
+                        <button onClick={() => handleEditAccount(acc)} className="bg-amber-100 text-amber-900 p-2 rounded-lg font-bold">
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleDeleteAccount(acc.id)} className="bg-red-100 text-red-700 p-2 rounded-lg font-bold">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1065,7 +1139,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
-        © 2026 ZORIMA PROFESSIONAL - Enterprise Care System. All Rights Reserved.
+        © 2026 ZORIMA PROFESSIONAL - Premium Enterprise Management System.
       </footer>
     </div>
   );
