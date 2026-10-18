@@ -4,7 +4,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://ikvffqlkjptnqn
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 if (!supabaseAnonKey) {
-  console.warn('VITE_SUPABASE_ANON_KEY missing: Vercel > Settings > Environment Variables mein add karein.');
+  console.warn('VITE_SUPABASE_ANON_KEY is missing: add it in Vercel > Settings > Environment Variables.');
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
