@@ -8,7 +8,7 @@ export default function ProductForm({ onAddProduct }) {
   const [categoryId, setCategoryId] = useState('');
   const [imageBase64, setImageBase64] = useState('');
 
-  // Direct image file ko Base64 mein convert karne ka function
+  // Direct image file ko Base64 mein convert karne ka function (URL ka option hamesha ke liye khatam)
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -23,14 +23,13 @@ export default function ProductForm({ onAddProduct }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     
-    // Database ke columns ke mutabiq poora data object
     const newProduct = {
       name,
       description,
       price: parseFloat(price) || 0,
       stock_quantity: parseInt(stockQuantity) || 0,
       category_id: categoryId,
-      image_url: imageBase64
+      image_url: imageBase64 // Direct uploaded image data
     };
 
     onAddProduct(newProduct);
@@ -96,6 +95,7 @@ export default function ProductForm({ onAddProduct }) {
         />
       </div>
 
+      {/* Sirf Direct File Upload ka option (URL ka naamo-nishan nahi hai) */}
       <div>
         <label className="block text-sm font-medium">Upload Product Image</label>
         <input 
