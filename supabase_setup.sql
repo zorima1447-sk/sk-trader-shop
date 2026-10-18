@@ -13,6 +13,10 @@ create table if not exists public.categories (
   created_at timestamptz default now() not null
 );
 
+alter table public.categories
+  add column if not exists name text,
+  add column if not exists created_at timestamptz default now();
+
 -- ---------- 2. PRODUCTS ----------
 create table if not exists public.products (
   id uuid default gen_random_uuid() primary key,
@@ -55,6 +59,9 @@ alter table public.orders
   add column if not exists transaction_id text,
   add column if not exists status text default 'Pending';
 
+alter table public.orders
+  alter column invoice_no set default ('ZP-' || nextval('public.invoice_seq'));
+
 -- ---------- 4. ORDER ITEMS (har order ki products) ----------
 create table if not exists public.order_items (
   id uuid default gen_random_uuid() primary key,
@@ -65,6 +72,13 @@ create table if not exists public.order_items (
   unit_price numeric not null default 0,
   created_at timestamptz default now() not null
 );
+alter table public.order_items
+  add column if not exists order_id uuid,
+  add column if not exists product_id uuid,
+  add column if not exists product_name text,
+  add column if not exists quantity int default 1,
+  add column if not exists unit_price numeric default 0;
+
 create index if not exists order_items_order_id_idx on public.order_items(order_id);
 
 -- ---------- 5. PROFILES (admin users: add / edit / delete) ----------
@@ -76,6 +90,11 @@ create table if not exists public.profiles (
   created_at timestamptz default now() not null
 );
 
+alter table public.profiles
+  add column if not exists username text,
+  add column if not exists password text,
+  add column if not exists role text default 'Staff Admin';
+
 -- ---------- 6. PAYMENT ACCOUNTS ----------
 create table if not exists public.payment_accounts (
   id uuid default gen_random_uuid() primary key,
@@ -85,6 +104,24 @@ create table if not exists public.payment_accounts (
   is_active boolean default true,
   created_at timestamptz default now() not null
 );
+
+-- ---------- 6b. PURANE NOT NULL CONSTRAINTS HATAO ----------
+-- Purani tables mein extra columns (jaise profiles.email) NOT NULL ho sakte hain
+-- aur insert rok dete hain. 'id' ke ilawa sab columns nullable kar diye jate hain.
+do $$
+declare r record;
+begin
+  for r in
+    select table_name, column_name
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('categories','products','orders','order_items','profiles','payment_accounts')
+      and is_nullable = 'NO'
+      and column_name <> 'id'
+  loop
+    execute format('alter table public.%I alter column %I drop not null', r.table_name, r.column_name);
+  end loop;
+end $$;
 
 -- ---------- 7. RLS (open access, jaisa aap ne kaha) ----------
 alter table public.categories       enable row level security;
@@ -105,15 +142,18 @@ begin
 end $$;
 
 -- ---------- 8. STARTING DATA ----------
-insert into public.categories (name) values ('Hair Care'), ('Bleach & Color'), ('Skin Care')
-on conflict (name) do nothing;
+insert into public.categories (name)
+select v.name from (values ('Hair Care'), ('Bleach & Color'), ('Skin Care')) as v(name)
+where not exists (select 1 from public.categories c where c.name = v.name);
 
 -- Pehla admin login: username = zorima / password = 123
 -- (login ke baad Admin Users tab se password badal dein)
-insert into public.profiles (username, password, role) values
+insert into public.profiles (username, password, role)
+select v.username, v.password, v.role from (values
   ('zorima', '123', 'Super Admin'),
   ('admin',  '123', 'Admin')
-on conflict (username) do nothing;
+) as v(username, password, role)
+where not exists (select 1 from public.profiles p where p.username = v.username);
 
 insert into public.payment_accounts (type, account_number, account_title)
 select * from (values
