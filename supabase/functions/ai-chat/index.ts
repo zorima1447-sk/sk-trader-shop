@@ -182,6 +182,9 @@ async function runTool(sb: any, name: string, input: any, ctx: { site: string; s
         order_number: o.invoice_no, placed_on: o.created_at, status: o.status || 'Pending',
         payment: o.payment_status === 'Paid' ? 'paid' : (o.payment_method === 'cod' ? 'cash on delivery' : 'payment being checked'),
         total: money(o.total_amount), items: (items || []).map((i: any) => `${i.quantity} x ${i.product_name}`),
+        courier: o.courier || undefined, tracking_no: o.tracking_no || undefined,
+        courier_tracking_link: o.tracking_url || (o.courier && o.tracking_no ? `https://www.google.com/search?q=${encodeURIComponent(o.courier + ' tracking ' + o.tracking_no)}` : undefined),
+        track_page: `${ctx.site}/?track=${encodeURIComponent(o.invoice_no)}`,
         invoice_link: `${ctx.site}/?invoice=${o.id}`,
       };
     }
@@ -455,7 +458,10 @@ async function runBuiltin(mode: string, history: Hist, ctx: Ctx) {
     if (!orderNo || !last4) return { reply: 'Order track karne ke liye apna order number (jaise SK-261022-1005) aur order wale mobile number ke aakhri 4 hindse likhiye.' };
     const r: any = await callTool(ctx, 'track_order', { order_number: orderNo, phone_last4: last4 });
     if (r.error) return { reply: 'Is number aur mobile se koi order nahi mila. Dono dobara check kar lein.' };
-    return { reply: `Order ${r.order_number}: ${r.status}\nPayment: ${r.payment}\nTotal: ${r.total}\n${r.items.join(', ')}\nInvoice: ${r.invoice_link}` };
+    return { reply: `Order ${r.order_number}: ${r.status}\nPayment: ${r.payment}\nTotal: ${r.total}\n${r.items.join(', ')}` +
+      (r.courier ? `\nCourier: ${r.courier}${r.tracking_no ? ` - ${r.tracking_no}` : ''}` : '') +
+      (r.courier_tracking_link ? `\nTrack with courier: ${r.courier_tracking_link}` : '') +
+      `\nInvoice: ${r.invoice_link}` };
   }
 
   if (city || has('delivery', 'charges', 'shipping', 'cod', 'cash on delivery', 'payment', 'easypaisa', 'jazzcash')) {

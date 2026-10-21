@@ -4,6 +4,7 @@ import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFie
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import AiChatBubble, { ChatPanel } from './AiChat';
+import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
 import { InvoiceDocument, InvoiceItem, printInvoice } from './Invoice';
 import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
 import PkAddressFields from './PkAddressFields';
@@ -84,6 +85,11 @@ interface Order {
   province?: string | null;
   area?: string | null;
   delivery_charge?: number | null;
+  courier?: string | null;
+  tracking_no?: string | null;
+  tracking_url?: string | null;
+  shipped_at?: string | null;
+  confirmed_at?: string | null;
   paid_amount?: number | null;
   paid_at?: string | null;
   customer_id?: string | null;
@@ -161,7 +167,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v11 (22-Oct-2026)';
+const BUILD = 'v12 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -279,7 +285,11 @@ function searchScore(p: { name: string; category_name?: string; description?: st
 const money = (n: number | string | null | undefined) => 'Rs. ' + Number(n || 0).toLocaleString('en-PK');
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin' | 'auth' | 'account'>('store');
+  // a link like  /?track=SK-261022-1005  opens the Track Order page
+  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin' | 'auth' | 'account' | 'track'>(
+    () => (new URLSearchParams(window.location.search).has('track') ? 'track' : 'store')
+  );
+  const [courierEdit, setCourierEdit] = useState<{ order: Order; courier: string; tracking_no: string; tracking_url: string; ship: boolean } | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('look');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   // Customer account (Supabase Auth)
@@ -1117,10 +1127,42 @@ export default function App() {
   };
 
   const handleUpdateOrderStatus = async (id: string, status: string) => {
-    const delivered_at = status === 'Delivered' ? new Date().toISOString() : null;
-    const { error } = await supabase.from('orders').update({ status, delivered_at }).eq('id', id);
+    const now = new Date().toISOString();
+    const cur: any = adminOrders.find(o => o.id === id) || {};
+    const patch: any = { status, delivered_at: status === 'Delivered' ? now : null };
+    // remember when each step happened (shown to the customer on "Track Order")
+    if (['Confirmed', 'Shipped', 'Delivered'].includes(status) && !cur.confirmed_at) patch.confirmed_at = now;
+    if (['Shipped', 'Delivered'].includes(status) && !cur.shipped_at) patch.shipped_at = now;
+    const { error } = await supabase.from('orders').update(patch).eq('id', id);
     if (reportError('order status update', error)) return;
-    setAdminOrders(prev => prev.map(o => o.id === id ? { ...o, status, delivered_at } : o));
+    setAdminOrders(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
+  };
+
+  // Courier + tracking number for an order (Admin > Orders)
+  const saveCourier = async () => {
+    if (!courierEdit) return;
+    const { order, courier, tracking_no, tracking_url, ship } = courierEdit;
+    const now = new Date().toISOString();
+    const cur: any = order;
+    const patch: any = { courier: courier || null, tracking_no: tracking_no.trim() || null, tracking_url: tracking_url.trim() || null };
+    if (ship && order.status !== 'Delivered') {
+      patch.status = 'Shipped';
+      if (!cur.shipped_at) patch.shipped_at = now;
+      if (!cur.confirmed_at) patch.confirmed_at = now;
+    }
+    const { error } = await supabase.from('orders').update(patch).eq('id', order.id);
+    if (reportError('courier save', error)) return;
+    setAdminOrders(prev => prev.map(o => o.id === order.id ? { ...o, ...patch } : o));
+    setCourierEdit(null);
+  };
+
+  const trackingMessage = (o: any) => {
+    const link = trackingLink(o);
+    return `Assalam o Alaikum ${o.customer_name}! Your order ${o.invoice_no || ''} from ${settings.store_name} has been shipped.` +
+      (o.courier ? `\nCourier: ${o.courier}` : '') +
+      (o.tracking_no ? `\nTracking no: ${o.tracking_no}` : '') +
+      (link ? `\nTrack: ${link}` : '') +
+      `\nOrder status: ${window.location.origin}/?track=${encodeURIComponent(o.invoice_no || '')}`;
   };
 
   const fmtDateTime = (iso?: string | null) =>
@@ -1789,13 +1831,18 @@ export default function App() {
         <div className="bg-slate-50 border-b text-[11px] text-slate-600">
           <div className="max-w-7xl mx-auto px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">
             <span className="truncate">{settings.announcement}</span>
-            <div className="hidden md:flex items-center gap-4 shrink-0 font-semibold">
+            <div className="flex items-center gap-4 shrink-0 font-semibold">
+              <button onClick={() => setCurrentView('track')} className="hover:text-amber-600 cursor-pointer flex items-center gap-1">
+                <Truck className="w-3.5 h-3.5" /> Track Order
+              </button>
+              <span className="hidden md:contents">
               {settings.whatsapp && (
                 <a href={waLink(settings.whatsapp, 'Hello, I would like some information about your products.')} target="_blank" rel="noreferrer" className="hover:text-amber-600">
                   WhatsApp Help
                 </a>
               )}
               {settings.phone && <span>Call: {settings.phone}</span>}
+              </span>
             </div>
           </div>
         </div>
@@ -2239,6 +2286,7 @@ export default function App() {
               <div>
                 <h4 className="text-white font-black mb-2">Quick Links</h4>
                 <ul className="space-y-1 text-xs">
+                  <li><button onClick={() => { setCurrentView('track'); window.scrollTo({ top: 0 }); }} className="hover:text-amber-400 cursor-pointer">Track your order</button></li>
                   <li><button onClick={() => { setSelectedCategory('All'); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">Best Sellers</button></li>
                   {categories.map(c => (
                     <li key={c.id}><button onClick={() => { setSelectedCategory(c.name); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">{c.name}</button></li>
@@ -2662,6 +2710,12 @@ export default function App() {
                 <CheckCircle2 className="w-20 h-20 text-emerald-500 mx-auto mb-4" />
                 <h4 className="text-2xl font-black text-slate-900 mb-1">Order Confirmed!</h4>
                 <p className="text-sm text-slate-500 mb-4">Your order has been saved successfully.</p>
+                <button
+                  onClick={() => { setIsCartOpen(false); setOrderSuccess(false); setCurrentView('track'); try { window.history.replaceState(null, '', `${window.location.pathname}?track=${encodeURIComponent(confirmedInvoice)}`); } catch { /* ignore */ } }}
+                  className="mb-4 text-sm font-semibold text-amber-700 underline cursor-pointer"
+                >
+                  Track this order any time
+                </button>
                 <div className="bg-slate-100 p-4 rounded-xl mb-6 inline-block text-left w-full">
                   <div className="flex justify-between py-1 text-sm border-b mb-2">
                     <span className="text-slate-500">Invoice Number:</span>
@@ -3054,6 +3108,47 @@ export default function App() {
                 Login to Control Center
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Public "Track Order" page */}
+      {currentView === 'track' && (
+        <TrackOrderPage onBack={() => { setCurrentView('store'); try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ } }} />
+      )}
+
+      {/* Admin: courier & tracking window */}
+      {courierEdit && (
+        <div className="fixed inset-0 z-[85] bg-black/60 flex items-center justify-center p-4" onClick={() => setCourierEdit(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-slate-900">Courier & tracking - {courierEdit.order.invoice_no}</h3>
+            <p className="text-xs text-slate-500">{courierEdit.order.customer_name} · {cityOfOrder(courierEdit.order)}</p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Courier</label>
+              <select value={courierEdit.courier} onChange={(e) => setCourierEdit({ ...courierEdit, courier: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm bg-white">
+                {COURIERS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">
+                {/own delivery/i.test(courierEdit.courier) ? 'Rider name / phone (optional)' : 'Tracking / CN number'}
+              </label>
+              <input value={courierEdit.tracking_no} onChange={(e) => setCourierEdit({ ...courierEdit, tracking_no: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm font-mono" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Tracking link from the courier (optional)</label>
+              <input value={courierEdit.tracking_url} onChange={(e) => setCourierEdit({ ...courierEdit, tracking_url: e.target.value })} placeholder="https://..." className="w-full px-3 py-2 border rounded-lg text-sm" />
+              <p className="text-[11px] text-slate-400 mt-1">Empty = the customer gets a "Track with courier" button that searches the number.</p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={courierEdit.ship} onChange={(e) => setCourierEdit({ ...courierEdit, ship: e.target.checked })} />
+              Mark the order as Shipped
+            </label>
+            <div className="flex gap-2 pt-1">
+              <button onClick={saveCourier} className="flex-1 bg-slate-900 text-amber-400 font-bold text-sm py-2.5 rounded-xl cursor-pointer">Save</button>
+              <button onClick={() => setCourierEdit(null)} className="px-4 bg-slate-100 text-slate-700 font-bold text-sm rounded-xl cursor-pointer">Cancel</button>
+            </div>
+            <p className="text-[11px] text-slate-500">After saving, use "Send tracking on WhatsApp" under the order to tell the customer.</p>
           </div>
         </div>
       )}
@@ -3644,6 +3739,21 @@ export default function App() {
                               <option key={st} value={st}>{st}</option>
                             ))}
                           </select>
+                          <div className="mt-1.5 text-[10px] text-slate-600 space-y-0.5">
+                            {order.courier && <div>Courier: <b>{order.courier}</b></div>}
+                            {order.tracking_no && <div>Tracking: <span className="font-mono font-bold">{order.tracking_no}</span></div>}
+                            <button
+                              onClick={() => setCourierEdit({ order, courier: order.courier || (cityOfOrder(order) === 'Karachi' ? 'Own delivery (rider)' : 'TCS'), tracking_no: order.tracking_no || '', tracking_url: order.tracking_url || '', ship: order.status !== 'Shipped' && order.status !== 'Delivered' })}
+                              className="text-blue-700 font-bold underline cursor-pointer"
+                            >
+                              {order.tracking_no || order.courier ? 'Edit courier / tracking' : 'Add courier / tracking'}
+                            </button>
+                            {(order.tracking_no || order.courier) && (
+                              <a href={waLink(order.customer_phone, trackingMessage(order))} target="_blank" rel="noreferrer" className="block text-emerald-700 font-bold underline">
+                                Send tracking on WhatsApp
+                              </a>
+                            )}
+                          </div>
                           {order.status !== 'Delivered' && order.status !== 'Cancelled' && (
                             <button
                               onClick={() => handleUpdateOrderStatus(order.id, 'Delivered')}

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabaseClient';
 import { Eye, EyeOff, Package, User, LogOut, FileText, Lock } from 'lucide-react';
 import PkAddressFields from './PkAddressFields';
+import { TrackTimeline } from './Tracking';
 import { PkAddress, emptyPkAddress, checkPkAddress, mobileDigits } from './pakistan';
 
 // The saved address of a customer (user_metadata) as a form value
@@ -389,6 +390,12 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
                         </div>
                       ))}
                     </div>
+                    <details className="px-3 py-2 border-t text-xs">
+                      <summary className="cursor-pointer font-semibold text-amber-700">
+                        Track this order{o.tracking_no ? ` · ${o.courier || ''} ${o.tracking_no}` : ''}
+                      </summary>
+                      <div className="pt-3"><TrackTimeline o={o} /></div>
+                    </details>
                     <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-t text-xs">
                       <span className="text-slate-500">
                         {o.payment_method === 'cod' ? 'Cash on Delivery' : o.payment_method} · {o.payment_status === 'Paid' ? 'Paid' : 'Payment pending'}

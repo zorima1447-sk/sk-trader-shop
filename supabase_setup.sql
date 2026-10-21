@@ -108,7 +108,13 @@ alter table public.orders
   add column if not exists zip text,
   add column if not exists gst_rate numeric,
   add column if not exists gst_amount numeric default 0,
-  add column if not exists gst_inclusive boolean;
+  add column if not exists gst_inclusive boolean,
+  -- shipping / tracking (set by the admin)
+  add column if not exists courier text,
+  add column if not exists tracking_no text,
+  add column if not exists tracking_url text,
+  add column if not exists shipped_at timestamptz,
+  add column if not exists confirmed_at timestamptz;
 create index if not exists orders_city_idx on public.orders(city);
 create index if not exists orders_customer_user_id_idx on public.orders(customer_user_id);
 
@@ -789,12 +795,35 @@ as $$
   select coalesce(json_agg(x order by x.created_at desc), '[]'::json)
   from (
     select o.id, o.invoice_no, o.created_at, o.total_amount, o.subtotal, o.delivery_charge, o.status, o.payment_status, o.payment_method,
+           o.courier, o.tracking_no, o.tracking_url, o.shipped_at, o.confirmed_at,
            o.delivered_at, o.shipping_address,
            coalesce((select json_agg(json_build_object('product_name', i.product_name, 'quantity', i.quantity, 'unit_price', i.unit_price))
                      from public.order_items i where i.order_id = o.id), '[]'::json) as items
     from public.orders o
     where auth.uid() is not null and o.customer_user_id = auth.uid()
   ) x
+$$;
+
+-- Public order tracking: order number + last 4 digits of the order's mobile number.
+-- Returns only what a customer needs (no address / email).
+create or replace function public.track_order(p_order_no text, p_phone text)
+returns json
+language sql stable security definer
+set search_path = public
+as $$
+  select json_build_object(
+    'invoice_no', o.invoice_no, 'created_at', o.created_at, 'status', coalesce(o.status, 'Pending'),
+    'confirmed_at', o.confirmed_at, 'shipped_at', o.shipped_at, 'delivered_at', o.delivered_at,
+    'city', o.city, 'total_amount', o.total_amount, 'payment_method', o.payment_method, 'payment_status', o.payment_status,
+    'courier', o.courier, 'tracking_no', o.tracking_no, 'tracking_url', o.tracking_url, 'order_id', o.id,
+    'items', coalesce((select json_agg(json_build_object('product_name', i.product_name, 'quantity', i.quantity))
+                       from public.order_items i where i.order_id = o.id), '[]'::json))
+  from public.orders o
+  where lower(o.invoice_no) = lower(trim(coalesce(p_order_no, '')))
+    and length(regexp_replace(coalesce(p_phone, ''), '[^0-9]', '', 'g')) >= 4
+    and right(regexp_replace(coalesce(o.customer_phone, ''), '[^0-9]', '', 'g'), 4)
+        = right(regexp_replace(coalesce(p_phone, ''), '[^0-9]', '', 'g'), 4)
+  limit 1
 $$;
 
 -- Normalises a Pakistani phone number: 0300-1234567 / +92 300 1234567 -> 923001234567

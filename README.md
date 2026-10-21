@@ -67,6 +67,15 @@ npm install
 npm run dev
 ```
 
+## v12: order tracking
+- Admin > Orders > "Add courier / tracking": courier (own rider, TCS, Leopards, M&P, Trax, PostEx, BlueEx, Call Courier,
+  bus cargo, Pakistan Post, Other), tracking / CN number, optional tracking link; can mark the order Shipped.
+  Then "Send tracking on WhatsApp" sends the customer a ready message.
+- Customers: "Track Order" (top bar, footer, after ordering, `/?track=<order no>`): order number + last 4 digits of
+  the mobile -> Placed / Confirmed / Shipped / Delivered with dates, courier, tracking no and "Track with courier".
+  Also in My Account > My Orders, and the AI bot answers with it.
+- Run `supabase_setup.sql` again (new columns + track_order function) and re-deploy `ai-chat`.
+
 ## v11: AI assistant, GST, order numbers, delete, share
 - **Order numbers with the date**: SK-261022-1005 (prefix in Admin > Invoice). Old orders keep their numbers.
 - **Delete order**: Admin > Orders > "Delete order" (asks whether to put the items back in stock).
