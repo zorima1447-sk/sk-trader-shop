@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel from './SettingsPanel';
 import { InvoiceDocument, InvoiceItem } from './Invoice';
@@ -130,7 +130,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v6 (18-Oct-2026)';
+const BUILD = 'v7 (21-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -337,8 +337,8 @@ export default function App() {
   }
 
   async function fetchUsers() {
-    const { data, error } = await supabase.from('profiles').select('*').order('created_at', { ascending: true });
-    if (error) { reportError('profiles fetch', error); return; }
+    const { data, error } = await supabase.rpc('admin_list_users');
+    if (error) { reportError('admin users fetch', error); return; }
     setAdminUsers(data || []);
   }
 
@@ -364,7 +364,12 @@ export default function App() {
   }
 
   async function fetchReviews() {
-    const { data, error } = await supabase.from('reviews').select('*').order('created_at', { ascending: false });
+    // Visitors only get name / stars / remark; a logged-in admin also gets the reviewer's email and phone.
+    const { data, error } = getAdminToken()
+      ? await supabase.rpc('admin_list_reviews')
+      : await supabase.from('reviews')
+          .select('id, product_id, order_id, customer_name, rating, remark, created_at')
+          .order('created_at', { ascending: false });
     if (error) { console.error('reviews fetch', error); return; }
     setReviews(data || []);
   }
@@ -407,20 +412,17 @@ export default function App() {
       alert('A review for this product has already been submitted for this order.');
       return false;
     }
-    const { data, error } = await supabase
-      .from('reviews')
-      .insert([{
-        product_id,
-        order_id,
-        customer_name,
-        rating,
-        remark: remark.trim(),
-        customer_email: email.trim() || null,
-        customer_phone: phone.trim() || null
-      }])
-      .select();
-    if (reportError('review insert', error)) return false;
-    if (data && data[0]) setReviews(prev => [data[0], ...prev]);
+    const { data, error } = await supabase.rpc('submit_review', {
+      p_product_id: product_id,
+      p_order_id: order_id,
+      p_name: customer_name,
+      p_rating: rating,
+      p_remark: remark.trim(),
+      p_email: email.trim(),
+      p_phone: phone.trim()
+    });
+    if (reportError('review', error)) return false;
+    if (data) setReviews(prev => [data, ...prev]);
     return true;
   }
 
@@ -726,11 +728,9 @@ export default function App() {
     fetchSlides();
   };
 
-  const adminCreds = () => ({ admin_username: adminUsername.trim(), admin_password: adminPassword });
-
   const callCustomersFunction = async (payload: any): Promise<string> => {
     const { data, error } = await supabase.functions.invoke('notify-customers', {
-      body: { ...payload, ...adminCreds(), site_url: window.location.origin }
+      body: { ...payload, site_url: window.location.origin }
     });
     if (error) return 'Customer emails could not be sent: ' + error.message + ' (is the "notify-customers" Edge Function deployed?)';
     if (data && data.error) return 'Customer emails failed: ' + data.error;
@@ -757,7 +757,7 @@ export default function App() {
   const handleEmailInvoice = async (o: any) => {
     if (!o.customer_email) { alert('This order has no customer email. Use Edit order to add one first.'); return; }
     const { data, error } = await supabase.functions.invoke('notify-order', {
-      body: { order_id: o.id, resend_invoice: true, site_url: window.location.origin, ...adminCreds() }
+      body: { order_id: o.id, resend_invoice: true, site_url: window.location.origin }
     });
     if (error) { alert('Could not send: ' + error.message + ' (is the "notify-order" Edge Function deployed?)'); return; }
     if (data && data.error) { alert('Could not send: ' + data.error); return; }
@@ -790,7 +790,7 @@ export default function App() {
 
   const sendTestAlert = async () => {
     setNotifBusy(true);
-    const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true, ...adminCreds() } });
+    const { data, error } = await supabase.functions.invoke('notify-order', { body: { test: true } });
     setNotifBusy(false);
     if (error) {
       alert('Test alert failed. Is the Edge Function "notify-order" deployed?\n' + error.message);
@@ -811,27 +811,31 @@ export default function App() {
     } catch (e) { /* ignore */ }
   }
 
-  // Live alert for new orders while the admin is logged in (Supabase Realtime)
+  // Live alert for new orders while the admin is logged in: checks for new orders every 20 seconds.
   useEffect(() => {
     if (!isAdminLoggedIn) return;
-    const channel = supabase
-      .channel('orders-live')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload: any) => {
-        const o = payload.new || {};
-        setNewOrderCount(c => c + 1);
-        setToastMessage(`NEW ORDER ${o.invoice_no || ''} - ${o.customer_name || ''} - PKR ${o.total_amount || ''}`);
-        setTimeout(() => setToastMessage(null), 9000);
-        beep();
-        try {
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('New Order Received', { body: `${o.customer_name || ''} - PKR ${o.total_amount || ''}` });
-          }
-        } catch (e) { /* ignore */ }
-        // order items are saved a moment after the order, so refresh the list after a short delay
-        setTimeout(fetchOrders, 2500);
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    let lastSeen = new Date().toISOString();
+    const timer = setInterval(async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('id, invoice_no, customer_name, total_amount, created_at')
+        .gt('created_at', lastSeen)
+        .order('created_at', { ascending: true });
+      if (error || !data || data.length === 0) return;
+      lastSeen = data[data.length - 1].created_at;
+      const o: any = data[data.length - 1];
+      setNewOrderCount(c => c + data.length);
+      setToastMessage(`NEW ORDER ${o.invoice_no || ''} - ${o.customer_name || ''} - PKR ${o.total_amount || ''}`);
+      setTimeout(() => setToastMessage(null), 9000);
+      beep();
+      try {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('New Order Received', { body: `${o.customer_name || ''} - PKR ${o.total_amount || ''}` });
+        }
+      } catch (e) { /* ignore */ }
+      fetchOrders();
+    }, 20000);
+    return () => clearInterval(timer);
   }, [isAdminLoggedIn]);
 
   const handleUpdateOrderStatus = async (id: string, status: string) => {
@@ -852,18 +856,16 @@ export default function App() {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .ilike('username', adminUsername.trim().replace(/[%_\\]/g, '\\$&'))
-      .eq('password', adminPassword)
-      .limit(1);
+    // The password is checked inside the database (admin_login); it is never downloaded to the browser.
+    const { data, error } = await supabase.rpc('admin_login', { p_username: adminUsername.trim(), p_password: adminPassword });
     if (error) { reportError('login', error); return; }
-    const user = data && data[0];
-    if (!user) {
-      alert('Invalid User ID or Password!');
+    if (!data || !data.ok) {
+      alert((data && data.error) || 'Invalid User ID or Password!');
       return;
     }
+    const user = data;
+    setAdminToken(data.token);
+    setAdminPassword('');
     setIsAdminLoggedIn(true);
     setLoggedInUserRole(user.role);
     setLoggedInUserName(user.username);
@@ -874,6 +876,12 @@ export default function App() {
     fetchNotifSettings();
     fetchCustomers();
     fetchPayments();
+    fetchReviews();
+    fetchPaymentAccounts();
+    if (data.weak_password) {
+      setAdminTab('users');
+      alert('Your password is too weak (for example "123").\nPlease set a new password of at least 6 characters now: Admin Users > Edit.');
+    }
     try {
       if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     } catch (err) { /* ignore */ }
@@ -991,28 +999,22 @@ export default function App() {
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     const uname = newUsername.trim();
-    if (!uname || !newUserPassword) { alert('Please enter both User ID and Password.'); return; }
+    if (!uname) { alert('Please enter a User ID.'); return; }
+    if (!editingUserId && !newUserPassword) { alert('Please enter a password.'); return; }
+    if (newUserPassword && newUserPassword.length < 6) { alert('Password must be at least 6 characters.'); return; }
 
-    // duplicate check (from the database)
-    const { data: same, error: sameErr } = await supabase
-      .from('profiles').select('id').ilike('username', uname.replace(/[%_\\]/g, '\\$&'));
-    if (reportError('user check', sameErr)) return;
-    if ((same || []).some((r: any) => r.id !== editingUserId)) {
-      alert('This User ID already exists. Please choose another one.');
-      return;
-    }
-
-    const row = { username: uname, password: newUserPassword, role: newUserRole };
-
-    if (editingUserId) {
-      const { error } = await supabase.from('profiles').update(row).eq('id', editingUserId);
-      if (reportError('user update', error)) return;
-      alert('Admin user updated and saved in database!');
-    } else {
-      const { error } = await supabase.from('profiles').insert([row]);
-      if (reportError('user insert', error)) return;
-      alert(`New admin user (${uname}) saved in database!\nYou can now log in with this User ID and password.`);
-    }
+    // Passwords are stored as a secure hash inside the database (admin_save_user).
+    const { error } = await supabase.rpc('admin_save_user', {
+      p_id: editingUserId,
+      p_username: uname,
+      p_password: newUserPassword,
+      p_role: newUserRole
+    });
+    if (reportError('save user', error)) return;
+    alert(editingUserId
+      ? 'Admin user updated!'
+      : `New admin user (${uname}) saved!\nYou can now log in with this User ID and password.`);
+    if (editingUserId && uname.toLowerCase() === loggedInUserName.toLowerCase()) setLoggedInUserName(uname);
     setEditingUserId(null);
     setNewUsername('');
     setNewUserPassword('');
@@ -1022,14 +1024,14 @@ export default function App() {
   const handleEditUser = (u: AdminUser) => {
     setEditingUserId(u.id);
     setNewUsername(u.username);
-    setNewUserPassword(u.password || '');
+    setNewUserPassword(''); // empty = keep the current password
     setNewUserRole(u.role);
   };
 
   const handleDeleteUser = async (id: string) => {
     if (window.confirm('Delete this admin user?')) {
-      const { error } = await supabase.from('profiles').delete().eq('id', id);
-      if (reportError('user delete', error)) return;
+      const { error } = await supabase.rpc('admin_delete_user', { p_id: id });
+      if (reportError('delete user', error)) return;
       setAdminUsers(prev => prev.filter(u => u.id !== id));
       alert('Admin user deleted successfully!');
     }
@@ -1139,10 +1141,10 @@ export default function App() {
       const fullAddress = [shippingAddress.trim(), geo.city, info.stateName, info.countryName, zipCode ? `Zip: ${zipCode}` : '']
         .filter(Boolean).join(', ');
 
-      // Save / update the customer record (does not block the order if it fails)
-      let customerId: string | null = null;
-      try {
-        const crow = {
+      // The order is saved by place_order() in the database: it saves the customer, takes the prices
+      // from the products table (not from the browser), saves the items and reduces the stock.
+      const { data: placed, error: orderError } = await supabase.rpc('place_order', {
+        p_customer: {
           name: customerName.trim(),
           email: customerEmail.trim() || null,
           phone_iso: geo.phoneIso,
@@ -1155,71 +1157,33 @@ export default function App() {
           city: geo.city,
           address: shippingAddress.trim(),
           marketing_opt_in: marketingOptIn
-        };
-        const { data: found } = await supabase
-          .from('customers').select('id').eq('phone_code', info.phoneCode).eq('phone', local).limit(1);
-        if (found && found[0]) {
-          customerId = found[0].id;
-          await supabase.from('customers').update(crow).eq('id', found[0].id);
-        } else {
-          const { data: ins, error: insErr } = await supabase.from('customers').insert([crow]).select();
-          if (insErr) console.warn('customer insert', insErr.message);
-          customerId = ins && ins[0] ? ins[0].id : null;
-        }
-      } catch (err) {
-        console.warn('customer save failed', err);
-      }
-
-      const { data: orderData, error: orderError } = await supabase.from('orders').insert([
-        {
+        },
+        p_order: {
           customer_name: customerName.trim(),
           customer_phone: fullPhone,
           customer_email: customerEmail.trim() || null,
-          customer_id: customerId,
           shipping_address: fullAddress,
-          total_amount: totalAmount,
           payment_method: paymentMethod,
-          payment_status: 'Unpaid',
-          paid_amount: 0,
-          transaction_id: paymentMethod === 'cod' ? null : (transactionId || null),
-          status: 'Pending'
-        }
-      ]).select();
+          transaction_id: paymentMethod === 'cod' ? null : (transactionId || null)
+        },
+        p_items: cart.map(item => ({ product_id: item.id, quantity: item.quantity }))
+      });
 
-      if (orderError || !orderData || !orderData[0]) {
-        reportError('order insert', orderError || { message: 'Order was not saved.' });
+      if (orderError || !placed || !placed.order) {
+        reportError('order', orderError || { message: 'Order was not saved.' });
         return;
       }
 
-      const order = orderData[0];
+      const order = placed.order;
+      const placedItems: InvoiceItem[] = (placed.items || []).map((i: any) => ({
+        product_name: i.product_name, quantity: Number(i.quantity), unit_price: Number(i.unit_price)
+      }));
 
-      const { error: itemsError } = await supabase.from('order_items').insert(
-        cart.map(item => ({
-          order_id: order.id,
-          product_id: item.id,
-          product_name: item.name,
-          quantity: item.quantity,
-          unit_price: item.discounted_price || item.price
-        }))
-      );
-      if (itemsError) {
-        reportError('order items insert', itemsError);
-        return;
-      }
-
-      // Decrease stock and increase sold count
-      for (const item of cart) {
-        const { error: stockErr } = await supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.quantity });
-        if (stockErr) { console.error('decrement_stock', stockErr); setDbError(`stock update: ${stockErr.message}`); }
-      }
       fetchProducts();
 
       // Invoice for the customer + order alert to the owner (Edge Function).
       // A failure here does not affect the order.
-      setPlacedInvoice({
-        order: { ...order },
-        items: cart.map(i => ({ product_name: i.name, quantity: i.quantity, unit_price: i.discounted_price || i.price }))
-      });
+      setPlacedInvoice({ order: { ...order }, items: placedItems });
       setInvoiceStatus('Preparing your invoice email...');
       const emailUsed = customerEmail.trim();
       supabase.functions.invoke('notify-order', { body: { order_id: order.id, site_url: window.location.origin } })
@@ -1301,25 +1265,25 @@ export default function App() {
 
       {/* Main Top Header */}
       <header className="bg-slate-900 text-white sticky top-0 z-40 shadow-md">
-        <div className="max-w-7xl mx-auto px-4 py-3.5 flex justify-between items-center">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3.5 flex justify-between items-center gap-2">
           <div 
             onClick={() => setCurrentView('store')}
-            className="flex items-center space-x-3 cursor-pointer"
+            className="flex items-center gap-2 sm:gap-3 cursor-pointer min-w-0"
           >
             {settings.logo_url ? (
-              <img src={settings.logo_url} alt={settings.store_name} className="h-10 w-10 object-contain rounded" />
+              <img src={settings.logo_url} alt={settings.store_name} className="h-9 w-9 sm:h-10 sm:w-10 object-contain rounded shrink-0" />
             ) : (
-              <Package className="w-8 h-8 text-amber-400" />
+              <Package className="w-8 h-8 text-amber-400 shrink-0" />
             )}
-            <div>
-              <span className="text-xl md:text-2xl font-black tracking-wider text-white block">{settings.store_name}</span>
+            <div className="min-w-0">
+              <span className="text-base sm:text-xl md:text-2xl font-black tracking-wide sm:tracking-wider text-white block whitespace-nowrap truncate leading-tight">{settings.store_name}</span>
               {settings.header_subtitle && (
-                <span className="text-xs text-amber-300 font-medium tracking-widest block -mt-1">{settings.header_subtitle}</span>
+                <span className="text-[9px] sm:text-xs text-amber-300 font-medium tracking-wide sm:tracking-widest block truncate leading-tight">{settings.header_subtitle}</span>
               )}
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {isAdminLoggedIn ? (
               <button
                 onClick={() => setCurrentView(currentView === 'admin' ? 'store' : 'admin')}
@@ -1331,16 +1295,17 @@ export default function App() {
             ) : (
               <button
                 onClick={() => setCurrentView('login')}
-                className="text-slate-300 hover:text-white bg-slate-800 px-3.5 py-2 rounded-xl text-xs flex items-center transition border border-slate-700"
+                className="text-slate-300 hover:text-white bg-slate-800 px-2.5 sm:px-3.5 py-2 rounded-xl text-xs flex items-center transition border border-slate-700 whitespace-nowrap"
+                aria-label="Admin Login"
               >
-                <Lock className="w-3.5 h-3.5 mr-1.5 text-amber-400" /> Admin Login
+                <Lock className="w-3.5 h-3.5 sm:mr-1.5 text-amber-400" /> <span className="hidden sm:inline">Admin Login</span>
               </button>
             )}
 
             {currentView === 'store' && (
               <button
                 onClick={() => setIsCartOpen(true)}
-                className="relative flex items-center bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-xl transition shadow-lg cursor-pointer"
+                className="relative flex items-center bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 sm:px-4 py-2 rounded-xl transition shadow-lg cursor-pointer whitespace-nowrap"
               >
                 <ShoppingCart className="w-5 h-5 mr-1.5" />
                 <span className="text-sm">Cart</span>
@@ -2264,9 +2229,14 @@ export default function App() {
               </p>
             </div>
             <button
-              onClick={() => {
+              onClick={async () => {
+                await supabase.rpc('admin_logout');
+                setAdminToken(null);
                 setIsAdminLoggedIn(false);
+                setAdminOrders([]);
+                setAdminUsers([]);
                 setCurrentView('store');
+                fetchReviews();
               }}
               className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center cursor-pointer"
             >
@@ -2742,11 +2712,15 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Password *</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {editingUserId ? 'New Password (leave empty to keep the current one)' : 'Password * (at least 6 characters)'}
+                    </label>
                     <input
-                      type="text"
-                      required
-                      placeholder="Enter New Password"
+                      type="password"
+                      autoComplete="new-password"
+                      required={!editingUserId}
+                      minLength={6}
+                      placeholder={editingUserId ? 'Leave empty to keep' : 'Enter New Password'}
                       value={newUserPassword}
                       onChange={(e) => setNewUserPassword(e.target.value)}
                       className="w-full px-3.5 py-2.5 border rounded-xl text-sm"

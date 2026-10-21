@@ -131,12 +131,12 @@ export function InvoicePage({ orderId }: { orderId: string }) {
 
   useEffect(() => {
     (async () => {
-      const { data: o } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-      if (!o) { setState('missing'); return; }
-      const { data: its } = await supabase.from('order_items').select('*').eq('order_id', orderId);
+      // get_invoice() returns only this one order and its items (orders are private otherwise)
+      const { data: inv } = await supabase.rpc('get_invoice', { p_order_id: orderId });
+      if (!inv || !inv.order) { setState('missing'); return; }
       const { data: acc } = await supabase.from('payment_accounts').select('*');
-      setOrder(o);
-      setItems(its || []);
+      setOrder(inv.order);
+      setItems(inv.items || []);
       setAccounts(acc || []);
       setSettings(await fetchStoreSettings(supabase));
       setState('ready');

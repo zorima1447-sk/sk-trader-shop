@@ -2,7 +2,7 @@
 //
 // Emails customers about a NEW PRODUCT or a custom DEAL / announcement.
 // Only customers who have an email address and agreed to receive offers are emailed.
-// Only a logged-in admin may call it (user id + password are checked against the profiles table).
+// Only a logged-in admin may call it (the login token is checked against the admin_sessions table).
 //
 // Secrets: RESEND_API_KEY  (free key from resend.com)
 // Set the sender address in Admin > Settings > Customer Messages (verify your domain in Resend to email real customers).
@@ -10,7 +10,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token',
 };
 
 const json = (body: unknown) =>
@@ -19,10 +19,12 @@ const json = (body: unknown) =>
 const esc = (v: unknown) =>
   String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-async function isAdmin(sb: any, username: string, password: string) {
-  if (!username || !password) return false;
-  const safe = String(username).replace(/[%_\\]/g, '\\$&');
-  const { data } = await sb.from('profiles').select('id').ilike('username', safe).eq('password', password).limit(1);
+// The website sends the admin's login token in the "x-admin-token" header (see src/supabaseClient.ts).
+async function isAdmin(sb: any, req: Request) {
+  const token = req.headers.get('x-admin-token') || '';
+  if (!token) return false;
+  const { data } = await sb.from('admin_sessions').select('profile_id')
+    .eq('token', token).gt('expires_at', new Date().toISOString()).limit(1);
   return !!(data && data.length);
 }
 
@@ -31,10 +33,10 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { type, product_id, subject, message, site_url, admin_username, admin_password } = body;
+    const { type, product_id, subject, message, site_url } = body;
 
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    if (!(await isAdmin(sb, admin_username, admin_password))) return json({ error: 'Admin login required.' });
+    if (!(await isAdmin(sb, req))) return json({ error: 'Admin login required.' });
 
     const key = Deno.env.get('RESEND_API_KEY');
     if (!key) return json({ error: 'RESEND_API_KEY secret is not set.' });

@@ -44,7 +44,7 @@ export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccou
           const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
           if (!blob) throw new Error('Could not process the image.');
           const path = `logo-${Date.now()}.png`;
-          const { error } = await supabase.storage.from('site-assets').upload(path, blob, { contentType: 'image/png', upsert: true });
+          const { error } = await supabase.storage.from('site-assets').upload(path, blob, { contentType: 'image/png', upsert: false });
           if (error) throw error;
           const { data } = supabase.storage.from('site-assets').getPublicUrl(path);
           set('logo_url', data.publicUrl);

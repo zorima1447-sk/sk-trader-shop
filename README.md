@@ -5,18 +5,20 @@ React + Vite + TypeScript + Tailwind + Supabase.
 ## 1. Supabase setup (once; running it again is safe)
 1. Supabase Dashboard > **SQL Editor** > New query.
 2. Paste the whole content of `supabase_setup.sql` and click **Run**.
-3. First admin login (only created when no admin exists): `zorima` / `123`.
-   Change the password from the **Admin Users** tab after logging in.
+3. First admin login (only created on a brand-new database with no admin): `zorima` / `zorima123`.
+   Change the password from the **Admin Users** tab after logging in (the site reminds you if the password is weak).
+   Existing admin users keep their passwords; running the file turns them into secure hashes.
 
 ## 2. Upload to GitHub
-The repository root must contain `package.json` and `index.html`. These files go inside the **src** folder:
-`App.tsx`, `GeoFields.tsx`, `Invoice.tsx`, `SettingsPanel.tsx`, `storeSettings.ts`, `main.tsx`, `index.css`, `supabaseClient.ts`.
+The repository root must contain `package.json` and `index.html`. Only the files below belong in the repository
+(do not keep old copies of `App.tsx`, `main.tsx` etc. in the root folder):
 
 ```
-package.json  index.html  vite.config.ts  tailwind.config.js  postcss.config.js  supabase_setup.sql
+.gitignore  .env.example  README.md  package.json  index.html  vite.config.ts  tailwind.config.js  postcss.config.js  supabase_setup.sql
 supabase/functions/notify-order/index.ts
 supabase/functions/notify-customers/index.ts
-src/ (8 files listed above)
+src/App.tsx  src/GeoFields.tsx  src/Invoice.tsx  src/SettingsPanel.tsx  src/storeSettings.ts  src/main.tsx  src/index.css  src/supabaseClient.ts
+src/components/ProductForm.jsx
 ```
 
 ## 3. Vercel environment variables
@@ -64,7 +66,14 @@ npm install
 npm run dev
 ```
 
-## Note
-RLS policies are open to everyone and admin passwords are stored as plain text in `profiles`.
-Settings, alert email / phone and customer data can be read with the anon key.
-Before a serious launch, use Supabase Auth and stricter policies.
+## Security (v7)
+- Admin passwords are stored only as bcrypt hashes and are checked inside the database (`admin_login`).
+  5 wrong passwords in a row lock that user for 15 minutes.
+- After login the website gets a random token (valid 12 hours) and sends it in the `x-admin-token` header.
+  The database (`is_admin()`) and the Edge Functions accept admin actions only with a valid token.
+- Visitors can only read the shop: products, categories, slides, store settings, active payment accounts and
+  reviews (name, stars and remark only). Orders, customers, payments, alert settings and admin users are private.
+- Orders are saved by `place_order()`: prices and totals come from the products table, not from the browser.
+- The invoice page uses `get_invoice(<order id>)`, which returns only that one order.
+- New-order alerts in the admin panel check every 20 seconds (Realtime is no longer used for orders).
+- Logo uploads: the website can add new `logo-*.png` files to the `site-assets` bucket but cannot replace or delete files.
