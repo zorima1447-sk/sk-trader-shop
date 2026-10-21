@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase, supabaseUrl, supabaseAnonKey } from './supabaseClient';
 import { Eye, EyeOff, Package, User, LogOut, FileText, Lock } from 'lucide-react';
 
 // Customer accounts (Supabase Auth): Login / Register / Forgot password / New password, and "My Account".
@@ -48,6 +48,18 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  // Which social logins are switched on in Supabase (Authentication > Providers). Only those buttons are shown.
+  const [providers, setProviders] = useState<{ google: boolean; facebook: boolean }>({ google: false, facebook: false });
+
+  useEffect(() => {
+    fetch(`${supabaseUrl}/auth/v1/settings`, { headers: { apikey: supabaseAnonKey } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(cfg => {
+        const ext = (cfg && cfg.external) || {};
+        setProviders({ google: !!ext.google, facebook: !!ext.facebook });
+      })
+      .catch(() => { /* keep both hidden */ });
+  }, []);
 
   useEffect(() => { setError(''); setInfo(''); }, [mode]);
 
@@ -172,17 +184,25 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
               <button disabled={busy} className="w-full bg-amber-600 hover:bg-amber-700 text-white py-3.5 rounded text-sm tracking-wide cursor-pointer disabled:opacity-60">
                 {busy ? 'PLEASE WAIT...' : 'LOGIN'}
               </button>
+              {(providers.google || providers.facebook) && (
+              <>
               <div className="flex items-center gap-3 text-sm text-slate-400">
                 <span className="flex-1 h-px bg-slate-200" /> Or, login with <span className="flex-1 h-px bg-slate-200" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className={`grid gap-3 ${providers.google && providers.facebook ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                {providers.facebook && (
                 <button type="button" onClick={() => social('facebook')} className="border border-slate-300 rounded py-3 text-sm text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-2 cursor-pointer">
                   <span className="w-5 h-5 rounded-full bg-[#1877F2] text-white text-xs font-bold flex items-center justify-center">f</span> Facebook
                 </button>
+                )}
+                {providers.google && (
                 <button type="button" onClick={() => social('google')} className="border border-slate-300 rounded py-3 text-sm text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-2 cursor-pointer">
                   <span className="w-5 h-5 rounded-full border text-xs font-bold flex items-center justify-center text-[#4285F4]">G</span> Google
                 </button>
+                )}
               </div>
+              </>
+              )}
             </form>
           )}
 
