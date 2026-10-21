@@ -67,6 +67,27 @@ npm install
 npm run dev
 ```
 
+## v11: AI assistant, GST, order numbers, delete, share
+- **Order numbers with the date**: SK-261022-1005 (prefix in Admin > Invoice). Old orders keep their numbers.
+- **Delete order**: Admin > Orders > "Delete order" (asks whether to put the items back in stock).
+- **Invoice PDF name**: Print / Save as PDF suggests "<order no> - <customer name>".
+- **GST (FBR)**: Admin > Invoice: NTN, STRN, GST rate, prices including / excluding GST. The database calculates the tax;
+  the invoice becomes a "Sales Tax Invoice" with value excl. tax, sales tax and total. (Real-time FBR POS reporting
+  needs FBR's POS integration and is not included.)
+- **Cash on Delivery only in Karachi** (Admin > Delivery Charges, on by default); other cities must pay online.
+  Checked in the database too.
+- **Share** button opens WhatsApp, Facebook, Messenger, X, Telegram, Pinterest, LinkedIn, Email or Copy link.
+- Cart: items and amounts always visible; logged-in customers get name, email, mobile and address filled in,
+  and the address of each order is saved back to their account.
+- **AI assistant** (Edge Function `ai-chat`, uses Claude by Anthropic):
+  - Customers: chat button on the shop (turn on in Admin > Customer Messages). Finds products, prices, sizes,
+    delivery charges and payment options, and tracks an order (order number + last 4 digits of the mobile).
+  - Admin: Admin > AI Assistant. Sales summary, orders, unpaid online payments, low stock, customers; on request it
+    changes an order status, marks an order paid, or changes stock / price. It cannot delete or change settings.
+  - Setup: create an API key at console.anthropic.com (paid per use), then Supabase > Edge Functions > Secrets:
+    `ANTHROPIC_API_KEY` (and optionally `AI_MODEL`, default `claude-haiku-5-5`). Deploy `ai-chat` with
+    "Verify JWT" ON.
+
 ## v10: Pakistan addresses and delivery charges
 - Register, checkout and My Profile use a Pakistan-only address: +92 mobile (required), Province -> City -> Area
   dropdowns (src/pakistan.ts; "Other area" lets the customer type it), street address and 5-digit postal code

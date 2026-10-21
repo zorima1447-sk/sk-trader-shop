@@ -36,6 +36,13 @@ export interface StoreSettings {
   delivery_other: number;      // delivery charge when a province has no own charge
   delivery_rates: Record<string, number>; // delivery charge per province, e.g. { "Punjab": 250 }
   free_delivery_over: number;  // order amount from which delivery is free (0 = never)
+  cod_karachi_only: boolean;   // Cash on Delivery only for Karachi; other cities must pay online
+  invoice_prefix: string;      // order numbers look like SK-261022-1005
+  gst_enabled: boolean;        // charge / show sales tax (GST) on invoices
+  gst_rate: number;            // e.g. 18
+  gst_inclusive: boolean;      // true = product prices already include GST
+  strn: string;                // Sales Tax Registration Number (FBR)
+  ai_chat_enabled: boolean;    // show the AI chat button to shoppers
   invoice_header_note: string;
   invoice_footer_note: string;
   invoice_tax_id: string;
@@ -81,6 +88,13 @@ export const defaultSettings: StoreSettings = {
   delivery_other: 250,
   delivery_rates: {},
   free_delivery_over: 0,
+  cod_karachi_only: true,
+  invoice_prefix: 'SK',
+  gst_enabled: false,
+  gst_rate: 18,
+  gst_inclusive: true,
+  strn: '',
+  ai_chat_enabled: false,
   invoice_header_note: '',
   invoice_footer_note: 'Thank you for your business!',
   invoice_tax_id: '',
@@ -111,6 +125,7 @@ export function mergeSettings(row: any): StoreSettings {
   out.delivery_karachi = Math.max(0, Number(out.delivery_karachi) || 0);
   out.delivery_other = Math.max(0, Number(out.delivery_other) || 0);
   out.free_delivery_over = Math.max(0, Number(out.free_delivery_over) || 0);
+  out.gst_rate = Math.max(0, Number(out.gst_rate) || 0);
   if (!out.delivery_rates || typeof out.delivery_rates !== 'object' || Array.isArray(out.delivery_rates)) out.delivery_rates = {};
   return out as StoreSettings;
 }
@@ -214,4 +229,12 @@ export function deliveryChargeFor(st: StoreSettings, province: string, city: str
   if (city.trim().toLowerCase() === 'karachi') return st.delivery_karachi;
   const r = st.delivery_rates ? st.delivery_rates[province] : undefined;
   return r !== undefined && r !== null && !isNaN(Number(r)) ? Number(r) : st.delivery_other;
+}
+
+// Sales tax (GST) on the goods amount. inclusive = prices already contain the tax.
+export function gstFor(st: StoreSettings, goods: number): { rate: number; amount: number; inclusive: boolean } {
+  if (!st.gst_enabled || !(st.gst_rate > 0)) return { rate: 0, amount: 0, inclusive: true };
+  const r = st.gst_rate;
+  const amount = st.gst_inclusive ? goods * r / (100 + r) : goods * r / 100;
+  return { rate: r, amount: Math.round(amount * 100) / 100, inclusive: st.gst_inclusive };
 }

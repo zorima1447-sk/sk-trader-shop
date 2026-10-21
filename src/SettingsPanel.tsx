@@ -248,6 +248,9 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             <input className={input + ' max-w-xs'} inputMode="numeric" value={String(f.free_delivery_over)} onChange={(e) => set('free_delivery_over', Number(e.target.value.replace(/[^0-9]/g, '')) || 0)} />
             <p className="text-[11px] text-slate-400 mt-1">0 = no free delivery offer</p>
           </div>
+          <div className="p-4 bg-slate-50 rounded-2xl border">
+            {check('cod_karachi_only', 'Cash on Delivery only for Karachi (other cities must pay online)')}
+          </div>
           <div className="bg-slate-50 border rounded-xl p-3 text-xs text-slate-600 space-y-1">
             <p><b>Example:</b> order of Rs. 3,000</p>
             {[['Sindh', 'Karachi'], ['Sindh', 'Hyderabad'], ['Punjab', 'Lahore'], ['Khyber Pakhtunkhwa', 'Peshawar']].map(([pv, ct]) => {
@@ -433,8 +436,42 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             </p>
             {check('invoice_show_logo', 'Show logo on invoice')}
             <div>
-              <label className={label}>Tax / NTN number (optional)</label>
-              <input className={input} value={f.invoice_tax_id} onChange={(e) => set('invoice_tax_id', e.target.value)} />
+              <label className={label}>Order number start (letters)</label>
+              <input className={input + ' max-w-[10rem]'} value={f.invoice_prefix} onChange={(e) => set('invoice_prefix', e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))} />
+              <p className="text-[11px] text-slate-400 mt-1">
+                New orders get a number with the date: <b>{(f.invoice_prefix || 'SK')}-{new Date().toISOString().slice(2, 10).replace(/-/g, '')}-1001</b> (year-month-day, then the running number)
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+              <p className="text-xs font-bold text-slate-800">Sales Tax (GST) - FBR</p>
+              {check('gst_enabled', 'Show GST on invoices (Sales Tax Invoice)')}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={label}>NTN</label>
+                  <input className={input} value={f.invoice_tax_id} onChange={(e) => set('invoice_tax_id', e.target.value)} placeholder="1234567-8" />
+                </div>
+                <div>
+                  <label className={label}>STRN (Sales Tax Reg. No.)</label>
+                  <input className={input} value={f.strn} onChange={(e) => set('strn', e.target.value)} placeholder="3277876123456" />
+                </div>
+                <div>
+                  <label className={label}>GST rate (%)</label>
+                  <input className={input} inputMode="decimal" value={String(f.gst_rate)} onChange={(e) => set('gst_rate', Number(e.target.value.replace(/[^0-9.]/g, '')) || 0)} />
+                </div>
+                <div>
+                  <label className={label}>Product prices are</label>
+                  <select className={input} value={f.gst_inclusive ? 'in' : 'ex'} onChange={(e) => set('gst_inclusive', e.target.value === 'in')}>
+                    <option value="in">Including GST</option>
+                    <option value="ex">Without GST (add GST at checkout)</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                "Including GST": the customer pays the same price; the invoice shows how much of it is tax.
+                "Without GST": the tax is added on top of the goods at checkout. Delivery is not taxed.
+                Standard GST in Pakistan is 18% - check the rate for your products with your tax adviser.
+              </p>
             </div>
             <div>
               <label className={label}>Note under the header (optional)</label>
@@ -472,6 +509,14 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
 
       {tab === 'messages' && (
         <div className="space-y-5 max-w-2xl">
+          <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 mb-4">
+            <p className="text-xs font-bold text-slate-800">AI chat assistant</p>
+            {check('ai_chat_enabled', 'Show the AI chat button to customers on the shop')}
+            <p className="text-[11px] text-slate-600">
+              Needs the Edge Function <b>ai-chat</b> and the secret <b>ANTHROPIC_API_KEY</b> in Supabase (see README).
+              The admin assistant is in the admin menu: <b>AI Assistant</b>.
+            </p>
+          </div>
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
             <p className="text-sm font-black text-slate-900">Invoice to the customer</p>
             {check('email_invoice_enabled', 'Email the invoice to the customer when an order is confirmed')}

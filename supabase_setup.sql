@@ -105,7 +105,10 @@ alter table public.orders
   add column if not exists province text,
   add column if not exists city text,
   add column if not exists area text,
-  add column if not exists zip text;
+  add column if not exists zip text,
+  add column if not exists gst_rate numeric,
+  add column if not exists gst_amount numeric default 0,
+  add column if not exists gst_inclusive boolean;
 create index if not exists orders_city_idx on public.orders(city);
 create index if not exists orders_customer_user_id_idx on public.orders(customer_user_id);
 
@@ -271,7 +274,15 @@ alter table public.store_settings
   add column if not exists delivery_karachi numeric,
   add column if not exists delivery_other numeric,
   add column if not exists free_delivery_over numeric,
-  add column if not exists delivery_rates jsonb;    -- {"Punjab": 250, "Sindh": 200, ...}
+  add column if not exists delivery_rates jsonb,    -- {"Punjab": 250, "Sindh": 200, ...}
+  add column if not exists cod_karachi_only boolean,
+  add column if not exists invoice_prefix text,
+  add column if not exists gst_enabled boolean,
+  add column if not exists gst_rate numeric,
+  add column if not exists gst_inclusive boolean,
+  add column if not exists ntn text,
+  add column if not exists strn text,
+  add column if not exists ai_chat_enabled boolean;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
@@ -532,6 +543,9 @@ declare
   o_prov text;
   o_city text;
   dc numeric := 0;
+  g_rate numeric := null;
+  g_amt numeric := 0;
+  g_incl boolean := true;
 begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
@@ -618,19 +632,32 @@ begin
     dc := coalesce(st.delivery_other, 250);
   end if;
 
+  -- Sales tax (GST) on the goods, as set in Admin > Invoice & Tax
+  if coalesce(st.gst_enabled, false) and coalesce(st.gst_rate, 0) > 0 then
+    g_rate := st.gst_rate;
+    g_incl := coalesce(st.gst_inclusive, true);
+    g_amt := case when g_incl then round(total * g_rate / (100 + g_rate), 2)
+                  else round(total * g_rate / 100, 2) end;
+  end if;
+
   online := coalesce(nullif(p_order ->> 'payment_method', ''), 'cod') <> 'cod';
+  if not online and coalesce(st.cod_karachi_only, true) and lower(o_city) <> 'karachi' then
+    raise exception 'Cash on Delivery is only for Karachi. Please choose Online Payment.';
+  end if;
   proof := case when online and left(coalesce(p_order ->> 'payment_proof', ''), 11) = 'data:image/'
                      and length(p_order ->> 'payment_proof') < 3000000
                 then p_order ->> 'payment_proof' end;
 
-  insert into public.orders (customer_id, customer_name, customer_phone, customer_email, shipping_address,
+  insert into public.orders (invoice_no, customer_id, customer_name, customer_phone, customer_email, shipping_address,
                              total_amount, payment_method, payment_status, paid_amount, transaction_id, status,
                              payment_account_id, payment_account_label, payer_name, payer_account, payer_amount,
                              payer_paid_at, has_payment_proof, customer_user_id,
-                             subtotal, delivery_charge, province, city, area, zip)
-  values (cust_id, trim(p_order ->> 'customer_name'), p_order ->> 'customer_phone',
+                             subtotal, delivery_charge, province, city, area, zip, gst_rate, gst_amount, gst_inclusive)
+  values (upper(coalesce(nullif(trim(st.invoice_prefix), ''), 'SK')) || '-' || to_char(now() at time zone 'Asia/Karachi', 'YYMMDD')
+            || '-' || nextval('public.invoice_seq'),
+          cust_id, trim(p_order ->> 'customer_name'), p_order ->> 'customer_phone',
           nullif(trim(coalesce(p_order ->> 'customer_email', '')), ''), p_order ->> 'shipping_address',
-          total + dc, left(coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 40), 'Unpaid', 0,
+          total + dc + case when g_incl then 0 else g_amt end, left(coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 40), 'Unpaid', 0,
           case when online then left(nullif(trim(coalesce(p_order ->> 'transaction_id', '')), ''), 80) end,
           'Pending',
           case when online then left(p_order ->> 'payment_account_id', 80) end,
@@ -643,7 +670,8 @@ begin
                then (p_order ->> 'payer_paid_at')::timestamptz end,
           proof is not null, auth.uid(),
           total, dc, o_prov, o_city, left(nullif(trim(coalesce(p_order ->> 'area', '')), ''), 120),
-          left(nullif(trim(coalesce(p_order ->> 'zip', '')), ''), 10))
+          left(nullif(trim(coalesce(p_order ->> 'zip', '')), ''), 10),
+          g_rate, g_amt, g_incl)
   returning * into o;
 
   if proof is not null then
@@ -712,6 +740,41 @@ begin
   return query select * from public.reviews order by created_at desc;
 end $$;
 
+
+-- Admin: delete an order (optionally putting its items back in stock)
+create or replace function public.admin_delete_order(p_id uuid, p_restock boolean)
+returns void
+language plpgsql security definer
+set search_path = public
+as $$
+declare it record;
+begin
+  if not public.is_admin() then raise exception 'Admin login required.'; end if;
+  if p_restock then
+    for it in select product_id, variant, quantity from public.order_items where order_id = p_id and product_id is not null loop
+      if coalesce(it.variant, '') <> '' then
+        update public.products set
+          variants = (select jsonb_agg(case when x.e ->> 'name' = it.variant
+                                            then jsonb_set(x.e, '{stock}', to_jsonb(coalesce((x.e ->> 'stock')::numeric, 0)::int + it.quantity))
+                                            else x.e end order by x.ord)
+                      from jsonb_array_elements(coalesce(variants, '[]'::jsonb)) with ordinality as x(e, ord)),
+          stock_quantity = coalesce(stock_quantity, 0) + it.quantity,
+          sold_quantity = greatest(coalesce(sold_quantity, 0) - it.quantity, 0)
+        where id = it.product_id;
+      else
+        update public.products set
+          stock_quantity = coalesce(stock_quantity, 0) + it.quantity,
+          sold_quantity = greatest(coalesce(sold_quantity, 0) - it.quantity, 0)
+        where id = it.product_id;
+      end if;
+    end loop;
+  end if;
+  delete from public.payment_proofs where order_id = p_id;
+  delete from public.payments where order_id = p_id;
+  update public.reviews set order_id = null where order_id = p_id;
+  delete from public.order_items where order_id = p_id;
+  delete from public.orders where id = p_id;
+end $$;
 
 -- ---------- 15b. CUSTOMER ACCOUNTS (Supabase Auth) ----------
 -- Customers sign up with email + password (Supabase Auth). Name and phone are kept in the

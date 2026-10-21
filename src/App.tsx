@@ -3,8 +3,9 @@ import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
-import { InvoiceDocument, InvoiceItem } from './Invoice';
-import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor } from './storeSettings';
+import AiChatBubble, { ChatPanel } from './AiChat';
+import { InvoiceDocument, InvoiceItem, printInvoice } from './Invoice';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
 import PkAddressFields from './PkAddressFields';
 import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
 import { ShopIcon } from './icons';
@@ -160,7 +161,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v10 (22-Oct-2026)';
+const BUILD = 'v11 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -298,6 +299,7 @@ export default function App() {
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [shareItem, setShareItem] = useState<{ title: string; url: string } | null>(null);
   const [qvVariant, setQvVariant] = useState<string>('');
   // Admin: city filter + sort for Orders and Customers
   const [orderCity, setOrderCity] = useState('All');
@@ -378,7 +380,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('dashboard');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -488,8 +490,35 @@ export default function App() {
     const m = authUser.user_metadata || {};
     if (m.name) setCustomerName(prev => prev || m.name);
     if (authUser.email) setCustomerEmail(prev => prev || authUser.email);
-    setShipAddr(prev => (prev.city || prev.mobile ? prev : addressFromMeta(m)));
-  }, [authUser]);
+    const saved = addressFromMeta(m);
+    setShipAddr(prev => {
+      // keep what the customer already typed; fill only the empty parts
+      if (prev.province && saved.province && prev.province !== saved.province) return { ...prev, mobile: prev.mobile || saved.mobile };
+      return {
+        mobile: prev.mobile || saved.mobile,
+        province: prev.province || saved.province,
+        city: prev.city || saved.city,
+        area: prev.area || saved.area,
+        address: prev.address || saved.address,
+        zip: prev.zip || saved.zip
+      };
+    });
+  }, [authUser, isCartOpen]);
+
+  // Cash on Delivery only inside Karachi (Settings > Delivery Charges)
+  const codAllowed = !settings.cod_karachi_only || !shipAddr.city || shipAddr.city.trim().toLowerCase() === 'karachi';
+  useEffect(() => {
+    if (!codAllowed && paymentMethod === 'cod') {
+      const acc = paymentAccounts.find(a => a.is_active !== false);
+      if (acc) {
+        setPaymentMethod('online');
+        if (!payAccountId) setPayAccountId(acc.id);
+        const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+        if (!payerPaidAt) setPayerPaidAt(d.toISOString().slice(0, 16));
+        if (!payerAmount) setPayerAmount(String(totalAmount));
+      }
+    }
+  }, [codAllowed]);
 
   // Back / forward buttons open or close the product page
   useEffect(() => {
@@ -1068,6 +1097,18 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAdminLoggedIn]);
 
+  const handleDeleteOrder = async (o: Order) => {
+    if (!window.confirm(`Delete order ${o.invoice_no || ''} of ${o.customer_name}?\n\nThis cannot be undone.`)) return;
+    const restock = o.status !== 'Delivered' &&
+      window.confirm('Put the items of this order back in stock?\n\nOK = yes, add them back\nCancel = no, keep the stock as it is');
+    const { error } = await supabase.rpc('admin_delete_order', { p_id: o.id, p_restock: restock });
+    if (reportError('delete order', error)) return;
+    setAdminOrders(prev => prev.filter(x => x.id !== o.id));
+    if (restock) fetchProducts();
+    setToastMessage(`Order ${o.invoice_no || ''} deleted`);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
   const showPaymentProof = async (orderId: string) => {
     const { data, error } = await supabase.from('payment_proofs').select('image').eq('order_id', orderId).maybeSingle();
     if (reportError('payment screenshot', error)) return;
@@ -1388,7 +1429,8 @@ export default function App() {
 
   const subtotalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
   const deliveryCharge = cart.length ? deliveryChargeFor(settings, shipAddr.province, shipAddr.city, subtotalAmount) : 0;
-  const totalAmount = subtotalAmount + deliveryCharge;
+  const gst = gstFor(settings, subtotalAmount);
+  const totalAmount = Math.round((subtotalAmount + deliveryCharge + (gst.inclusive ? 0 : gst.amount)) * 100) / 100;
 
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1401,6 +1443,10 @@ export default function App() {
       return;
     }
 
+    if (paymentMethod === 'cod' && !codAllowed) {
+      alert(`Cash on Delivery is only for Karachi. For ${shipAddr.city}, please choose Online Payment.`);
+      return;
+    }
     const payAccount = paymentAccounts.find(a => a.id === payAccountId);
     if (paymentMethod !== 'cod') {
       if (!payAccount) { alert('Please choose the account you paid to.'); return; }
@@ -1496,6 +1542,15 @@ export default function App() {
       setConfirmedInvoice(order.invoice_no || String(order.id).slice(0, 8).toUpperCase());
       setOrderSuccess(true);
       setTransactionId(''); setPayerName(''); setPayerAccount(''); setPayerAmount(''); setPayerPaidAt(''); setPaymentProof('');
+      // Logged-in customer: remember this address in his account for next time
+      if (authUser) {
+        supabase.auth.updateUser({
+          data: {
+            name: customerName.trim(), phone: '92' + shipAddr.mobile, province: shipAddr.province, city: shipAddr.city,
+            area: shipAddr.area.trim(), address: shipAddr.address.trim(), zip: shipAddr.zip.trim()
+          }
+        }).then(() => { /* ignore */ });
+      }
       setCart([]);
     } finally {
       setIsSubmitting(false);
@@ -1592,7 +1647,10 @@ export default function App() {
 
   // Admin side menu (grouped like a seller centre)
   const ADMIN_MENU: { title: string; items: { id: string; label: string; icon: any; open?: () => void; badge?: () => number }[] }[] = [
-    { title: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, open: () => fetchOrders() }] },
+    { title: 'Overview', items: [
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, open: () => fetchOrders() },
+      { id: 'ai', label: 'AI Assistant', icon: MessageCircle }
+    ] },
     { title: 'Orders', items: [
       { id: 'orders', label: 'Orders', icon: FileText, open: () => { setNewOrderCount(0); fetchOrders(); }, badge: () => newOrderCount },
       { id: 'payments', label: 'Payments', icon: Wallet, open: () => fetchOrders() },
@@ -2227,7 +2285,7 @@ export default function App() {
                     </button>
                     <span className="text-sm font-semibold text-slate-700 truncate flex-1">{p.category_name || 'Product details'}</span>
                     <button
-                      onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/?product=${p.id}`); setToastMessage('Product link copied!'); setTimeout(() => setToastMessage(null), 2000); }}
+                      onClick={() => setShareItem({ title: `${p.name} - ${money(p.discounted_price || p.price)}`, url: `${window.location.origin}/?product=${p.id}` })}
                       className="text-xs font-semibold text-slate-600 px-2 py-1.5 rounded hover:bg-slate-100 cursor-pointer"
                     >
                       Share
@@ -2404,6 +2462,62 @@ export default function App() {
         </div>
       )}
 
+      {/* AI chat button for shoppers (Settings > Customer Messages) */}
+      {settings.ai_chat_enabled && currentView === 'store' && !isCartOpen && (
+        <AiChatBubble storeName={settings.store_name} raised={!!quickView} />
+      )}
+
+      {/* Share window */}
+      {shareItem && (() => {
+        const u = encodeURIComponent(shareItem.url);
+        const t = encodeURIComponent(`${shareItem.title} | ${settings.store_name}`);
+        const options: { name: string; color: string; letter: string; href: string }[] = [
+          { name: 'WhatsApp', color: '#25D366', letter: 'W', href: `https://wa.me/?text=${t}%20${u}` },
+          { name: 'Facebook', color: '#1877F2', letter: 'f', href: `https://www.facebook.com/sharer/sharer.php?u=${u}` },
+          { name: 'Messenger', color: '#0084FF', letter: 'M', href: `fb-messenger://share/?link=${u}` },
+          { name: 'X (Twitter)', color: '#0f172a', letter: 'X', href: `https://twitter.com/intent/tweet?url=${u}&text=${t}` },
+          { name: 'Telegram', color: '#229ED9', letter: 'T', href: `https://t.me/share/url?url=${u}&text=${t}` },
+          { name: 'Pinterest', color: '#E60023', letter: 'P', href: `https://pinterest.com/pin/create/button/?url=${u}&description=${t}` },
+          { name: 'LinkedIn', color: '#0A66C2', letter: 'in', href: `https://www.linkedin.com/sharing/share-offsite/?url=${u}` },
+          { name: 'Email', color: '#64748b', letter: '@', href: `mailto:?subject=${t}&body=${t}%0A${u}` }
+        ];
+        return (
+          <div className="fixed inset-0 z-[90] bg-black/60 flex items-end sm:items-center justify-center" onClick={() => setShareItem(null)}>
+            <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-base font-bold text-slate-900">Share</h3>
+                <button onClick={() => setShareItem(null)} className="p-1 rounded-full hover:bg-slate-100 cursor-pointer" aria-label="Close"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="grid grid-cols-4 gap-3">
+                {options.map(op => (
+                  <a key={op.name} href={op.href} target="_blank" rel="noreferrer" onClick={() => setShareItem(null)} className="flex flex-col items-center gap-1.5 text-[11px] text-slate-700">
+                    <span className="w-12 h-12 rounded-full flex items-center justify-center text-white font-black text-lg" style={{ background: op.color }}>{op.letter}</span>
+                    {op.name}
+                  </a>
+                ))}
+              </div>
+              <div className="flex mt-5">
+                <input readOnly value={shareItem.url} className="flex-1 min-w-0 px-3 py-2 border rounded-l-lg text-xs bg-slate-50" onFocus={(e) => e.target.select()} />
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(shareItem.url); setToastMessage('Link copied!'); setTimeout(() => setToastMessage(null), 2000); }}
+                  className="bg-amber-600 text-white text-xs font-bold px-4 rounded-r-lg cursor-pointer"
+                >
+                  Copy
+                </button>
+              </div>
+              {typeof navigator !== 'undefined' && (navigator as any).share && (
+                <button
+                  onClick={() => { (navigator as any).share({ title: shareItem.title, url: shareItem.url }).catch(() => {}); setShareItem(null); }}
+                  className="w-full mt-3 border border-slate-300 text-slate-700 text-sm font-semibold py-2.5 rounded-lg cursor-pointer"
+                >
+                  More apps...
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {proofView && (
         <div className="fixed inset-0 z-[80] bg-black/70 flex items-center justify-center p-4" onClick={() => setProofView(null)}>
           <img src={proofView} alt="Payment screenshot" className="max-h-[90vh] max-w-full rounded-lg shadow-2xl bg-white" />
@@ -2415,7 +2529,7 @@ export default function App() {
         <div className="fixed inset-0 z-[70] bg-black/60 overflow-y-auto p-4" onClick={() => setInvoiceView(null)}>
           <div className="max-w-3xl mx-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex flex-wrap justify-end gap-2 mb-2 no-print">
-              <button onClick={() => window.print()} className="bg-slate-900 text-amber-400 font-bold text-xs px-4 py-2 rounded-xl flex items-center cursor-pointer">
+              <button onClick={() => invoiceView && printInvoice(invoiceView.order)} className="bg-slate-900 text-amber-400 font-bold text-xs px-4 py-2 rounded-xl flex items-center cursor-pointer">
                 <Printer className="w-4 h-4 mr-1.5" /> Print / Save as PDF
               </button>
               {isAdminLoggedIn && currentView === 'admin' && (
@@ -2633,7 +2747,7 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div className="flex-1 overflow-y-auto py-4 space-y-3">
+                <div className="shrink-0 py-4 space-y-3">
                   {cart.map((item) => (
                     <div key={item.cartKey} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
                       <div>
@@ -2683,6 +2797,12 @@ export default function App() {
                       <span>Delivery {shipAddr.city ? `(${shipAddr.city})` : ''}</span>
                       <span>{!shipAddr.city ? 'Select your city below' : deliveryCharge > 0 ? money(deliveryCharge) : 'FREE'}</span>
                     </div>
+                    {gst.amount > 0 && (
+                      <div className="flex justify-between text-slate-600">
+                        <span>GST {gst.rate}%{gst.inclusive ? ' (included in prices)' : ''}</span>
+                        <span>{money(gst.amount)}</span>
+                      </div>
+                    )}
                     {settings.free_delivery_over > 0 && deliveryCharge > 0 && (
                       <p className="text-[11px] text-emerald-700">Add {money(settings.free_delivery_over - subtotalAmount)} more for FREE delivery.</p>
                     )}
@@ -2759,11 +2879,12 @@ export default function App() {
                         <div className="grid grid-cols-2 gap-2">
                           <button
                             type="button"
+                            disabled={!codAllowed}
                             onClick={() => setPaymentMethod('cod')}
-                            className={`p-3 rounded-xl border-2 text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${paymentMethod === 'cod' ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
+                            className={`p-3 rounded-xl border-2 text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${paymentMethod === 'cod' && codAllowed ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
                           >
                             <Wallet className="w-5 h-5" /> Cash on Delivery
-                            <span className="text-[10px] font-medium text-slate-500">Pay when you receive</span>
+                            <span className="text-[10px] font-medium text-slate-500">{codAllowed ? (settings.cod_karachi_only ? 'Karachi only' : 'Pay when you receive') : 'Only for Karachi'}</span>
                           </button>
                           <button
                             type="button"
@@ -2945,6 +3066,7 @@ export default function App() {
           setMode={setAuthMode}
           notice={pendingCart ? `Please login or register to add "${pendingCart.product.name}${pendingCart.variant ? ` (${pendingCart.variant.name})` : ''}" to your cart.` : ''}
           onDone={() => { if (!pendingCart) setCurrentView('store'); }}
+          onBack={() => { setPendingCart(null); setCurrentView('store'); }}
         />
       )}
 
@@ -3019,6 +3141,16 @@ export default function App() {
                 <button onClick={() => setAdminMenuOpen(true)} className="md:hidden bg-slate-900 text-white px-3 py-2 rounded-lg text-xs font-bold cursor-pointer">☰ Menu</button>
                 <h2 className="text-lg sm:text-xl font-bold text-slate-900">{activeItem ? activeItem.label : 'Admin'}</h2>
               </div>
+
+              {adminTab === 'ai' && (
+                <div className="max-w-3xl">
+                  <ChatPanel mode="admin" storeName={settings.store_name} tall />
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    The assistant can read orders, sales, customers and stock, and on your request change an order status, mark an order paid,
+                    or change stock / price. It cannot delete anything or change settings.
+                  </p>
+                </div>
+              )}
 
               {adminTab === 'dashboard' && (() => {
                 const now = new Date();
@@ -3450,6 +3582,12 @@ export default function App() {
                             className="mt-1 flex items-center text-[10px] font-bold text-slate-700 hover:underline cursor-pointer"
                           >
                             <Printer className="w-3 h-3 mr-1" /> Invoice
+                          </button>
+                          <button
+                            onClick={() => handleDeleteOrder(order)}
+                            className="mt-1 flex items-center text-[10px] font-bold text-red-600 hover:underline cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3 mr-1" /> Delete order
                           </button>
                         </td>
                         <td className="p-3.5 text-slate-600">

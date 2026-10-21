@@ -50,7 +50,7 @@ function PasswordInput({ value, onChange, placeholder, autoComplete }: { value: 
   );
 }
 
-export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { storeName: string; mode: AuthMode; setMode: (m: AuthMode) => void; onDone: () => void; notice?: string }) {
+export function AuthPage({ storeName, mode, setMode, onDone, notice = '', onBack }: { storeName: string; mode: AuthMode; setMode: (m: AuthMode) => void; onDone: () => void; notice?: string; onBack?: () => void }) {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
@@ -163,6 +163,11 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
 
   return (
     <div className="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-10">
+      {onBack && (
+        <button onClick={onBack} className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-amber-700 hover:underline cursor-pointer">
+          ← Back to Shop
+        </button>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-1 mb-4">
         <h1 className="text-xl sm:text-2xl text-slate-800">{title}</h1>
         {mode === 'login' && (
@@ -336,6 +341,9 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
 
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-4 py-6">
+      <button onClick={onShop} className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-amber-700 hover:underline cursor-pointer">
+        ← Back to Shop
+      </button>
       <div className="grid md:grid-cols-[14rem_1fr] gap-4">
         <aside className="bg-white shadow-sm rounded p-3 h-fit">
           <p className="text-xs text-slate-500 px-3">Hello,</p>
@@ -344,6 +352,9 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
             {nav('orders', 'My Orders', Package)}
             {nav('profile', 'My Profile', User)}
             {nav('password', 'Change Password', Lock)}
+            <button onClick={onShop} className="flex items-center gap-2 px-3 py-2 rounded text-sm text-slate-600 hover:bg-slate-50 whitespace-nowrap cursor-pointer">
+              <Package className="w-4 h-4" /> Continue Shopping
+            </button>
             <button onClick={onLogout} className="flex items-center gap-2 px-3 py-2 rounded text-sm text-red-600 hover:bg-red-50 whitespace-nowrap cursor-pointer">
               <LogOut className="w-4 h-4" /> Logout
             </button>
