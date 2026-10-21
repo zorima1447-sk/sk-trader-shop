@@ -1,6 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabaseClient';
 import { Eye, EyeOff, Package, User, LogOut, FileText, Lock } from 'lucide-react';
+import PkAddressFields from './PkAddressFields';
+import { PkAddress, emptyPkAddress, checkPkAddress, mobileDigits } from './pakistan';
+
+// The saved address of a customer (user_metadata) as a form value
+export const addressFromMeta = (m: any): PkAddress => ({
+  province: m.province || '',
+  city: m.city || '',
+  area: m.area || '',
+  address: m.address || '',
+  zip: m.zip || '',
+  mobile: mobileDigits(m.phone || '')
+});
 
 // Customer accounts (Supabase Auth): Login / Register / Forgot password / New password, and "My Account".
 // Name and phone are kept in the account's user_metadata.
@@ -43,7 +55,7 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [addr, setAddr] = useState<PkAddress>(emptyPkAddress());
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -90,9 +102,10 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
     e.preventDefault();
     run(async () => {
       if (!name.trim()) throw new Error('Please enter your full name.');
-      const pd = phoneDigits(phone);
-      if (pd.length < 11 || pd.length > 13) throw new Error('Please enter a valid mobile number, e.g. 0300 1234567.');
       if (!/^\S+@\S+\.\S+$/.test(email.trim())) throw new Error('Please enter a valid email address.');
+      const bad = checkPkAddress(addr);
+      if (bad) throw new Error(bad);
+      const pd = '92' + mobileDigits(addr.mobile);
       if (password.length < 6) throw new Error('Password must be at least 6 characters.');
       if (password !== password2) throw new Error('The two passwords are not the same.');
       const { data: taken } = await supabase.rpc('phone_registered', { p_phone: pd });
@@ -100,7 +113,10 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
       const { data, error: err } = await supabase.auth.signUp({
         email: email.trim(),
         password,
-        options: { data: { name: name.trim(), phone: pd }, emailRedirectTo: window.location.origin }
+        options: {
+          data: { name: name.trim(), phone: pd, province: addr.province, city: addr.city, area: addr.area.trim(), address: addr.address.trim(), zip: addr.zip.trim() },
+          emailRedirectTo: window.location.origin
+        }
       });
       if (err) throw new Error(/registered|exists/i.test(err.message) ? 'This email is already registered. Please log in.' : err.message);
       if (data.session) { onDone(); return; }
@@ -213,12 +229,12 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '' }: { st
                 <input value={name} onChange={(e) => setName(e.target.value)} placeholder="First and last name" autoComplete="name" className={box} />
               </div>
               <div>
-                <label className={lbl}>Phone Number*</label>
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 0300 1234567" inputMode="tel" autoComplete="tel" className={box} />
-              </div>
-              <div>
                 <label className={lbl}>Email*</label>
                 <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@email.com" type="email" autoComplete="email" className={box} />
+              </div>
+              <div className="border-t pt-4">
+                <p className="text-sm font-semibold text-slate-800 mb-3">Delivery address (Pakistan)</p>
+                <PkAddressFields value={addr} onChange={setAddr} />
               </div>
               <div>
                 <label className={lbl}>Password* (at least 6 characters)</label>
@@ -276,9 +292,7 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
   const [tab, setTab] = useState<'orders' | 'profile' | 'password'>('orders');
   const [orders, setOrders] = useState<any[] | null>(null);
   const [name, setName] = useState(meta.name || '');
-  const [phone, setPhone] = useState(meta.phone || '');
-  const [address, setAddress] = useState(meta.address || '');
-  const [city, setCity] = useState(meta.city || '');
+  const [addr, setAddr] = useState<PkAddress>(addressFromMeta(meta));
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [msg, setMsg] = useState('');
@@ -289,7 +303,12 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
 
   const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.auth.updateUser({ data: { name: name.trim(), phone: phoneDigits(phone), address: address.trim(), city: city.trim() } });
+    if (!name.trim()) { setMsg('Please enter your name.'); return; }
+    const bad = checkPkAddress(addr);
+    if (bad) { setMsg(bad); return; }
+    const { error } = await supabase.auth.updateUser({
+      data: { name: name.trim(), phone: '92' + mobileDigits(addr.mobile), province: addr.province, city: addr.city, area: addr.area.trim(), address: addr.address.trim(), zip: addr.zip.trim() }
+    });
     setMsg(error ? 'Could not save: ' + error.message : 'Profile saved.');
   };
 
@@ -377,13 +396,11 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
           )}
 
           {tab === 'profile' && (
-            <form onSubmit={saveProfile} className="max-w-lg space-y-4">
+            <form onSubmit={saveProfile} className="max-w-2xl space-y-4">
               <h2 className="text-lg font-semibold text-slate-900">My Profile</h2>
               <div><label className={lbl}>Full Name</label><input value={name} onChange={(e) => setName(e.target.value)} className={box} /></div>
               <div><label className={lbl}>Email</label><input value={user.email || ''} disabled className={box + ' bg-slate-50 text-slate-500'} /></div>
-              <div><label className={lbl}>Mobile Number</label><input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" className={box} /></div>
-              <div><label className={lbl}>Delivery Address</label><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="House / shop, street, area" className={box} /></div>
-              <div><label className={lbl}>City</label><input value={city} onChange={(e) => setCity(e.target.value)} className={box} /></div>
+              <PkAddressFields value={addr} onChange={setAddr} />
               <button className="bg-amber-600 hover:bg-amber-700 text-white text-sm px-6 py-3 rounded cursor-pointer">SAVE</button>
               <p className="text-[11px] text-slate-500">Your name, mobile and address are filled in automatically at checkout.</p>
             </form>

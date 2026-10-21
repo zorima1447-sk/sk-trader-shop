@@ -67,6 +67,16 @@ npm install
 npm run dev
 ```
 
+## v10: Pakistan addresses and delivery charges
+- Register, checkout and My Profile use a Pakistan-only address: +92 mobile (required), Province -> City -> Area
+  dropdowns (src/pakistan.ts; "Other area" lets the customer type it), street address and 5-digit postal code
+  (filled in from the city, can be changed). Email is required.
+- Admin > Delivery Charges: Karachi city charge (0 = free), a charge for each province (Sindh = the rest of Sindh),
+  a default charge, and "free delivery from Rs. X". The database calculates the charge in place_order, so the
+  total cannot be changed from the browser. Cart, invoice, emails and owner alert show subtotal + delivery.
+- Admin > Orders and Customers: city buttons (with counts) to filter, and sort by date / city / amount / name.
+- Run `supabase_setup.sql` again after updating (new columns).
+
 ## v9: customer accounts, online payment, sizes, admin menu
 - **Customer accounts** (Supabase Auth): Login with phone number or email + password, Register, Forgot password,
   Google / Facebook buttons, "My Account" (My Orders with invoice links, profile, change password).

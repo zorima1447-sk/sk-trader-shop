@@ -94,7 +94,7 @@ function invoiceHtml(order: any, items: any[], store: any, accounts: any[], link
     <table width="100%" style="border-collapse:collapse;margin-top:16px"><thead><tr style="background:#111;color:#fff">
       <th style="padding:6px;text-align:left">#</th><th style="padding:6px;text-align:left">Item</th><th style="padding:6px;text-align:right">Qty</th>
       <th style="padding:6px;text-align:right">Unit</th><th style="padding:6px;text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>
-    <p style="text-align:right;margin:10px 0 0">Total: <b>PKR ${total}</b><br>Paid: PKR ${paid}<br><b>Balance due: PKR ${Math.max(total - paid, 0)}</b></p>
+    <p style="text-align:right;margin:10px 0 0">${Number(order.delivery_charge || 0) > 0 ? `Subtotal: PKR ${Number(order.subtotal ?? total - Number(order.delivery_charge))}<br>Delivery${order.city ? ' (' + esc(order.city) + ')' : ''}: PKR ${Number(order.delivery_charge)}<br>` : ''}Total: <b>PKR ${total}</b><br>Paid: PKR ${paid}<br><b>Balance due: PKR ${Math.max(total - paid, 0)}</b></p>
     <p>Payment method: ${esc(String(order.payment_method || '').toUpperCase())}</p>
     ${accHtml}
     <p style="margin-top:16px"><a href="${esc(link)}">View / print this invoice online</a></p>
@@ -164,6 +164,7 @@ Deno.serve(async (req) => {
         (order.payment_account_label ? `Paid to: ${order.payment_account_label}\n` : '') +
         (order.has_payment_proof ? `Screenshot: yes (see Admin > Orders)\n` : '') +
         `Items:\n${lines}\n` +
+        (Number(order.delivery_charge || 0) > 0 ? `Delivery: PKR ${order.delivery_charge}\n` : '') +
         `Total: PKR ${order.total_amount}`;
       out.owner = await ownerAlert(`New Order ${order.invoice_no || ''} - PKR ${order.total_amount}`, text);
       await sb.from('orders').update({ notified: true }).eq('id', order_id);

@@ -32,6 +32,10 @@ export interface StoreSettings {
   show_marquee: boolean;
   marquee_items: MarqueeItem[];
   marquee_speed: number;
+  delivery_karachi: number;    // delivery charge inside Karachi (0 = free)
+  delivery_other: number;      // delivery charge when a province has no own charge
+  delivery_rates: Record<string, number>; // delivery charge per province, e.g. { "Punjab": 250 }
+  free_delivery_over: number;  // order amount from which delivery is free (0 = never)
   invoice_header_note: string;
   invoice_footer_note: string;
   invoice_tax_id: string;
@@ -73,6 +77,10 @@ export const defaultSettings: StoreSettings = {
     { icon: 'wallet', text: 'Cash on Delivery' }
   ],
   marquee_speed: 30,
+  delivery_karachi: 0,
+  delivery_other: 250,
+  delivery_rates: {},
+  free_delivery_over: 0,
   invoice_header_note: '',
   invoice_footer_note: 'Thank you for your business!',
   invoice_tax_id: '',
@@ -100,6 +108,10 @@ export function mergeSettings(row: any): StoreSettings {
   if (!['color', 'dark', 'light'].includes(out.header_style)) out.header_style = 'color';
   if (!['gray', 'white', 'warm'].includes(out.page_bg)) out.page_bg = 'gray';
   out.marquee_speed = Number(out.marquee_speed) > 0 ? Number(out.marquee_speed) : 30;
+  out.delivery_karachi = Math.max(0, Number(out.delivery_karachi) || 0);
+  out.delivery_other = Math.max(0, Number(out.delivery_other) || 0);
+  out.free_delivery_over = Math.max(0, Number(out.free_delivery_over) || 0);
+  if (!out.delivery_rates || typeof out.delivery_rates !== 'object' || Array.isArray(out.delivery_rates)) out.delivery_rates = {};
   return out as StoreSettings;
 }
 
@@ -192,4 +204,14 @@ export function writeShopCache(data: any) {
       localStorage.setItem(CACHE_KEY, JSON.stringify(slim));
     } catch { /* ignore */ }
   }
+}
+
+// Delivery charge for an order (the database calculates the same in place_order)
+// Karachi city has its own charge; every other city uses its province's charge (or the default one).
+export function deliveryChargeFor(st: StoreSettings, province: string, city: string, subtotal: number): number {
+  if (!city) return 0;
+  if (st.free_delivery_over > 0 && subtotal >= st.free_delivery_over) return 0;
+  if (city.trim().toLowerCase() === 'karachi') return st.delivery_karachi;
+  const r = st.delivery_rates ? st.delivery_rates[province] : undefined;
+  return r !== undefined && r !== null && !isNaN(Number(r)) ? Number(r) : st.delivery_other;
 }

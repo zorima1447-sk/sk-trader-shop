@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
-import { AuthPage, AccountPage, AuthMode } from './CustomerAuth';
+import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import { InvoiceDocument, InvoiceItem } from './Invoice';
-import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache } from './storeSettings';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor } from './storeSettings';
+import PkAddressFields from './PkAddressFields';
+import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
 import { ShopIcon } from './icons';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
@@ -77,6 +79,10 @@ interface Order {
   payer_paid_at?: string | null;
   has_payment_proof?: boolean | null;
   delivered_at?: string | null;
+  city?: string | null;
+  province?: string | null;
+  area?: string | null;
+  delivery_charge?: number | null;
   paid_amount?: number | null;
   paid_at?: string | null;
   customer_id?: string | null;
@@ -108,6 +114,7 @@ interface Customer {
   province_iso?: string | null;
   province?: string | null;
   city?: string | null;
+  area?: string | null;
   address?: string | null;
   marketing_opt_in?: boolean | null;
   created_at: string;
@@ -153,7 +160,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v9.1 (22-Oct-2026)';
+const BUILD = 'v10 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -292,6 +299,11 @@ export default function App() {
   const [quickView, setQuickView] = useState<Product | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [qvVariant, setQvVariant] = useState<string>('');
+  // Admin: city filter + sort for Orders and Customers
+  const [orderCity, setOrderCity] = useState('All');
+  const [orderSort, setOrderSort] = useState<'new' | 'old' | 'city' | 'amount'>('new');
+  const [custCity, setCustCity] = useState('All');
+  const [custSort, setCustSort] = useState<'new' | 'name' | 'city' | 'spent'>('new');
   const [sortBy, setSortBy] = useState<'best' | 'low' | 'high' | 'new' | 'popular'>('best');
   const [reviews, setReviews] = useState<Review[]>([]);
   const [rvName, setRvName] = useState('');
@@ -422,6 +434,7 @@ export default function App() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [shippingAddress, setShippingAddress] = useState('');
+  const [shipAddr, setShipAddr] = useState<PkAddress>(emptyPkAddress()); // checkout address (Pakistan)
   const [city, setCity] = useState('');
   const [zipCode, setZipCode] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<string>('cod');
@@ -475,11 +488,7 @@ export default function App() {
     const m = authUser.user_metadata || {};
     if (m.name) setCustomerName(prev => prev || m.name);
     if (authUser.email) setCustomerEmail(prev => prev || authUser.email);
-    if (m.address) setShippingAddress(prev => prev || m.address);
-    if (m.phone) {
-      const local = String(m.phone).replace(/^92/, '');
-      setGeo(g => (g.phoneNumber ? g : { ...g, phoneNumber: local }));
-    }
+    setShipAddr(prev => (prev.city || prev.mobile ? prev : addressFromMeta(m)));
   }, [authUser]);
 
   // Back / forward buttons open or close the product page
@@ -1377,14 +1386,15 @@ export default function App() {
     setCart((prevCart) => prevCart.filter((item) => item.cartKey !== id));
   };
 
-  const totalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
+  const subtotalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
+  const deliveryCharge = cart.length ? deliveryChargeFor(settings, shipAddr.province, shipAddr.city, subtotalAmount) : 0;
+  const totalAmount = subtotalAmount + deliveryCharge;
 
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerName.trim() || !localNumber(geo.phoneNumber) || !shippingAddress.trim() || !geo.countryIso || !geo.city) {
-      alert('Please fill in all required customer details (name, country, city, mobile number and address).');
-      return;
-    }
+    if (!customerName.trim()) { alert('Please enter your full name.'); return; }
+    const addrProblem = checkPkAddress(shipAddr);
+    if (addrProblem) { alert(addrProblem); return; }
 
     if (!/^\S+@\S+\.\S+$/.test(customerEmail.trim())) {
       alert('Please enter a valid email address.');
@@ -1402,11 +1412,8 @@ export default function App() {
     setIsSubmitting(true);
 
     try {
-      const info = await resolveGeo(geo);
-      const local = localNumber(geo.phoneNumber);
-      const fullPhone = `${info.phoneCode}${local}`;
-      const fullAddress = [shippingAddress.trim(), geo.city, info.stateName, info.countryName, zipCode ? `Zip: ${zipCode}` : '']
-        .filter(Boolean).join(', ');
+      const fullPhone = `+92${shipAddr.mobile}`;
+      const fullAddress = fullPkAddress(shipAddr);
 
       // The order is saved by place_order() in the database: it saves the customer, takes the prices
       // from the products table (not from the browser), saves the items and reduces the stock.
@@ -1414,15 +1421,17 @@ export default function App() {
         p_customer: {
           name: customerName.trim(),
           email: customerEmail.trim() || null,
-          phone_iso: geo.phoneIso,
-          phone_code: info.phoneCode,
-          phone: local,
-          country_iso: geo.countryIso,
-          country: info.countryName,
-          province_iso: geo.stateIso,
-          province: info.stateName,
-          city: geo.city,
-          address: shippingAddress.trim(),
+          phone_iso: 'PK',
+          phone_code: '+92',
+          phone: shipAddr.mobile,
+          country_iso: 'PK',
+          country: 'Pakistan',
+          province_iso: '',
+          province: shipAddr.province,
+          city: shipAddr.city,
+          area: shipAddr.area.trim(),
+          zip: shipAddr.zip.trim(),
+          address: shipAddr.address.trim(),
           marketing_opt_in: marketingOptIn
         },
         p_order: {
@@ -1430,6 +1439,10 @@ export default function App() {
           customer_phone: fullPhone,
           customer_email: customerEmail.trim() || null,
           shipping_address: fullAddress,
+          province: shipAddr.province,
+          city: shipAddr.city,
+          area: shipAddr.area.trim(),
+          zip: shipAddr.zip.trim(),
           payment_method: paymentMethod === 'cod' ? 'cod' : (payAccount ? payAccount.type : 'online'),
           transaction_id: paymentMethod === 'cod' ? null : (transactionId.trim() || null),
           payment_account_id: paymentMethod === 'cod' ? null : payAccountId,
@@ -1556,6 +1569,27 @@ export default function App() {
     fetchReviews();
   };
 
+  const cityOfOrder = (o: Order) => o.city || cityFromText(o.shipping_address || '') || 'Unknown';
+  const cityOfCustomer = (c: Customer) => c.city || 'Unknown';
+  const countBy = (names: string[]) => {
+    const m = new Map<string, number>();
+    names.forEach(n => m.set(n, (m.get(n) || 0) + 1));
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  };
+  const cityBar = (counts: [string, number][], total: number, value: string, onChange: (v: string) => void) => (
+    <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3">
+      {[['All', total] as [string, number], ...counts].map(([ct, n]) => (
+        <button
+          key={ct}
+          onClick={() => onChange(ct)}
+          className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border cursor-pointer ${value === ct ? 'bg-slate-900 text-amber-400 border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}
+        >
+          {ct === 'All' ? 'All cities' : ct} ({n})
+        </button>
+      ))}
+    </div>
+  );
+
   // Admin side menu (grouped like a seller centre)
   const ADMIN_MENU: { title: string; items: { id: string; label: string; icon: any; open?: () => void; badge?: () => number }[] }[] = [
     { title: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, open: () => fetchOrders() }] },
@@ -1576,6 +1610,7 @@ export default function App() {
     { title: 'Settings', items: [
       { id: 'settings:profile', label: 'Store Profile', icon: Building },
       { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
+      { id: 'settings:delivery', label: 'Delivery Charges', icon: Truck },
       { id: 'settings:invoice', label: 'Invoice', icon: Printer },
       { id: 'settings:messages', label: 'Customer Messages', icon: Mail },
       { id: 'notifications', label: 'Order Alerts', icon: MessageCircle },
@@ -2639,9 +2674,22 @@ export default function App() {
                     </div>
                   ))}
 
-                  <div className="pt-3 flex justify-between text-xl font-black text-slate-900 border-t">
-                    <span>Total Amount:</span>
-                    <span className="text-amber-600">PKR {totalAmount}</span>
+                  <div className="pt-3 border-t space-y-1 text-sm">
+                    <div className="flex justify-between text-slate-600">
+                      <span>Subtotal ({cart.reduce((a, b) => a + b.quantity, 0)} items)</span>
+                      <span>{money(subtotalAmount)}</span>
+                    </div>
+                    <div className="flex justify-between text-slate-600">
+                      <span>Delivery {shipAddr.city ? `(${shipAddr.city})` : ''}</span>
+                      <span>{!shipAddr.city ? 'Select your city below' : deliveryCharge > 0 ? money(deliveryCharge) : 'FREE'}</span>
+                    </div>
+                    {settings.free_delivery_over > 0 && deliveryCharge > 0 && (
+                      <p className="text-[11px] text-emerald-700">Add {money(settings.free_delivery_over - subtotalAmount)} more for FREE delivery.</p>
+                    )}
+                    <div className="flex justify-between text-xl font-black text-slate-900 pt-1">
+                      <span>Total:</span>
+                      <span className="text-amber-600">{money(totalAmount)}</span>
+                    </div>
                   </div>
                 </div>
 
@@ -2685,30 +2733,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  <GeoFields value={geo} onChange={setGeo} />
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Delivery Address *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Shop / house address"
-                      value={shippingAddress}
-                      onChange={(e) => setShippingAddress(e.target.value)}
-                      className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">ZIP / Postal Code (optional)</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 54000"
-                      value={zipCode}
-                      onChange={(e) => setZipCode(e.target.value)}
-                      className="w-full px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
+                  <PkAddressFields
+                    value={shipAddr}
+                    onChange={setShipAddr}
+                    note={shipAddr.city ? (
+                      <p className={`text-xs font-semibold rounded-lg px-3 py-2 ${deliveryCharge > 0 ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`}>
+                        Delivery to {shipAddr.city}: {deliveryCharge > 0 ? money(deliveryCharge) : 'FREE'}
+                      </p>
+                    ) : null}
+                  />
 
                   <label className="flex items-start space-x-2 text-xs text-slate-600 cursor-pointer">
                     <input type="checkbox" checked={marketingOptIn} onChange={(e) => setMarketingOptIn(e.target.checked)} className="mt-0.5" />
@@ -3354,6 +3387,20 @@ export default function App() {
               <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b flex items-center">
                 <FileText className="w-5 h-5 text-amber-500 mr-2" /> Customer Orders & Invoices
               </h3>
+              {adminOrders.length > 0 && (
+                <>
+                  {cityBar(countBy(adminOrders.map(cityOfOrder)), adminOrders.length, orderCity, setOrderCity)}
+                  <div className="flex items-center gap-2 mb-3 text-xs text-slate-600">
+                    Sort by
+                    <select value={orderSort} onChange={(e) => setOrderSort(e.target.value as any)} className="border rounded-lg px-2 py-1.5 bg-white">
+                      <option value="new">Newest first</option>
+                      <option value="old">Oldest first</option>
+                      <option value="city">City (A-Z)</option>
+                      <option value="amount">Amount (high to low)</option>
+                    </select>
+                  </div>
+                </>
+              )}
 
               {adminOrders.length === 0 ? (
                 <div className="text-center py-12 text-slate-400 font-medium">
@@ -3376,7 +3423,16 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {adminOrders.map((order) => (
+                    {adminOrders
+                      .filter(o => orderCity === 'All' || cityOfOrder(o) === orderCity)
+                      .slice()
+                      .sort((a, b) => {
+                        if (orderSort === 'old') return String((a as any).created_at).localeCompare(String((b as any).created_at));
+                        if (orderSort === 'city') return cityOfOrder(a).localeCompare(cityOfOrder(b)) || String((b as any).created_at).localeCompare(String((a as any).created_at));
+                        if (orderSort === 'amount') return Number(b.total_amount || 0) - Number(a.total_amount || 0);
+                        return String((b as any).created_at).localeCompare(String((a as any).created_at));
+                      })
+                      .map((order) => (
                       <tr key={order.id} className="hover:bg-slate-50 transition">
                         <td className="p-3.5 font-black text-slate-900">{order.invoice_no || '-'}</td>
                         <td className="p-3.5 text-slate-600 whitespace-nowrap">{fmtDateTime(order.created_at)}</td>
@@ -3407,7 +3463,11 @@ export default function App() {
                             WhatsApp customer
                           </a>
                         </td>
-                        <td className="p-3.5 text-slate-600 max-w-xs">{order.shipping_address}</td>
+                        <td className="p-3.5 text-slate-600 max-w-xs">
+                          <span className="inline-block mb-1 bg-slate-900 text-amber-400 text-[10px] font-bold px-2 py-0.5 rounded">{cityOfOrder(order)}</span>
+                          <div>{order.shipping_address}</div>
+                          {Number(order.delivery_charge || 0) > 0 && <div className="text-[11px] text-slate-500 mt-0.5">Delivery: PKR {order.delivery_charge}</div>}
+                        </td>
                         <td className="p-3.5 text-slate-700">
                           {(order.order_items || []).map((it, i) => (
                             <div key={it.id || i}>{it.quantity} x {it.product_name}</div>
@@ -3826,11 +3886,38 @@ export default function App() {
                     className="px-3 py-2 border rounded-full text-xs w-64"
                   />
                 </div>
+                {customers.length > 0 && (
+                  <>
+                    {cityBar(countBy(customers.map(cityOfCustomer)), customers.length, custCity, setCustCity)}
+                    <div className="flex items-center gap-2 mb-3 text-xs text-slate-600">
+                      Sort by
+                      <select value={custSort} onChange={(e) => setCustSort(e.target.value as any)} className="border rounded-lg px-2 py-1.5 bg-white">
+                        <option value="new">Newest first</option>
+                        <option value="name">Name (A-Z)</option>
+                        <option value="city">City (A-Z)</option>
+                        <option value="spent">Total spent (high to low)</option>
+                      </select>
+                    </div>
+                  </>
+                )}
                 {(() => {
                   const q = customerSearch.trim().toLowerCase();
-                  const list = customers.filter(c =>
-                    !q || [c.name, c.email, c.phone, c.phone_code, c.city, c.province, c.country].join(' ').toLowerCase().includes(q)
-                  );
+                  const spentOf = (c: Customer) => {
+                    const full = `${c.phone_code || ''}${c.phone || ''}`;
+                    return adminOrders
+                      .filter(o => o.status !== 'Cancelled' && (o.customer_id === c.id || (c.phone && last10(o.customer_phone) === last10(full))))
+                      .reduce((a, o) => a + Number(o.total_amount || 0), 0);
+                  };
+                  const list = customers
+                    .filter(c => !q || [c.name, c.email, c.phone, c.phone_code, c.city, c.area, c.province, c.country].join(' ').toLowerCase().includes(q))
+                    .filter(c => custCity === 'All' || cityOfCustomer(c) === custCity)
+                    .slice()
+                    .sort((a, b) => {
+                      if (custSort === 'name') return String(a.name || '').localeCompare(String(b.name || ''));
+                      if (custSort === 'city') return cityOfCustomer(a).localeCompare(cityOfCustomer(b)) || String(a.name || '').localeCompare(String(b.name || ''));
+                      if (custSort === 'spent') return spentOf(b) - spentOf(a);
+                      return String(b.created_at).localeCompare(String(a.created_at));
+                    });
                   if (list.length === 0) return <div className="text-center py-10 text-slate-400 font-medium">No customers found.</div>;
                   return (
                     <table className="w-full text-left text-xs">
@@ -3861,7 +3948,7 @@ export default function App() {
                                   <a href={waLink(full, `Hello ${c.name},`)} target="_blank" rel="noreferrer" className="text-emerald-700 font-bold underline">WhatsApp</a>
                                 )}
                               </td>
-                              <td className="p-3 text-slate-600">{[c.city, c.province, c.country].filter(Boolean).join(', ') || '-'}<div className="text-slate-400">{c.address}</div></td>
+                              <td className="p-3 text-slate-600">{[c.area, c.city, c.province].filter(Boolean).join(', ') || '-'}<div className="text-slate-400">{c.address}</div></td>
                               <td className="p-3 font-bold">{mine.length}</td>
                               <td className="p-3 font-bold text-emerald-700">PKR {spent}</td>
                               <td className="p-3 space-x-1 whitespace-nowrap">

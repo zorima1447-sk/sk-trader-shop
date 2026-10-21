@@ -93,6 +93,12 @@ export function InvoiceDocument({ order, items, settings, accounts }: DocProps) 
       </table>
 
       <div className="mt-3 ml-auto w-64 text-xs space-y-1">
+        {Number(order.delivery_charge || 0) > 0 && (
+          <>
+            <div className="flex justify-between"><span>Subtotal</span><span>PKR {Number(order.subtotal ?? total - Number(order.delivery_charge || 0))}</span></div>
+            <div className="flex justify-between"><span>Delivery{order.city ? ` (${order.city})` : ''}</span><span>PKR {Number(order.delivery_charge)}</span></div>
+          </>
+        )}
         <div className="flex justify-between"><span>Total</span><b>PKR {total}</b></div>
         <div className="flex justify-between"><span>Paid</span><b className="text-emerald-700">PKR {paid}</b></div>
         <div className="flex justify-between border-t pt-1 text-sm"><span className="font-black">Balance Due</span><b className="text-red-600">PKR {balance}</b></div>

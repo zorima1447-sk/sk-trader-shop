@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { StoreSettings, ACCENTS, THEMES, MarqueeItem } from './storeSettings';
+import { StoreSettings, ACCENTS, THEMES, MarqueeItem, deliveryChargeFor } from './storeSettings';
 import { ICONS, ShopIcon } from './icons';
+import { PROVINCES } from './pakistan';
 import { InvoiceDocument } from './Invoice';
 
-export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages';
+export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery';
 
 interface Props {
   tab?: SettingsTab; // chosen from the admin side menu
@@ -132,7 +133,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   return (
     <form onSubmit={save} className="bg-white rounded-3xl p-6 border shadow-sm">
       <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">
-        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages' }[tab]}
+        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges' }[tab]}
       </h3>
 
       {!fixedTab && (
@@ -199,6 +200,60 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div>
             <label className={label}>TikTok link</label>
             <input className={input} value={f.tiktok} onChange={(e) => set('tiktok', e.target.value)} placeholder="https://tiktok.com/@yourpage" />
+          </div>
+        </div>
+      )}
+
+      {tab === 'delivery' && (
+        <div className="space-y-4 max-w-xl">
+          <p className="text-xs text-slate-500">
+            The customer sees the delivery charge at checkout as soon as he picks his city. It is added to the order total,
+            the invoice and the payment amount.
+          </p>
+          <div className="border rounded-xl overflow-hidden">
+            <div className="grid grid-cols-[1fr_9rem] bg-slate-50 border-b px-3 py-2 text-[11px] font-bold text-slate-500">
+              <span>Where</span><span>Charge (Rs.)</span>
+            </div>
+            <div className="grid grid-cols-[1fr_9rem] items-center gap-2 px-3 py-2 border-b bg-amber-50/50">
+              <span className="text-sm font-semibold text-slate-800">Karachi city <span className="text-[11px] font-normal text-slate-500">(0 = free)</span></span>
+              <input className={input} inputMode="numeric" value={String(f.delivery_karachi)} onChange={(e) => set('delivery_karachi', Number(e.target.value.replace(/[^0-9]/g, '')) || 0)} />
+            </div>
+            {PROVINCES.map((p) => {
+              const has = f.delivery_rates && f.delivery_rates[p] !== undefined;
+              return (
+                <div key={p} className="grid grid-cols-[1fr_9rem] items-center gap-2 px-3 py-2 border-b last:border-b-0">
+                  <span className="text-sm text-slate-700">{p}{p === 'Sindh' ? <span className="text-[11px] text-slate-500"> (other than Karachi)</span> : null}</span>
+                  <input
+                    className={input}
+                    inputMode="numeric"
+                    placeholder={String(f.delivery_other)}
+                    value={has ? String(f.delivery_rates[p]) : ''}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/[^0-9]/g, '');
+                      const next = { ...(f.delivery_rates || {}) };
+                      if (raw === '') delete next[p]; else next[p] = Number(raw);
+                      set('delivery_rates', next);
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div>
+            <label className={label}>Default charge (used for a province left empty above)</label>
+            <input className={input + ' max-w-xs'} inputMode="numeric" value={String(f.delivery_other)} onChange={(e) => set('delivery_other', Number(e.target.value.replace(/[^0-9]/g, '')) || 0)} />
+          </div>
+          <div>
+            <label className={label}>Free delivery for orders of (Rs.) or more - all cities</label>
+            <input className={input + ' max-w-xs'} inputMode="numeric" value={String(f.free_delivery_over)} onChange={(e) => set('free_delivery_over', Number(e.target.value.replace(/[^0-9]/g, '')) || 0)} />
+            <p className="text-[11px] text-slate-400 mt-1">0 = no free delivery offer</p>
+          </div>
+          <div className="bg-slate-50 border rounded-xl p-3 text-xs text-slate-600 space-y-1">
+            <p><b>Example:</b> order of Rs. 3,000</p>
+            {[['Sindh', 'Karachi'], ['Sindh', 'Hyderabad'], ['Punjab', 'Lahore'], ['Khyber Pakhtunkhwa', 'Peshawar']].map(([pv, ct]) => {
+              const dc = deliveryChargeFor(f, pv, ct, 3000);
+              return <p key={ct}>{ct}: delivery {dc > 0 ? `Rs. ${dc}` : 'FREE'}</p>;
+            })}
           </div>
         </div>
       )}

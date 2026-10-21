@@ -63,6 +63,8 @@ alter table public.customers
   add column if not exists province text,
   add column if not exists city text,
   add column if not exists address text,
+  add column if not exists area text,
+  add column if not exists zip text,
   add column if not exists marketing_opt_in boolean default true;
 
 -- ---------- 4. ORDERS ----------
@@ -97,7 +99,14 @@ alter table public.orders
   add column if not exists payer_amount numeric,
   add column if not exists payer_paid_at timestamptz,
   add column if not exists has_payment_proof boolean default false,
-  add column if not exists customer_user_id uuid;   -- set when a logged-in customer orders
+  add column if not exists customer_user_id uuid,   -- set when a logged-in customer orders
+  add column if not exists subtotal numeric,
+  add column if not exists delivery_charge numeric default 0,
+  add column if not exists province text,
+  add column if not exists city text,
+  add column if not exists area text,
+  add column if not exists zip text;
+create index if not exists orders_city_idx on public.orders(city);
 create index if not exists orders_customer_user_id_idx on public.orders(customer_user_id);
 
 -- Payment screenshots (kept apart so the order list stays light)
@@ -258,7 +267,11 @@ alter table public.store_settings
   add column if not exists marquee_items jsonb,
   add column if not exists marquee_speed int,
   add column if not exists header_style text,
-  add column if not exists page_bg text;
+  add column if not exists page_bg text,
+  add column if not exists delivery_karachi numeric,
+  add column if not exists delivery_other numeric,
+  add column if not exists free_delivery_over numeric,
+  add column if not exists delivery_rates jsonb;    -- {"Punjab": 250, "Sindh": 200, ...}
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
@@ -515,6 +528,10 @@ declare
   vname text;
   vrow jsonb;
   unit numeric;
+  st public.store_settings;
+  o_prov text;
+  o_city text;
+  dc numeric := 0;
 begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
@@ -561,10 +578,11 @@ begin
       limit 1;
       if cust_id is null then
         insert into public.customers (name, email, phone_iso, phone_code, phone, country_iso, country,
-                                      province_iso, province, city, address, marketing_opt_in)
+                                      province_iso, province, city, address, area, zip, marketing_opt_in)
         values (p_customer ->> 'name', nullif(p_customer ->> 'email', ''), p_customer ->> 'phone_iso',
                 p_customer ->> 'phone_code', p_customer ->> 'phone', p_customer ->> 'country_iso', p_customer ->> 'country',
                 p_customer ->> 'province_iso', p_customer ->> 'province', p_customer ->> 'city', p_customer ->> 'address',
+                p_customer ->> 'area', p_customer ->> 'zip',
                 coalesce((p_customer ->> 'marketing_opt_in')::boolean, true))
         returning id into cust_id;
       else
@@ -575,6 +593,7 @@ begin
           country_iso = p_customer ->> 'country_iso', country = p_customer ->> 'country',
           province_iso = p_customer ->> 'province_iso', province = p_customer ->> 'province',
           city = p_customer ->> 'city', address = p_customer ->> 'address',
+          area = coalesce(p_customer ->> 'area', area), zip = coalesce(p_customer ->> 'zip', zip),
           marketing_opt_in = coalesce((p_customer ->> 'marketing_opt_in')::boolean, marketing_opt_in)
         where id = cust_id;
       end if;
@@ -582,6 +601,22 @@ begin
   exception when others then
     cust_id := null;  -- a customer-record problem must not block the order
   end;
+
+  -- Delivery charge: Karachi city has its own charge, other cities use their province's charge
+  o_prov := nullif(trim(coalesce(p_order ->> 'province', p_customer ->> 'province', '')), '');
+  o_city := nullif(trim(coalesce(p_order ->> 'city', p_customer ->> 'city', '')), '');
+  if o_city is null then raise exception 'Please select your city.'; end if;
+  select * into st from public.store_settings where id = 1;
+  if coalesce(st.free_delivery_over, 0) > 0 and total >= st.free_delivery_over then
+    dc := 0;
+  elsif lower(o_city) = 'karachi' then
+    dc := coalesce(st.delivery_karachi, 0);
+  elsif st.delivery_rates is not null and st.delivery_rates ? coalesce(o_prov, '')
+        and (st.delivery_rates ->> o_prov) ~ '^[0-9]+(\.[0-9]+)?$' then
+    dc := (st.delivery_rates ->> o_prov)::numeric;
+  else
+    dc := coalesce(st.delivery_other, 250);
+  end if;
 
   online := coalesce(nullif(p_order ->> 'payment_method', ''), 'cod') <> 'cod';
   proof := case when online and left(coalesce(p_order ->> 'payment_proof', ''), 11) = 'data:image/'
@@ -591,10 +626,11 @@ begin
   insert into public.orders (customer_id, customer_name, customer_phone, customer_email, shipping_address,
                              total_amount, payment_method, payment_status, paid_amount, transaction_id, status,
                              payment_account_id, payment_account_label, payer_name, payer_account, payer_amount,
-                             payer_paid_at, has_payment_proof, customer_user_id)
+                             payer_paid_at, has_payment_proof, customer_user_id,
+                             subtotal, delivery_charge, province, city, area, zip)
   values (cust_id, trim(p_order ->> 'customer_name'), p_order ->> 'customer_phone',
           nullif(trim(coalesce(p_order ->> 'customer_email', '')), ''), p_order ->> 'shipping_address',
-          total, left(coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 40), 'Unpaid', 0,
+          total + dc, left(coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 40), 'Unpaid', 0,
           case when online then left(nullif(trim(coalesce(p_order ->> 'transaction_id', '')), ''), 80) end,
           'Pending',
           case when online then left(p_order ->> 'payment_account_id', 80) end,
@@ -605,7 +641,9 @@ begin
                then (p_order ->> 'payer_amount')::numeric end,
           case when online and coalesce(p_order ->> 'payer_paid_at', '') <> ''
                then (p_order ->> 'payer_paid_at')::timestamptz end,
-          proof is not null, auth.uid())
+          proof is not null, auth.uid(),
+          total, dc, o_prov, o_city, left(nullif(trim(coalesce(p_order ->> 'area', '')), ''), 120),
+          left(nullif(trim(coalesce(p_order ->> 'zip', '')), ''), 10))
   returning * into o;
 
   if proof is not null then
@@ -687,7 +725,7 @@ set search_path = public
 as $$
   select coalesce(json_agg(x order by x.created_at desc), '[]'::json)
   from (
-    select o.id, o.invoice_no, o.created_at, o.total_amount, o.status, o.payment_status, o.payment_method,
+    select o.id, o.invoice_no, o.created_at, o.total_amount, o.subtotal, o.delivery_charge, o.status, o.payment_status, o.payment_method,
            o.delivered_at, o.shipping_address,
            coalesce((select json_agg(json_build_object('product_name', i.product_name, 'quantity', i.quantity, 'unit_price', i.unit_price))
                      from public.order_items i where i.order_id = o.id), '[]'::json) as items
