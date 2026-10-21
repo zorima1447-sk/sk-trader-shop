@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { StoreSettings, ACCENTS } from './storeSettings';
+import { StoreSettings, ACCENTS, MarqueeItem } from './storeSettings';
+import { ICONS, ShopIcon } from './icons';
 import { InvoiceDocument } from './Invoice';
 
 interface Props {
@@ -72,6 +73,18 @@ export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccou
     }
     onSaved(f);
     alert('Settings saved successfully!');
+  };
+
+  // ---- scrolling strip editor ----
+  const items: MarqueeItem[] = f.marquee_items || [];
+  const setItem = (i: number, patch: Partial<MarqueeItem>) =>
+    set('marquee_items', items.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
+  const moveItem = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= items.length) return;
+    const next = [...items];
+    [next[i], next[j]] = [next[j], next[i]];
+    set('marquee_items', next);
   };
 
   const toggleAccount = (id: string) => {
@@ -210,6 +223,78 @@ export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccou
             {check('show_trust', 'Trust badges (Original, Fast Delivery, ...)')}
             {check('show_categories', 'Shop by category tiles')}
             {check('show_whatsapp_strip', 'WhatsApp help strip')}
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-xs font-bold text-slate-700">Scrolling strip (under the home page banner)</p>
+            {check('show_marquee', 'Show the scrolling strip')}
+            <div className="space-y-2">
+              {items.map((m, i) => (
+                <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white border rounded-xl p-2">
+                  <span className="w-8 h-8 shrink-0 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center text-base">
+                    <ShopIcon name={m.icon} />
+                  </span>
+                  <select
+                    value={ICONS[m.icon] ? m.icon : (m.icon ? '__emoji' : '')}
+                    onChange={(e) => setItem(i, { icon: e.target.value === '__emoji' ? '⭐' : e.target.value })}
+                    className="px-2 py-2 border rounded-lg text-xs bg-white w-36 shrink-0"
+                    aria-label="Icon"
+                  >
+                    <option value="">No icon</option>
+                    {Object.entries(ICONS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                    <option value="__emoji">Emoji (type below)</option>
+                  </select>
+                  {!ICONS[m.icon] && m.icon !== '' && (
+                    <input
+                      value={m.icon}
+                      onChange={(e) => setItem(i, { icon: e.target.value.slice(0, 4) })}
+                      className="px-2 py-2 border rounded-lg text-sm w-14 text-center shrink-0"
+                      aria-label="Emoji"
+                    />
+                  )}
+                  <input
+                    value={m.text}
+                    onChange={(e) => setItem(i, { text: e.target.value })}
+                    placeholder="Text, e.g. Free delivery in Karachi"
+                    className="flex-1 min-w-[10rem] px-3 py-2 border rounded-lg text-sm"
+                  />
+                  <div className="flex gap-1 shrink-0">
+                    <button type="button" onClick={() => moveItem(i, -1)} disabled={i === 0} className="px-2 py-1.5 bg-slate-100 rounded-lg text-xs font-bold disabled:opacity-30 cursor-pointer" aria-label="Move up">↑</button>
+                    <button type="button" onClick={() => moveItem(i, 1)} disabled={i === items.length - 1} className="px-2 py-1.5 bg-slate-100 rounded-lg text-xs font-bold disabled:opacity-30 cursor-pointer" aria-label="Move down">↓</button>
+                    <button type="button" onClick={() => set('marquee_items', items.filter((_, idx) => idx !== i))} className="px-2 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold cursor-pointer">Delete</button>
+                  </div>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => set('marquee_items', [...items, { icon: 'star', text: '' }])}
+                className="text-xs font-bold bg-slate-900 text-amber-400 px-3 py-2 rounded-lg cursor-pointer"
+              >
+                + Add item
+              </button>
+            </div>
+            <div>
+              <label className={label}>Speed</label>
+              <select className={input + ' max-w-xs'} value={String(f.marquee_speed)} onChange={(e) => set('marquee_speed', Number(e.target.value))}>
+                <option value="45">Slow</option>
+                <option value="30">Normal</option>
+                <option value="18">Fast</option>
+              </select>
+            </div>
+            {items.length > 0 && (
+              <div className="bg-amber-500 text-white rounded-lg overflow-hidden whitespace-nowrap py-2 text-xs font-bold">
+                <div className="marquee-track inline-flex" style={{ animationDuration: `${f.marquee_speed}s` }}>
+                  {[0, 1].map((k) => (
+                    <span key={k} className="inline-flex">
+                      {items.map((m, i) => (
+                        <span key={i} className="inline-flex items-center gap-1.5 mx-5"><ShopIcon name={m.icon} />{m.text}</span>
+                      ))}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-slate-500">Press <b>Save Settings</b> at the bottom to put the changes on the website.</p>
           </div>
 
           <div>

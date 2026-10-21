@@ -234,7 +234,10 @@ alter table public.store_settings
   add column if not exists email_invoice_enabled boolean,
   add column if not exists email_from text,
   add column if not exists customer_msg_mode text,
-  add column if not exists notify_new_product boolean;
+  add column if not exists notify_new_product boolean,
+  add column if not exists show_marquee boolean,
+  add column if not exists marquee_items jsonb,
+  add column if not exists marquee_speed int;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
@@ -250,9 +253,9 @@ begin
   drop policy if exists "site-assets update" on storage.objects;
   drop policy if exists "site-assets delete" on storage.objects;
   create policy "site-assets read"   on storage.objects for select using (bucket_id = 'site-assets');
-  -- Only new logo files can be added; existing files cannot be replaced or deleted from the website.
+  -- Only new logo / banner images can be added; existing files cannot be replaced or deleted from the website.
   create policy "site-assets insert" on storage.objects for insert
-    with check (bucket_id = 'site-assets' and name like 'logo-%.png');
+    with check (bucket_id = 'site-assets' and name ~ '^(logo|slide)-[0-9a-z-]+\.(png|jpg)$');
 exception when others then
   raise notice 'Storage bucket setup skipped: %', sqlerrm;
 end $$;

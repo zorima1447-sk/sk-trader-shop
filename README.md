@@ -66,6 +66,18 @@ npm install
 npm run dev
 ```
 
+## v8: shop look and banner
+- Marketplace-style home page: coloured header with search, category list + banner, scrolling strip, Flash Sale
+  (discounted products), category tiles, "Just For You" product grid with sorting.
+- Product page with its own link (`?product=<id>`), Buy Now / Add to Cart, reviews and "You may also like".
+  The phone's Back button closes it.
+- Admin > Home Slides > **Choose pictures**: select 5-6 pictures at once; each becomes a picture-only slide.
+  Pictures go to Supabase Storage (bucket `site-assets`). Leave Title/Text empty for a picture-only slide.
+- Admin > Settings > Website Look > **Scrolling strip**: text and icon (or emoji) for each item, order, speed, on/off.
+  An "Orange" accent colour is available too.
+- A reload shows the last saved look at once (kept in the browser) instead of the built-in default look.
+- Existing databases: run `update_v8.sql` once (new columns for the strip + permission for banner pictures).
+
 ## Security (v7)
 - Admin passwords are stored only as bcrypt hashes and are checked inside the database (`admin_login`).
   5 wrong passwords in a row lock that user for 15 minutes.

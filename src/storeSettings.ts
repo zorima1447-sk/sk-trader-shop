@@ -1,6 +1,13 @@
 // Store-wide settings (logo, name, contact details, look & feel, invoice options).
 // Stored in the Supabase table "store_settings" (single row with id = 1).
 
+// One item of the scrolling strip under the home page banner.
+// icon = a name from src/icons.tsx (for example "truck") or any emoji typed by the admin.
+export interface MarqueeItem {
+  icon: string;
+  text: string;
+}
+
 export interface StoreSettings {
   store_name: string;
   header_subtitle: string;
@@ -20,6 +27,9 @@ export interface StoreSettings {
   show_trust: boolean;
   show_categories: boolean;
   show_whatsapp_strip: boolean;
+  show_marquee: boolean;
+  marquee_items: MarqueeItem[];
+  marquee_speed: number;
   invoice_header_note: string;
   invoice_footer_note: string;
   invoice_tax_id: string;
@@ -51,6 +61,14 @@ export const defaultSettings: StoreSettings = {
   show_trust: true,
   show_categories: true,
   show_whatsapp_strip: true,
+  show_marquee: true,
+  marquee_items: [
+    { icon: 'flame', text: 'Sale Is Live Now' },
+    { icon: 'badge', text: '100% Original Products' },
+    { icon: 'truck', text: 'Delivery Across Pakistan' },
+    { icon: 'wallet', text: 'Cash on Delivery' }
+  ],
+  marquee_speed: 30,
   invoice_header_note: '',
   invoice_footer_note: 'Thank you for your business!',
   invoice_tax_id: '',
@@ -71,6 +89,11 @@ export function mergeSettings(row: any): StoreSettings {
     });
   }
   if (!Array.isArray(out.invoice_account_ids)) out.invoice_account_ids = [];
+  if (!Array.isArray(out.marquee_items)) out.marquee_items = defaultSettings.marquee_items;
+  out.marquee_items = out.marquee_items
+    .filter((m: any) => m && typeof m.text === 'string')
+    .map((m: any) => ({ icon: String(m.icon || ''), text: m.text }));
+  out.marquee_speed = Number(out.marquee_speed) > 0 ? Number(out.marquee_speed) : 30;
   return out as StoreSettings;
 }
 
@@ -85,6 +108,7 @@ export async function fetchStoreSettings(sb: any): Promise<StoreSettings> {
 
 export const ACCENTS: { key: string; label: string; swatch: string }[] = [
   { key: 'amber', label: 'Gold (default)', swatch: '#f59e0b' },
+  { key: 'orange', label: 'Orange', swatch: '#f97316' },
   { key: 'emerald', label: 'Emerald', swatch: '#10b981' },
   { key: 'rose', label: 'Rose', swatch: '#f43f5e' },
   { key: 'blue', label: 'Blue', swatch: '#3b82f6' },
@@ -92,6 +116,7 @@ export const ACCENTS: { key: string; label: string; swatch: string }[] = [
 ];
 
 const PALETTES: Record<string, Record<number, string>> = {
+  orange: { 50: '#fff7ed', 100: '#ffedd5', 200: '#fed7aa', 300: '#fdba74', 400: '#fb923c', 500: '#f97316', 600: '#ea580c', 700: '#c2410c', 800: '#9a3412', 900: '#7c2d12' },
   emerald: { 50: '#ecfdf5', 100: '#d1fae5', 200: '#a7f3d0', 300: '#6ee7b7', 400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857', 800: '#065f46', 900: '#064e3b' },
   rose: { 50: '#fff1f2', 100: '#ffe4e6', 200: '#fecdd3', 300: '#fda4af', 400: '#fb7185', 500: '#f43f5e', 600: '#e11d48', 700: '#be123c', 800: '#9f1239', 900: '#881337' },
   blue: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
@@ -115,4 +140,29 @@ export function accentCss(accent: string): string {
       `.focus\\:border-amber-${s}:focus{border-color:${c}!important}`;
   });
   return css;
+}
+
+// ---- Fast start: the last shop data is kept in the browser, so a reload shows the real
+// ---- shop at once (instead of the built-in default look) while fresh data loads.
+const CACHE_KEY = 'shop_cache_v1';
+
+export function readShopCache(): any | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeShopCache(data: any) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // storage full or blocked: try again without the (possibly large) slide images
+    try {
+      const slim = { ...data, slides: (data.slides || []).filter((s: any) => !String(s.image_url || '').startsWith('data:')) };
+      localStorage.setItem(CACHE_KEY, JSON.stringify(slim));
+    } catch { /* ignore */ }
+  }
 }

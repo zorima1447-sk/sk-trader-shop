@@ -3,13 +3,14 @@ import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel from './SettingsPanel';
 import { InvoiceDocument, InvoiceItem } from './Invoice';
-import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss } from './storeSettings';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache } from './storeSettings';
+import { ShopIcon } from './icons';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
   FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
   UserPlus, Shield, Wallet, Save, RefreshCw, X,
-  Heart, ChevronLeft, ChevronRight, Truck, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown, Printer, Mail
+  Heart, ChevronLeft, ChevronRight, Truck, Flame, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown, Printer, Mail
 } from 'lucide-react';
 
 interface Category {
@@ -28,6 +29,7 @@ interface Product {
   category_name: string;
   stock_quantity: number;
   sold_quantity?: number;
+  created_at?: string;
 }
 
 interface CartItem extends Product {
@@ -130,7 +132,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v7 (21-Oct-2026)';
+const BUILD = 'v8 (21-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -147,12 +149,58 @@ const HERO_SLIDES: Slide[] = [
   { title: 'Cash on Delivery', text: 'Order today and pay when it reaches your door.', cta: 'Order Now', bg: 'green' }
 ];
 
+// Shop data saved by the last visit (see writeShopCache) - lets a reload show the real shop at once.
+const BOOT_CACHE: any = readShopCache();
+
+// Shrinks a picked image and returns it as a JPEG data URL.
+function resizeImage(file: File, maxW: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('This file is not an image.'));
+      img.onload = () => {
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Uploads a data-URL image to Supabase Storage (bucket "site-assets") and returns its public link.
+// If the upload is not possible the image stays embedded (it still works, the page is just heavier).
+async function uploadSiteImage(dataUrl: string, prefix: 'slide'): Promise<string> {
+  if (!dataUrl.startsWith('data:')) return dataUrl;
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const path = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    const { error } = await supabase.storage.from('site-assets').upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+    if (error) throw error;
+    return supabase.storage.from('site-assets').getPublicUrl(path).data.publicUrl;
+  } catch (err) {
+    console.warn('Image upload failed, keeping the embedded image', err);
+    return dataUrl;
+  }
+}
+
+const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#f1f5f9"/><text x="150" y="155" font-family="Arial" font-size="18" fill="#94a3b8" text-anchor="middle">No image</text></svg>');
+
+const money = (n: number | string | null | undefined) => 'Rs. ' + Number(n || 0).toLocaleString('en-PK');
+
 export default function App() {
   const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin'>('store');
   
   // Store States
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [products, setProducts] = useState<Product[]>(BOOT_CACHE?.products || []);
+  const [categories, setCategories] = useState<Category[]>(BOOT_CACHE?.categories || []);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -160,6 +208,7 @@ export default function App() {
   const [heroIndex, setHeroIndex] = useState(0);
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
+  const [sortBy, setSortBy] = useState<'best' | 'low' | 'high' | 'new' | 'popular'>('best');
   const [reviews, setReviews] = useState<Review[]>([]);
   const [rvName, setRvName] = useState('');
   const [rvEmail, setRvEmail] = useState('');
@@ -173,7 +222,9 @@ export default function App() {
   const [geo, setGeo] = useState<GeoValue>(emptyGeo());
   const [customerEmail, setCustomerEmail] = useState('');
   const [marketingOptIn, setMarketingOptIn] = useState(true);
-  const [settings, setSettings] = useState<StoreSettings>(defaultSettings);
+  const [settings, setSettings] = useState<StoreSettings>(BOOT_CACHE?.settings ? mergeSettings(BOOT_CACHE.settings) : defaultSettings);
+  const [booted, setBooted] = useState<boolean>(!!BOOT_CACHE?.settings); // true = something real to show
+  const [fresh, setFresh] = useState(false); // true = data from the database has arrived
   const [notifyCustomers, setNotifyCustomers] = useState(false);
   const [cOptIn, setCOptIn] = useState(true);
   const [campSubject, setCampSubject] = useState('');
@@ -205,11 +256,12 @@ export default function App() {
   const [eoEmail, setEoEmail] = useState('');
   const [eoAddress, setEoAddress] = useState('');
   // hero slides
-  const [slides, setSlides] = useState<Slide[]>([]);
+  const [slides, setSlides] = useState<Slide[]>(BOOT_CACHE?.slides || []);
+  const [slideBusy, setSlideBusy] = useState('');
   const [editingSlideId, setEditingSlideId] = useState<string | null>(null);
   const [slTitle, setSlTitle] = useState('');
   const [slText, setSlText] = useState('');
-  const [slCta, setSlCta] = useState('Shop Now');
+  const [slCta, setSlCta] = useState('');
   const [slBg, setSlBg] = useState('gold');
   const [slImage, setSlImage] = useState('');
   const [slActive, setSlActive] = useState(true);
@@ -289,13 +341,44 @@ export default function App() {
   const [confirmedInvoice, setConfirmedInvoice] = useState('');
 
   useEffect(() => {
-    fetchProducts();
-    fetchCategories();
+    // Show a short loading screen (first visit only) instead of the built-in default look.
+    const giveUp = setTimeout(() => setBooted(true), 6000);
+    Promise.all([
+      fetchProducts(),
+      fetchCategories(),
+      fetchSlides(),
+      fetchStoreSettings(supabase).then(setSettings)
+    ]).finally(() => {
+      clearTimeout(giveUp);
+      setFresh(true);
+      setBooted(true);
+    });
     fetchPaymentAccounts();
     fetchReviews();
-    fetchSlides();
-    fetchStoreSettings(supabase).then(setSettings);
   }, []);
+
+  // Back / forward buttons open or close the product page
+  useEffect(() => {
+    const onPop = () => {
+      const id = new URLSearchParams(window.location.search).get('product');
+      setQuickView(id ? (products.find(p => p.id === id) || null) : null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [products]);
+
+  // A shared product link (?product=<id>) opens that product
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('product');
+    if (!id || quickView) return;
+    const hit = products.find(p => p.id === id);
+    if (hit) { setQuickView(hit); setQvQty(1); }
+  }, [products]);
+
+  // Remember the latest shop data for the next visit.
+  useEffect(() => {
+    if (fresh) writeShopCache({ settings, slides, categories, products });
+  }, [fresh, settings, slides, categories, products]);
 
   useEffect(() => {
     document.title = settings.store_name || 'Online Store';
@@ -657,33 +740,46 @@ export default function App() {
 
   const resetSlideForm = () => {
     setEditingSlideId(null);
-    setSlTitle(''); setSlText(''); setSlCta('Shop Now'); setSlBg('gold'); setSlImage(''); setSlActive(true);
+    setSlTitle(''); setSlText(''); setSlCta(''); setSlBg('gold'); setSlImage(''); setSlActive(true);
   };
 
-  const handleSlideImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSlideImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, 1600 / img.width);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        const ctx = canvas.getContext('2d');
-        if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        setSlImage(canvas.toDataURL('image/jpeg', 0.8));
-      };
-      img.src = String(reader.result);
-    };
-    reader.readAsDataURL(file);
+    try { setSlImage(await resizeImage(file, 1600)); } catch (err: any) { alert(err.message || String(err)); }
+  };
+
+  // Adds one picture-only slide per selected image (pick 5-6 images at once).
+  const handleAddManySlides = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files: File[] = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    let next = slides.reduce((m, x) => Math.max(m, x.sort_order || 0), 0) + 1;
+    let added = 0;
+    for (let i = 0; i < files.length; i++) {
+      setSlideBusy(`Uploading image ${i + 1} of ${files.length}...`);
+      try {
+        const url = await uploadSiteImage(await resizeImage(files[i], 1600), 'slide');
+        const { error } = await supabase.from('hero_slides')
+          .insert([{ title: '', text: '', cta: '', bg: 'gold', image_url: url, active: true, sort_order: next++ }]);
+        if (reportError('slide insert', error)) break;
+        added++;
+      } catch (err: any) {
+        alert(`${files[i].name}: ${err.message || err}`);
+      }
+    }
+    setSlideBusy('');
+    await fetchSlides();
+    if (added) alert(`${added} banner image(s) added. They will change automatically on the home page.`);
   };
 
   const handleSaveSlide = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!slTitle.trim()) { alert('Slide title is required.'); return; }
-    const row = { title: slTitle.trim(), text: slText.trim(), cta: slCta.trim() || 'Shop Now', bg: slBg, image_url: slImage || null, active: slActive };
+    if (!slTitle.trim() && !slImage) { alert('Add a picture, or a title, for this slide.'); return; }
+    setSlideBusy('Saving...');
+    const imageUrl = slImage ? await uploadSiteImage(slImage, 'slide') : null;
+    setSlideBusy('');
+    const row = { title: slTitle.trim(), text: slText.trim(), cta: slCta.trim(), bg: slBg, image_url: imageUrl, active: slActive };
     if (editingSlideId) {
       const { error } = await supabase.from('hero_slides').update(row).eq('id', editingSlideId);
       if (reportError('slide update', error)) return;
@@ -700,7 +796,7 @@ export default function App() {
 
   const handleEditSlide = (sl: Slide) => {
     setEditingSlideId(sl.id || null);
-    setSlTitle(sl.title); setSlText(sl.text || ''); setSlCta(sl.cta || 'Shop Now');
+    setSlTitle(sl.title); setSlText(sl.text || ''); setSlCta(sl.cta || '');
     setSlBg(sl.bg || 'gold'); setSlImage(sl.image_url || ''); setSlActive(sl.active !== false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -1218,14 +1314,22 @@ export default function App() {
     ? products 
     : products.filter(p => p.category_name === selectedCategory);
 
-  const displaySlides: Slide[] = slides.filter(x => x.active !== false).length > 0
-    ? slides.filter(x => x.active !== false)
-    : HERO_SLIDES;
+  // Default slides only when the database really has none (never while it is still loading).
+  const activeSlides = slides.filter(x => x.active !== false);
+  const displaySlides: Slide[] = activeSlides.length > 0 ? activeSlides : (fresh ? HERO_SLIDES : []);
   const hi = displaySlides.length ? heroIndex % displaySlides.length : 0;
 
-  const visibleProducts = filteredProducts.filter(p =>
-    !searchQuery.trim() || (p.name + ' ' + (p.description || '')).toLowerCase().includes(searchQuery.trim().toLowerCase())
-  );
+  const priceOf = (p: Product) => Number(p.discounted_price || p.price || 0);
+  const visibleProducts = filteredProducts
+    .filter(p => !searchQuery.trim() || (p.name + ' ' + (p.description || '') + ' ' + (p.category_name || '')).toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    .slice()
+    .sort((a, b) => {
+      if (sortBy === 'low') return priceOf(a) - priceOf(b);
+      if (sortBy === 'high') return priceOf(b) - priceOf(a);
+      if (sortBy === 'new') return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+      if (sortBy === 'popular') return (b.sold_quantity || 0) - (a.sold_quantity || 0);
+      return 0;
+    });
 
   const toggleWishlist = (id: string) =>
     setWishlist(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -1238,10 +1342,46 @@ export default function App() {
     return p.original_price > now ? Math.round((1 - now / p.original_price) * 100) : 0;
   };
 
+  // ---- Product page: has its own link (?product=<id>) and closes with the phone's Back button ----
+  const openProduct = (p: Product, replace = false) => {
+    setQuickView(p);
+    setQvQty(1);
+    try {
+      const url = `${window.location.pathname}?product=${p.id}`;
+      if (replace && window.history.state && window.history.state.product) window.history.replaceState({ product: p.id }, '', url);
+      else window.history.pushState({ product: p.id }, '', url);
+    } catch { /* ignore */ }
+  };
+  const closeProduct = () => {
+    if (window.history.state && window.history.state.product) window.history.back();
+    else {
+      setQuickView(null);
+      try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ }
+    }
+  };
+
+  // Products on discount for the "Flash Sale" row (biggest discount first)
+  const saleProducts = products
+    .filter(p => discountPct(p) > 0 && p.stock_quantity > 0)
+    .sort((a, b) => discountPct(b) - discountPct(a))
+    .slice(0, 12);
+
+  // Picture for a category tile: the first product of that category that has a picture
+  const categoryImage = (name: string) => (products.find(p => p.category_name === name && p.image_url) || ({} as any)).image_url || '';
+
   const activePaymentAccount = paymentAccounts.find(a => a.type.toLowerCase().includes(paymentMethod.toLowerCase())) || paymentAccounts[0];
 
+  // First visit only: a short loading screen instead of the built-in default look
+  if (!booted && currentView === 'store') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+        <div className="w-10 h-10 border-4 border-slate-300 border-t-slate-600 rounded-full animate-spin" aria-label="Loading" />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-800">
       <style>{accentCss(settings.accent)}</style>
       {dbError && (
         <div className="bg-red-600 text-white text-xs font-bold px-4 py-2 text-center">
@@ -1257,274 +1397,406 @@ export default function App() {
         </div>
       )}
 
+      {/* Thin top bar */}
       {currentView === 'store' && settings.show_announcement && settings.announcement && (
-        <div className="bg-slate-950 text-amber-300 text-[11px] md:text-xs font-bold text-center py-2 px-3 tracking-wide">
-          {settings.announcement}
+        <div className="bg-slate-50 border-b text-[11px] text-slate-600">
+          <div className="max-w-7xl mx-auto px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">
+            <span className="truncate">{settings.announcement}</span>
+            <div className="hidden md:flex items-center gap-4 shrink-0 font-semibold">
+              {settings.whatsapp && (
+                <a href={waLink(settings.whatsapp, 'Hello, I would like some information about your products.')} target="_blank" rel="noreferrer" className="hover:text-amber-600">
+                  WhatsApp Help
+                </a>
+              )}
+              {settings.phone && <span>Call: {settings.phone}</span>}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Main Top Header */}
-      <header className="bg-slate-900 text-white sticky top-0 z-40 shadow-md">
-        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3.5 flex justify-between items-center gap-2">
-          <div 
-            onClick={() => setCurrentView('store')}
-            className="flex items-center gap-2 sm:gap-3 cursor-pointer min-w-0"
-          >
-            {settings.logo_url ? (
-              <img src={settings.logo_url} alt={settings.store_name} className="h-9 w-9 sm:h-10 sm:w-10 object-contain rounded shrink-0" />
-            ) : (
-              <Package className="w-8 h-8 text-amber-400 shrink-0" />
+      {/* Main header: logo, search, cart */}
+      <header className="bg-amber-600 text-white sticky top-0 z-40 shadow-md">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3">
+          <div className="flex items-center gap-3 md:gap-8">
+            <button
+              type="button"
+              onClick={() => { setCurrentView('store'); setSearchQuery(''); setSelectedCategory('All'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              className="flex items-center gap-2 cursor-pointer min-w-0 shrink text-left"
+            >
+              {settings.logo_url ? (
+                <img src={settings.logo_url} alt={settings.store_name} className="h-9 w-9 sm:h-11 sm:w-11 object-contain rounded bg-white p-0.5 shrink-0" />
+              ) : (
+                <Package className="w-8 h-8 text-white shrink-0" />
+              )}
+              <span className="min-w-0">
+                <span className="text-base sm:text-xl md:text-2xl font-black tracking-wide text-white block whitespace-nowrap truncate leading-tight">{settings.store_name}</span>
+                {settings.header_subtitle && (
+                  <span className="text-[9px] sm:text-[11px] text-white/80 font-medium tracking-wide block truncate leading-tight">{settings.header_subtitle}</span>
+                )}
+              </span>
+            </button>
+
+            {currentView === 'store' && (
+              <form
+                onSubmit={(e) => { e.preventDefault(); scrollToProducts(); }}
+                className="hidden sm:flex flex-1 max-w-2xl"
+                role="search"
+              >
+                <input
+                  type="search"
+                  placeholder={`Search in ${settings.store_name}`}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="flex-1 min-w-0 px-4 py-2.5 rounded-l-lg text-sm text-slate-800 bg-white focus:outline-none"
+                />
+                <button type="submit" className="bg-amber-800 hover:bg-amber-900 px-4 rounded-r-lg cursor-pointer" aria-label="Search">
+                  <Search className="w-5 h-5 text-white" />
+                </button>
+              </form>
             )}
-            <div className="min-w-0">
-              <span className="text-base sm:text-xl md:text-2xl font-black tracking-wide sm:tracking-wider text-white block whitespace-nowrap truncate leading-tight">{settings.store_name}</span>
-              {settings.header_subtitle && (
-                <span className="text-[9px] sm:text-xs text-amber-300 font-medium tracking-wide sm:tracking-widest block truncate leading-tight">{settings.header_subtitle}</span>
+
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
+              {isAdminLoggedIn ? (
+                <button
+                  onClick={() => setCurrentView(currentView === 'admin' ? 'store' : 'admin')}
+                  className="bg-white text-amber-700 font-bold px-3 py-2 rounded-lg text-xs flex items-center shadow cursor-pointer whitespace-nowrap"
+                >
+                  <LayoutDashboard className="w-4 h-4 sm:mr-1.5" />
+                  <span className="hidden sm:inline">{currentView === 'admin' ? 'Back to Store' : 'Admin Portal'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setCurrentView('login')}
+                  className="text-white/90 hover:text-white hover:bg-white/10 px-2.5 py-2 rounded-lg text-xs flex items-center transition whitespace-nowrap cursor-pointer"
+                  aria-label="Admin Login"
+                >
+                  <Lock className="w-4 h-4 sm:mr-1.5" /> <span className="hidden sm:inline">Admin</span>
+                </button>
+              )}
+
+              {currentView === 'store' && (
+                <button
+                  onClick={() => setIsCartOpen(true)}
+                  className="relative p-2 rounded-lg hover:bg-white/10 transition cursor-pointer"
+                  aria-label="Open cart"
+                >
+                  <ShoppingCart className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
+                  {cart.length > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 bg-white text-amber-700 text-[10px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow">
+                      {cart.reduce((a, b) => a + b.quantity, 0)}
+                    </span>
+                  )}
+                </button>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {isAdminLoggedIn ? (
-              <button
-                onClick={() => setCurrentView(currentView === 'admin' ? 'store' : 'admin')}
-                className="bg-amber-500 text-slate-950 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center shadow"
-              >
-                <LayoutDashboard className="w-4 h-4 mr-1.5" /> 
-                {currentView === 'admin' ? 'Back to Store' : 'Admin Portal'}
+          {currentView === 'store' && (
+            <form onSubmit={(e) => { e.preventDefault(); scrollToProducts(); }} className="sm:hidden flex mt-2" role="search">
+              <input
+                type="search"
+                placeholder={`Search in ${settings.store_name}`}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="flex-1 min-w-0 px-3 py-2 rounded-l-lg text-sm text-slate-800 bg-white focus:outline-none"
+              />
+              <button type="submit" className="bg-amber-800 px-3 rounded-r-lg cursor-pointer" aria-label="Search">
+                <Search className="w-4 h-4 text-white" />
               </button>
-            ) : (
-              <button
-                onClick={() => setCurrentView('login')}
-                className="text-slate-300 hover:text-white bg-slate-800 px-2.5 sm:px-3.5 py-2 rounded-xl text-xs flex items-center transition border border-slate-700 whitespace-nowrap"
-                aria-label="Admin Login"
-              >
-                <Lock className="w-3.5 h-3.5 sm:mr-1.5 text-amber-400" /> <span className="hidden sm:inline">Admin Login</span>
-              </button>
-            )}
-
-            {currentView === 'store' && (
-              <button
-                onClick={() => setIsCartOpen(true)}
-                className="relative flex items-center bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 sm:px-4 py-2 rounded-xl transition shadow-lg cursor-pointer whitespace-nowrap"
-              >
-                <ShoppingCart className="w-5 h-5 mr-1.5" />
-                <span className="text-sm">Cart</span>
-                {cart.length > 0 && (
-                  <span className="ml-2 bg-slate-950 text-amber-400 text-xs font-black px-2 py-0.5 rounded-full border border-amber-400">
-                    {cart.reduce((a, b) => a + b.quantity, 0)}
-                  </span>
-                )}
-              </button>
-            )}
-          </div>
+            </form>
+          )}
         </div>
       </header>
 
       {/* VIEW 1: CUSTOMER STORE VIEW */}
       {currentView === 'store' && (
-        <div>
-          {/* Category nav + search */}
-          <nav className="bg-white border-b sticky top-[68px] z-30">
-            <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-4">
-              <div className="flex items-center space-x-1 overflow-x-auto">
-                <button
-                  onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
-                  className={`px-3.5 py-2 text-xs font-bold whitespace-nowrap rounded-lg cursor-pointer ${selectedCategory === 'All' ? 'text-amber-600' : 'text-slate-600 hover:text-slate-900'}`}
-                >
-                  Best Sellers
-                </button>
-                {categories.map((cat) => (
+        <div className="bg-slate-100">
+          {/* Category list + banner */}
+          <section className="max-w-7xl mx-auto sm:px-4 sm:pt-4">
+            <div className="flex gap-4">
+              {categories.length > 0 && (
+                <aside className="hidden lg:block w-56 shrink-0 bg-white rounded-lg shadow-sm py-2 h-[340px] overflow-y-auto">
                   <button
-                    key={cat.id}
-                    onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
-                    className={`px-3.5 py-2 text-xs font-bold whitespace-nowrap rounded-lg cursor-pointer ${selectedCategory === cat.name ? 'text-amber-600' : 'text-slate-600 hover:text-slate-900'}`}
+                    onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
+                    className="w-full flex items-center justify-between px-4 py-2 text-sm text-slate-700 hover:bg-amber-50 hover:text-amber-700 cursor-pointer"
                   >
-                    {cat.name}
+                    All Products <ChevronRight className="w-4 h-4 text-slate-300" />
                   </button>
-                ))}
-              </div>
-              <div className="relative hidden sm:block">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="Search our store"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 pr-3 py-2 border rounded-full text-xs w-56 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-          </nav>
-
-          {/* Hero slider */}
-          <section className="relative overflow-hidden">
-            <div className="flex transition-transform duration-700" style={{ transform: `translateX(-${hi * 100}%)` }}>
-              {displaySlides.map((sl, i) => (
-                <div
-                  key={sl.id || i}
-                  className={`min-w-full h-64 md:h-96 bg-gradient-to-r ${BG_PRESETS[sl.bg] || BG_PRESETS.gold} flex items-center justify-center text-center px-6 relative`}
-                  style={sl.image_url ? { backgroundImage: `url(${sl.image_url})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
-                >
-                  {sl.image_url && <div className="absolute inset-0 bg-black/45" />}
-                  <div className="max-w-2xl relative">
-                    <p className="text-amber-400 text-xs font-bold tracking-[0.3em] mb-3">{settings.store_name}</p>
-                    <h2 className="text-3xl md:text-6xl font-black text-white mb-3">{sl.title}</h2>
-                    <p className="text-slate-200 text-sm md:text-lg mb-6">{sl.text}</p>
+                  {categories.map((cat) => (
                     <button
-                      onClick={scrollToProducts}
-                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm px-8 py-3 rounded-full transition cursor-pointer"
+                      key={cat.id}
+                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
+                      className="w-full flex items-center justify-between px-4 py-2 text-sm text-slate-700 hover:bg-amber-50 hover:text-amber-700 text-left cursor-pointer"
                     >
-                      {sl.cta}
+                      <span className="truncate">{cat.name}</span> <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
                     </button>
-                  </div>
+                  ))}
+                </aside>
+              )}
+
+              <div className="flex-1 min-w-0 relative overflow-hidden sm:rounded-lg shadow-sm bg-slate-800 aspect-[2/1] sm:aspect-[5/2] lg:aspect-auto lg:h-[340px]">
+                <div className="flex h-full transition-transform duration-700" style={{ transform: `translateX(-${hi * 100}%)` }}>
+                  {displaySlides.map((sl, i) => {
+                    const hasText = !!((sl.title || '').trim() || (sl.text || '').trim());
+                    return (
+                      <div
+                        key={sl.id || i}
+                        className={`min-w-full h-full bg-gradient-to-r ${BG_PRESETS[sl.bg] || BG_PRESETS.gold} flex items-center justify-center text-center px-6 relative`}
+                        style={sl.image_url ? { backgroundImage: `url("${sl.image_url}")`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
+                      >
+                        {sl.image_url && hasText && <div className="absolute inset-0 bg-black/40" />}
+                        {hasText && (
+                          <div className="max-w-2xl relative">
+                            {sl.title && <h2 className="text-2xl sm:text-4xl md:text-5xl font-black text-white mb-2 sm:mb-3">{sl.title}</h2>}
+                            {sl.text && <p className="text-slate-100 text-xs sm:text-base md:text-lg mb-3 sm:mb-5">{sl.text}</p>}
+                            {sl.cta && (
+                              <button
+                                onClick={scrollToProducts}
+                                className="bg-amber-500 hover:bg-amber-600 text-white font-black text-xs sm:text-sm px-6 sm:px-8 py-2 sm:py-3 rounded-full transition cursor-pointer"
+                              >
+                                {sl.cta}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-            <button
-              onClick={() => setHeroIndex(i => (i % displaySlides.length - 1 + displaySlides.length) % displaySlides.length)}
-              className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
-              aria-label="Previous slide"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => setHeroIndex(i => i + 1)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/20 hover:bg-white/40 text-white p-2 rounded-full cursor-pointer"
-              aria-label="Next slide"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </button>
-            <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
-              {displaySlides.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setHeroIndex(i)}
-                  className={`h-2 rounded-full transition-all cursor-pointer ${i === hi ? 'w-6 bg-amber-400' : 'w-2 bg-white/50'}`}
-                  aria-label={`Slide ${i + 1}`}
-                />
-              ))}
+                {displaySlides.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => setHeroIndex(i => (i % displaySlides.length - 1 + displaySlides.length) % displaySlides.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/25 hover:bg-black/45 text-white p-1.5 sm:p-2 rounded-full cursor-pointer"
+                      aria-label="Previous slide"
+                    >
+                      <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
+                    </button>
+                    <button
+                      onClick={() => setHeroIndex(i => i + 1)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/25 hover:bg-black/45 text-white p-1.5 sm:p-2 rounded-full cursor-pointer"
+                      aria-label="Next slide"
+                    >
+                      <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5" />
+                    </button>
+                    <div className="absolute bottom-2 sm:bottom-3 left-0 right-0 flex justify-center gap-1.5">
+                      {displaySlides.map((_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setHeroIndex(i)}
+                          className={`h-1.5 sm:h-2 rounded-full transition-all cursor-pointer ${i === hi ? 'w-5 sm:w-6 bg-white' : 'w-1.5 sm:w-2 bg-white/50'}`}
+                          aria-label={`Slide ${i + 1}`}
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </section>
 
-          {/* Scrolling strip */}
-          <div className="bg-amber-500 text-slate-950 overflow-hidden whitespace-nowrap py-2.5">
-            <div className="marquee-track inline-block font-black text-xs md:text-sm tracking-widest uppercase">
-              {[0, 1, 2, 3].map(k => (
-                <span key={k} className="mx-6">Summer Sale Is Live Now &nbsp;&#10022;&nbsp; Trusted by Professionals &nbsp;&#10022;&nbsp; 100% Original Products &nbsp;&#10022;&nbsp; Cash on Delivery &nbsp;&#10022;</span>
-              ))}
-            </div>
-          </div>
+          {/* Category circles (phones and tablets) */}
+          {categories.length > 0 && (
+            <section className="lg:hidden bg-white sm:mx-4 sm:mt-3 sm:rounded-lg shadow-sm">
+              <div className="flex gap-4 overflow-x-auto px-3 py-3">
+                {categories.map((cat) => {
+                  const img = categoryImage(cat.name);
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
+                      className="flex flex-col items-center gap-1 w-16 shrink-0 cursor-pointer"
+                    >
+                      <span className="w-14 h-14 rounded-full bg-amber-50 border border-amber-100 overflow-hidden flex items-center justify-center">
+                        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-6 h-6 text-amber-600" />}
+                      </span>
+                      <span className="text-[10px] text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
-          {/* Products */}
-          <main id="products" className="max-w-7xl mx-auto px-4 py-10 scroll-mt-32">
-            <div className="text-center mb-6">
-              <h2 className="text-2xl md:text-3xl font-black text-slate-900">
-                {selectedCategory === 'All' ? 'Best Sellers' : selectedCategory}
-              </h2>
-              <div className="w-16 h-1 bg-amber-500 mx-auto mt-2 rounded-full" />
+          {/* Scrolling strip (Settings > Website Look) */}
+          {settings.show_marquee && settings.marquee_items.length > 0 && (
+            <div className="max-w-7xl mx-auto sm:px-4 mt-2 sm:mt-3">
+              <div className="bg-amber-600 text-white overflow-hidden whitespace-nowrap py-2 sm:rounded-lg">
+                <div className="marquee-track inline-flex text-xs md:text-sm font-bold" style={{ animationDuration: `${settings.marquee_speed}s` }}>
+                  {[0, 1, 2, 3].map((k) => (
+                    <span key={k} className="inline-flex">
+                      {settings.marquee_items.map((m, i) => (
+                        <span key={i} className="inline-flex items-center gap-1.5 mx-5 md:mx-8">
+                          <ShopIcon name={m.icon} className="w-4 h-4" />
+                          {m.text}
+                        </span>
+                      ))}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
+          )}
 
-            <div className="flex items-center justify-center flex-wrap gap-2 mb-6">
-              <button
-                onClick={() => setSelectedCategory('All')}
-                className={`px-4 py-2 rounded-full text-xs font-bold transition whitespace-nowrap cursor-pointer ${selectedCategory === 'All' ? 'bg-slate-900 text-amber-400' : 'bg-white text-slate-600 border'}`}
-              >
-                All Products
-              </button>
-              {categories.map((cat) => (
+          {/* Flash sale: discounted products */}
+          {saleProducts.length > 0 && !searchQuery.trim() && (
+            <section className="max-w-7xl mx-auto sm:px-4 mt-4 sm:mt-6">
+              <h2 className="px-3 sm:px-0 text-lg sm:text-xl text-slate-800 mb-2">Flash Sale</h2>
+              <div className="bg-white sm:rounded-lg shadow-sm">
+                <div className="flex items-center justify-between gap-3 px-3 sm:px-4 py-3 border-b">
+                  <span className="text-amber-600 font-bold text-sm flex items-center gap-1.5">
+                    <Flame className="w-4 h-4" /> On Sale Now
+                  </span>
+                  <button
+                    onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
+                    className="border border-amber-600 text-amber-600 hover:bg-amber-50 text-[11px] sm:text-xs font-bold px-3 py-1.5 rounded cursor-pointer whitespace-nowrap"
+                  >
+                    SHOP ALL PRODUCTS
+                  </button>
+                </div>
+                <div className="flex gap-3 overflow-x-auto p-3 sm:p-4">
+                  {saleProducts.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => openProduct(p)}
+                      className="w-32 sm:w-40 shrink-0 text-left group cursor-pointer"
+                    >
+                      <div className="aspect-square bg-slate-50 rounded overflow-hidden mb-2">
+                        <img src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                      </div>
+                      <p className="text-xs text-slate-700 line-clamp-2 min-h-[2rem]">{p.name}</p>
+                      <p className="text-amber-600 font-bold text-sm sm:text-base mt-1">{money(p.discounted_price || p.price)}</p>
+                      <p className="text-[11px]">
+                        <span className="text-slate-400 line-through mr-1">{money(p.original_price)}</span>
+                        <span className="text-slate-700">-{discountPct(p)}%</span>
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* Category tiles */}
+          {settings.show_categories && categories.length > 0 && !searchQuery.trim() && (
+            <section className="hidden lg:block max-w-7xl mx-auto px-4 mt-6">
+              <h2 className="text-xl text-slate-800 mb-2">Categories</h2>
+              <div className="bg-white sm:rounded-lg shadow-sm grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 overflow-hidden">
+                {categories.map((cat) => {
+                  const img = categoryImage(cat.name);
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
+                      className="flex flex-col items-center gap-2 p-3 sm:p-4 border-r border-b border-slate-100 hover:shadow-lg hover:z-10 bg-white transition cursor-pointer"
+                    >
+                      <span className="w-16 h-16 sm:w-20 sm:h-20 rounded overflow-hidden bg-slate-50 flex items-center justify-center">
+                        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-8 h-8 text-amber-600" />}
+                      </span>
+                      <span className="text-[11px] sm:text-xs text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* All products ("Just For You") */}
+          <main id="products" className="max-w-7xl mx-auto sm:px-4 mt-4 sm:mt-6 pb-10 scroll-mt-36">
+            <h2 className="px-3 sm:px-0 text-lg sm:text-xl text-slate-800 mb-2">
+              {searchQuery.trim()
+                ? `Results for "${searchQuery.trim()}"`
+                : selectedCategory === 'All' ? 'Just For You' : selectedCategory}
+            </h2>
+
+            <div className="flex items-center justify-between gap-3 px-3 sm:px-0 mb-2">
+              <span className="text-xs text-slate-500">{visibleProducts.length} items</span>
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                Sort by
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="border rounded px-2 py-1.5 bg-white text-xs">
+                  <option value="best">Best Match</option>
+                  <option value="popular">Best Selling</option>
+                  <option value="new">Newest</option>
+                  <option value="low">Price: Low to High</option>
+                  <option value="high">Price: High to Low</option>
+                </select>
+              </label>
+            </div>
+            <div className="flex gap-2 overflow-x-auto px-3 sm:px-0 pb-3">
+              {['All', ...categories.map(c => c.name)].map((name) => (
                 <button
-                  key={cat.id}
-                  onClick={() => setSelectedCategory(cat.name)}
-                  className={`px-4 py-2 rounded-full text-xs font-bold transition whitespace-nowrap cursor-pointer ${selectedCategory === cat.name ? 'bg-slate-900 text-amber-400' : 'bg-white text-slate-600 border'}`}
+                  key={name}
+                  onClick={() => setSelectedCategory(name)}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap border transition cursor-pointer ${selectedCategory === name ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-amber-400'}`}
                 >
-                  {cat.name}
+                  {name === 'All' ? 'All Products' : name}
                 </button>
               ))}
             </div>
 
-            <div className="sm:hidden mb-5 relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search our store"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2.5 border rounded-full text-sm bg-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-
             {visibleProducts.length === 0 ? (
-              <div className="text-center py-16 text-slate-400 font-medium">No products found.</div>
+              <div className="text-center py-16 text-slate-400 font-medium bg-white sm:rounded-lg">
+                {fresh ? 'No products found.' : 'Loading products...'}
+              </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-6">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-3 px-2 sm:px-0">
                 {visibleProducts.map((product) => {
                   const soldOut = product.stock_quantity <= 0;
                   const pct = discountPct(product);
+                  const r = ratingOf(product.id);
                   return (
-                    <div key={product.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col group">
-                      <div className="overflow-hidden bg-slate-100 aspect-square relative">
-                        <img
-                          src={product.image_url || 'https://via.placeholder.com/300'}
-                          alt={product.name}
-                          className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${soldOut ? 'opacity-50' : ''}`}
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src = 'https://via.placeholder.com/300?text=No+Image';
-                          }}
-                        />
-                        {pct > 0 && !soldOut && (
-                          <span className="absolute top-2 left-2 bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded-full">-{pct}%</span>
-                        )}
+                    <div key={product.id} className="bg-white rounded-md overflow-hidden hover:shadow-lg transition-shadow flex flex-col group">
+                      <div className="aspect-square bg-slate-50 relative overflow-hidden">
+                        <button onClick={() => openProduct(product)} className="block w-full h-full cursor-pointer" aria-label={`View ${product.name}`}>
+                          <img
+                            src={product.image_url || PLACEHOLDER_IMG}
+                            alt={product.name}
+                            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${soldOut ? 'opacity-50' : ''}`}
+                            onError={(e) => { (e.target as HTMLImageElement).src = PLACEHOLDER_IMG; }}
+                          />
+                        </button>
                         {soldOut && (
-                          <span className="absolute top-2 left-2 bg-slate-900 text-white text-[10px] font-black px-2 py-1 rounded-full">Sold Out</span>
+                          <span className="absolute top-2 left-2 bg-slate-900/85 text-white text-[10px] font-bold px-2 py-0.5 rounded">Sold Out</span>
                         )}
                         <button
                           onClick={() => toggleWishlist(product.id)}
                           className="absolute top-2 right-2 bg-white/90 hover:bg-white p-1.5 rounded-full shadow cursor-pointer"
                           aria-label="Add to wishlist"
                         >
-                          <Heart className={`w-4 h-4 ${wishlist.includes(product.id) ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} />
-                        </button>
-                        <button
-                          onClick={() => { setQuickView(product); setQvQty(1); }}
-                          className="absolute bottom-0 left-0 right-0 bg-slate-900/90 text-white text-xs font-bold py-2 flex items-center justify-center md:translate-y-full md:group-hover:translate-y-0 transition-transform cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5 mr-1.5" /> Quick view
+                          <Heart className={`w-3.5 h-3.5 ${wishlist.includes(product.id) ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} />
                         </button>
                       </div>
 
-                      <div className="p-3 md:p-4 flex-1 flex flex-col">
-                        <h3 className="font-bold text-xs md:text-sm text-slate-800 mb-1.5 line-clamp-2 min-h-[2.5rem]">{product.name}</h3>
-                        <div className="flex items-baseline flex-wrap gap-x-2 mb-2">
-                          <span className="text-sm md:text-base font-black text-slate-900">PKR {product.discounted_price || product.price}</span>
+                      <div className="p-2 sm:p-2.5 flex-1 flex flex-col">
+                        <button onClick={() => openProduct(product)} className="text-left cursor-pointer">
+                          <h3 className="text-xs sm:text-[13px] text-slate-800 line-clamp-2 min-h-[2rem] sm:min-h-[2.25rem] leading-snug">{product.name}</h3>
+                        </button>
+                        <p className="text-amber-600 font-bold text-base sm:text-lg mt-1 leading-tight">{money(product.discounted_price || product.price)}</p>
+                        <p className="text-[11px] min-h-[1rem]">
                           {pct > 0 && (
-                            <span className="text-[11px] text-slate-400 line-through">PKR {product.original_price}</span>
+                            <>
+                              <span className="text-slate-400 line-through mr-1">{money(product.original_price)}</span>
+                              <span className="text-slate-700">-{pct}%</span>
+                            </>
                           )}
-                        </div>
-                        {(() => {
-                          const r = ratingOf(product.id);
-                          return (
-                            <div className="flex items-center space-x-1 mb-1.5">
-                              {renderStars(r.avg)}
-                              <span className="text-[11px] text-slate-500">{r.count > 0 ? `${r.avg.toFixed(1)} (${r.count})` : 'No reviews yet'}</span>
-                            </div>
-                          );
-                        })()}
-                        <p className="text-[11px] font-semibold mb-2">
-                          {soldOut ? (
-                            <span className="text-red-600">Out of stock</span>
-                          ) : (
-                            <span className={product.stock_quantity <= 5 ? 'text-red-600' : 'text-emerald-700'}>
-                              In stock: {product.stock_quantity}{product.stock_quantity <= 5 ? ' (almost gone!)' : ''}
-                            </span>
-                          )}
-                          <span className="text-slate-400"> | {product.sold_quantity ?? 0} sold</span>
                         </p>
+                        <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-500">
+                          {r.count > 0 ? (
+                            <>{renderStars(r.avg, 'w-3 h-3')}<span>({r.count})</span></>
+                          ) : (
+                            <span>{product.sold_quantity ? `${product.sold_quantity} sold` : 'New'}</span>
+                          )}
+                          {r.count > 0 && !!product.sold_quantity && <span className="ml-auto">{product.sold_quantity} sold</span>}
+                        </div>
+                        {!soldOut && product.stock_quantity <= 5 && (
+                          <p className="text-[10px] text-red-600 font-semibold mt-0.5">Only {product.stock_quantity} left</p>
+                        )}
                         <button
                           onClick={() => addToCart(product)}
                           disabled={soldOut}
-                          className="mt-auto w-full bg-slate-900 hover:bg-amber-500 hover:text-slate-950 text-white disabled:bg-slate-200 disabled:text-slate-500 disabled:cursor-not-allowed font-bold text-xs py-2.5 rounded-lg transition flex items-center justify-center cursor-pointer"
+                          className="mt-auto pt-0 w-full border border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed font-semibold text-[11px] sm:text-xs py-1.5 rounded transition flex items-center justify-center cursor-pointer mt-2"
                         >
-                          <ShoppingCart className="w-4 h-4 mr-1.5" /> {soldOut ? 'Sold Out' : 'Add to Cart'}
+                          <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : 'Add to Cart'}
                         </button>
                       </div>
                     </div>
@@ -1536,40 +1808,19 @@ export default function App() {
 
           {/* Trust badges */}
           {settings.show_trust && (
-          <section className="bg-white border-y">
-            <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
-              {[
-                { icon: <BadgeCheck className="w-8 h-8 text-amber-500" />, t: '100% Original', d: 'Authentic salon-grade products.' },
-                { icon: <Truck className="w-8 h-8 text-amber-500" />, t: 'Fast Delivery', d: 'Delivered across Pakistan.' },
-                { icon: <ShieldCheck className="w-8 h-8 text-amber-500" />, t: 'Cash on Delivery', d: 'Pay when you receive your order.' },
-                { icon: <MessageCircle className="w-8 h-8 text-amber-500" />, t: 'WhatsApp Support', d: 'Ask us anything, anytime.' }
-              ].map((b, i) => (
-                <div key={i} className="flex flex-col items-center">
-                  <div className="bg-amber-50 p-4 rounded-full mb-3">{b.icon}</div>
-                  <h4 className="font-black text-sm text-slate-900">{b.t}</h4>
-                  <p className="text-xs text-slate-500 mt-1">{b.d}</p>
-                </div>
-              ))}
-            </div>
-          </section>
-          )}
-
-          {/* Shop by category */}
-          {settings.show_categories && categories.length > 0 && (
-            <section className="max-w-7xl mx-auto px-4 py-10">
-              <h2 className="text-xl md:text-2xl font-black text-center text-slate-900 mb-6">Shop by Category</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.id}
-                    onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
-                    className="bg-gradient-to-br from-slate-900 to-slate-800 hover:from-amber-600 hover:to-amber-500 text-white rounded-2xl py-10 px-4 font-black text-sm md:text-base transition cursor-pointer"
-                  >
-                    {cat.name}
-                    <span className="block text-[11px] font-medium text-amber-300 mt-1">
-                      {products.filter(p => p.category_name === cat.name).length} products
-                    </span>
-                  </button>
+            <section className="max-w-7xl mx-auto sm:px-4 pb-8">
+              <div className="bg-white sm:rounded-lg shadow-sm px-4 py-6 grid grid-cols-2 md:grid-cols-4 gap-5 text-center">
+                {[
+                  { icon: <BadgeCheck className="w-7 h-7 text-amber-600" />, t: '100% Original', d: 'Authentic salon-grade products.' },
+                  { icon: <Truck className="w-7 h-7 text-amber-600" />, t: 'Fast Delivery', d: 'Delivered across Pakistan.' },
+                  { icon: <ShieldCheck className="w-7 h-7 text-amber-600" />, t: 'Cash on Delivery', d: 'Pay when you receive your order.' },
+                  { icon: <MessageCircle className="w-7 h-7 text-amber-600" />, t: 'WhatsApp Support', d: 'Ask us anything, anytime.' }
+                ].map((b, i) => (
+                  <div key={i} className="flex flex-col items-center">
+                    <div className="bg-amber-50 p-3 rounded-full mb-2">{b.icon}</div>
+                    <h4 className="font-bold text-sm text-slate-900">{b.t}</h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{b.d}</p>
+                  </div>
                 ))}
               </div>
             </section>
@@ -1641,124 +1892,178 @@ export default function App() {
             </div>
           </footer>
 
-          {/* Quick view modal */}
-          {quickView && (
-            <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setQuickView(null)}>
-              <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] grid md:grid-cols-2 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
-                <button onClick={() => setQuickView(null)} className="absolute top-3 right-3 bg-white/90 p-1.5 rounded-full shadow z-10 cursor-pointer" aria-label="Close">
-                  <X className="w-4 h-4" />
-                </button>
-                <img src={quickView.image_url} alt={quickView.name} className="w-full h-56 md:h-full object-cover bg-slate-100" />
-                <div className="p-6 flex flex-col overflow-y-auto max-h-[90vh]">
-                  <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">{quickView.category_name}</span>
-                  <h3 className="text-xl font-black text-slate-900 mt-1 mb-2">{quickView.name}</h3>
-                  <div className="flex items-baseline space-x-2 mb-2">
-                    <span className="text-2xl font-black text-slate-900">PKR {quickView.discounted_price || quickView.price}</span>
-                    {discountPct(quickView) > 0 && (
-                      <>
-                        <span className="text-sm text-slate-400 line-through">PKR {quickView.original_price}</span>
-                        <span className="text-xs font-black text-red-600">-{discountPct(quickView)}%</span>
-                      </>
-                    )}
+          {/* Product page (opens over the shop; the phone's Back button closes it) */}
+          {quickView && (() => {
+            const p = quickView;
+            const pct = discountPct(p);
+            const r = ratingOf(p.id);
+            const soldOut = p.stock_quantity <= 0;
+            const related = products.filter(x => x.id !== p.id && x.category_name === p.category_name).slice(0, 10);
+            const productReviews = reviews.filter(rv => rv.product_id === p.id);
+            const buyNow = () => { if (addToCart(p, qvQty)) { closeProduct(); setIsCartOpen(true); } };
+            const addOnly = () => { addToCart(p, qvQty); };
+            return (
+              <div key={p.id} className="fixed inset-0 z-50 bg-black/60 md:flex md:items-start md:justify-center md:p-6 overflow-y-auto" onClick={closeProduct}>
+                <div className="bg-slate-100 md:bg-white w-full min-h-full md:min-h-0 md:max-w-5xl md:rounded-lg relative pb-20 md:pb-0" onClick={(e) => e.stopPropagation()}>
+                  {/* top bar */}
+                  <div className="sticky top-0 z-10 bg-white border-b flex items-center gap-2 px-2 py-2 md:rounded-t-lg">
+                    <button onClick={closeProduct} className="p-2 rounded-full hover:bg-slate-100 cursor-pointer" aria-label="Back">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className="text-sm font-semibold text-slate-700 truncate flex-1">{p.category_name || 'Product details'}</span>
+                    <button
+                      onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/?product=${p.id}`); setToastMessage('Product link copied!'); setTimeout(() => setToastMessage(null), 2000); }}
+                      className="text-xs font-semibold text-slate-600 px-2 py-1.5 rounded hover:bg-slate-100 cursor-pointer"
+                    >
+                      Share
+                    </button>
+                    <button onClick={() => { closeProduct(); setIsCartOpen(true); }} className="relative p-2 rounded-full hover:bg-slate-100 cursor-pointer" aria-label="Open cart">
+                      <ShoppingCart className="w-5 h-5" />
+                      {cart.length > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 bg-amber-600 text-white text-[9px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center">
+                          {cart.reduce((a, b) => a + b.quantity, 0)}
+                        </span>
+                      )}
+                    </button>
                   </div>
-                  <p className="text-xs font-bold mb-3">
-                    {quickView.stock_quantity <= 0
-                      ? <span className="text-red-600">Out of stock</span>
-                      : <span className="text-emerald-700">In stock: {quickView.stock_quantity}</span>}
-                    <span className="text-slate-400"> | {quickView.sold_quantity ?? 0} sold</span>
-                  </p>
 
-                  {quickView.stock_quantity > 0 ? (
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="flex items-center border rounded-xl overflow-hidden">
-                        <button type="button" onClick={() => setQvQty(q => Math.max(1, q - 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Decrease quantity">
-                          <Minus className="w-4 h-4" />
-                        </button>
-                        <span className="px-4 text-sm font-black">{qvQty}</span>
-                        <button type="button" onClick={() => setQvQty(q => Math.min(quickView.stock_quantity, q + 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Increase quantity">
-                          <Plus className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <button
-                        onClick={() => { if (addToCart(quickView, qvQty)) setQuickView(null); }}
-                        className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm py-3 rounded-xl flex items-center justify-center cursor-pointer"
-                      >
-                        <ShoppingCart className="w-4 h-4 mr-2" /> Add to Cart
-                      </button>
+                  <div className="md:grid md:grid-cols-2 md:gap-6 md:p-6">
+                    <div className="bg-white aspect-square md:rounded-lg overflow-hidden relative">
+                      <img src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className={`w-full h-full object-contain ${soldOut ? 'opacity-60' : ''}`} />
+                      {soldOut && <span className="absolute top-3 left-3 bg-slate-900/85 text-white text-xs font-bold px-2.5 py-1 rounded">Sold Out</span>}
                     </div>
-                  ) : (
-                    <button disabled className="mb-4 bg-slate-200 text-slate-500 font-black text-sm py-3 rounded-xl">Sold Out</button>
+
+                    <div className="space-y-2 md:space-y-4">
+                      <div className="bg-white px-3 py-3 md:p-0">
+                        <p className="text-amber-600 font-bold text-2xl md:text-3xl">{money(p.discounted_price || p.price)}</p>
+                        {pct > 0 && (
+                          <p className="text-sm mt-0.5">
+                            <span className="text-slate-400 line-through mr-2">{money(p.original_price)}</span>
+                            <span className="text-slate-700">-{pct}%</span>
+                          </p>
+                        )}
+                        <h1 className="text-base md:text-xl text-slate-900 mt-2 leading-snug">{p.name}</h1>
+                        <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
+                          {renderStars(r.avg, 'w-3.5 h-3.5')}
+                          <span>{r.count > 0 ? `${r.avg.toFixed(1)} (${r.count} ratings)` : 'No ratings yet'}</span>
+                          <span className="text-slate-300">|</span>
+                          <span>{p.sold_quantity ?? 0} sold</span>
+                          <button onClick={() => toggleWishlist(p.id)} className="ml-auto p-1 cursor-pointer" aria-label="Add to wishlist">
+                            <Heart className={`w-5 h-5 ${wishlist.includes(p.id) ? 'fill-red-500 text-red-500' : 'text-slate-400'}`} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="bg-white px-3 py-3 md:p-4 md:border md:rounded-lg text-xs text-slate-600 space-y-2">
+                        <p className="flex items-center gap-2"><Truck className="w-4 h-4 text-amber-600 shrink-0" /> Delivery across Pakistan</p>
+                        <p className="flex items-center gap-2"><Wallet className="w-4 h-4 text-amber-600 shrink-0" /> Cash on Delivery available</p>
+                        <p className="flex items-center gap-2"><BadgeCheck className="w-4 h-4 text-amber-600 shrink-0" /> 100% original product</p>
+                        <p className={`font-semibold ${soldOut ? 'text-red-600' : p.stock_quantity <= 5 ? 'text-red-600' : 'text-emerald-700'}`}>
+                          {soldOut ? 'Out of stock' : p.stock_quantity <= 5 ? `Only ${p.stock_quantity} left - order soon` : 'In stock'}
+                        </p>
+                      </div>
+
+                      {!soldOut && (
+                        <div className="bg-white px-3 py-3 md:p-0 flex items-center gap-3">
+                          <span className="text-xs text-slate-500">Quantity</span>
+                          <div className="flex items-center border rounded-lg overflow-hidden">
+                            <button type="button" onClick={() => setQvQty(q => Math.max(1, q - 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Decrease quantity">
+                              <Minus className="w-4 h-4" />
+                            </button>
+                            <span className="px-4 text-sm font-bold">{qvQty}</span>
+                            <button type="button" onClick={() => setQvQty(q => Math.min(p.stock_quantity, q + 1))} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" aria-label="Increase quantity">
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Buttons (computer); phones get the bar at the bottom */}
+                      <div className="hidden md:grid grid-cols-2 gap-3">
+                        <button onClick={buyNow} disabled={soldOut} className="bg-amber-800 hover:bg-amber-900 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">Buy Now</button>
+                        <button onClick={addOnly} disabled={soldOut} className="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">Add to Cart</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {p.description && (
+                    <div className="bg-white mt-2 md:mt-0 px-3 py-4 md:px-6 md:border-t">
+                      <h3 className="text-sm font-bold text-slate-900 mb-2">Product details</h3>
+                      <p className="text-sm text-slate-600 whitespace-pre-line">{p.description}</p>
+                    </div>
                   )}
 
-                  <p className="text-sm text-slate-600 mb-3">{quickView.description}</p>
-
-                  <div className="border-t pt-3">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <h4 className="text-sm font-black text-slate-900">Customer Reviews</h4>
-                      {renderStars(ratingOf(quickView.id).avg)}
-                      <span className="text-xs text-slate-500">({ratingOf(quickView.id).count})</span>
+                  {/* Reviews */}
+                  <div className="bg-white mt-2 md:mt-0 px-3 py-4 md:px-6 md:border-t">
+                    <div className="flex items-center gap-2 mb-3">
+                      <h3 className="text-sm font-bold text-slate-900">Ratings & Reviews</h3>
+                      {renderStars(r.avg)}
+                      <span className="text-xs text-slate-500">({r.count})</span>
                     </div>
-                    <div className="space-y-2 max-h-40 overflow-y-auto">
-                      {reviews.filter(r => r.product_id === quickView.id).length === 0 && (
-                        <p className="text-xs text-slate-400">No reviews yet. Be the first to review this product!</p>
-                      )}
-                      {reviews.filter(r => r.product_id === quickView.id).map(r => (
-                        <div key={r.id} className="bg-slate-50 rounded-lg p-2.5 text-xs">
+                    <div className="space-y-2">
+                      {productReviews.length === 0 && <p className="text-xs text-slate-400">No reviews yet. Be the first to review this product!</p>}
+                      {productReviews.slice(0, 20).map(rv => (
+                        <div key={rv.id} className="border-b last:border-b-0 pb-2 text-xs">
                           <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-800">{r.customer_name}</span>
-                            {renderStars(r.rating, 'w-3 h-3')}
+                            <span className="font-semibold text-slate-800">{rv.customer_name}</span>
+                            {renderStars(rv.rating, 'w-3 h-3')}
                           </div>
-                          {r.remark && <p className="text-slate-600 mt-1">{r.remark}</p>}
-                          <p className="text-[10px] text-slate-400 mt-1">{fmtDateTime(r.created_at)}</p>
+                          {rv.remark && <p className="text-slate-600 mt-1">{rv.remark}</p>}
+                          <p className="text-[10px] text-slate-400 mt-0.5">{fmtDateTime(rv.created_at)}</p>
                         </div>
                       ))}
                     </div>
 
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 space-y-2">
-                      <p className="text-xs font-bold text-slate-800">Write a review</p>
-                      <input
-                        type="text"
-                        placeholder="Your name *"
-                        value={rvName}
-                        onChange={(e) => setRvName(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg text-xs"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="email"
-                          placeholder="Email (optional)"
-                          value={rvEmail}
-                          onChange={(e) => setRvEmail(e.target.value)}
-                          className="w-full px-3 py-2 border rounded-lg text-xs"
-                        />
-                        <input
-                          type="tel"
-                          placeholder="Mobile (optional)"
-                          value={rvPhone}
-                          onChange={(e) => setRvPhone(e.target.value)}
-                          className="w-full px-3 py-2 border rounded-lg text-xs"
-                        />
+                    <details className="mt-3 bg-slate-50 border rounded-lg">
+                      <summary className="px-3 py-2 text-xs font-bold text-slate-800 cursor-pointer">Write a review</summary>
+                      <div className="p-3 pt-0 space-y-2">
+                        <input type="text" placeholder="Your name *" value={rvName} onChange={(e) => setRvName(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-xs bg-white" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input type="email" placeholder="Email (optional)" value={rvEmail} onChange={(e) => setRvEmail(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-xs bg-white" />
+                          <input type="tel" placeholder="Mobile (optional)" value={rvPhone} onChange={(e) => setRvPhone(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-xs bg-white" />
+                        </div>
+                        {starPicker(rvRating, setRvRating)}
+                        <textarea rows={2} placeholder="Remarks (optional)" value={rvRemark} onChange={(e) => setRvRemark(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-xs bg-white" />
+                        <button onClick={() => handleSubmitReview(p)} className="w-full bg-amber-600 text-white font-bold text-xs py-2 rounded-lg cursor-pointer">Submit Review</button>
                       </div>
-                      {starPicker(rvRating, setRvRating)}
-                      <textarea
-                        rows={2}
-                        placeholder="Remarks (optional)"
-                        value={rvRemark}
-                        onChange={(e) => setRvRemark(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg text-xs"
-                      />
-                      <button
-                        onClick={() => handleSubmitReview(quickView)}
-                        className="w-full bg-slate-900 text-amber-400 font-bold text-xs py-2 rounded-lg cursor-pointer"
-                      >
-                        Submit Review
-                      </button>
+                    </details>
+                  </div>
+
+                  {/* Related products */}
+                  {related.length > 0 && (
+                    <div className="bg-white mt-2 md:mt-0 px-3 py-4 md:px-6 md:border-t md:rounded-b-lg">
+                      <h3 className="text-sm font-bold text-slate-900 mb-3">You may also like</h3>
+                      <div className="flex gap-3 overflow-x-auto pb-1">
+                        {related.map(x => (
+                          <button key={x.id} onClick={() => openProduct(x, true)} className="w-28 sm:w-36 shrink-0 text-left cursor-pointer">
+                            <div className="aspect-square bg-slate-50 rounded overflow-hidden mb-1.5">
+                              <img src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-cover" />
+                            </div>
+                            <p className="text-[11px] text-slate-700 line-clamp-2 min-h-[1.75rem]">{x.name}</p>
+                            <p className="text-amber-600 font-bold text-sm">{money(x.discounted_price || x.price)}</p>
+                          </button>
+                        ))}
+                      </div>
                     </div>
+                  )}
+
+                  {/* Phone: fixed bottom bar */}
+                  <div className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-white border-t grid grid-cols-[auto_1fr_1fr] gap-2 p-2">
+                    <a
+                      href={waLink(settings.whatsapp, `Hello, I want to ask about: ${p.name}`)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 flex flex-col items-center justify-center text-[10px] text-slate-600"
+                    >
+                      <MessageCircle className="w-5 h-5 text-emerald-600" /> Chat
+                    </a>
+                    <button onClick={buyNow} disabled={soldOut} className="bg-amber-800 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">Buy Now</button>
+                    <button onClick={addOnly} disabled={soldOut} className="bg-amber-600 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">{soldOut ? 'Sold Out' : 'Add to Cart'}</button>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -3094,16 +3399,28 @@ export default function App() {
                 <h3 className="text-lg font-extrabold text-slate-900 pb-2 border-b flex items-center">
                   <ImageIcon className="w-5 h-5 text-amber-500 mr-2" /> {editingSlideId ? 'Edit Slide' : 'Add Slide'}
                 </h3>
+                {!editingSlideId && (
+                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 space-y-2">
+                    <p className="text-xs font-bold text-slate-800">Quick: add many banner pictures at once</p>
+                    <p className="text-[11px] text-slate-600">Select 5-6 pictures together. Each picture becomes one slide and the banner changes every 5 seconds. Best size: wide pictures, about 1600 x 600.</p>
+                    <label className="inline-block bg-slate-900 text-amber-400 text-xs font-bold px-3 py-2 rounded-lg cursor-pointer">
+                      Choose pictures
+                      <input type="file" accept="image/*" multiple onChange={handleAddManySlides} className="hidden" disabled={!!slideBusy} />
+                    </label>
+                    {slideBusy && <p className="text-xs font-bold text-amber-700">{slideBusy}</p>}
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-500">Or make one slide yourself. Leave Title and Text empty to show only the picture.</p>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Title *</label>
-                  <input type="text" required value={slTitle} onChange={(e) => setSlTitle(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Title (optional)</label>
+                  <input type="text" value={slTitle} onChange={(e) => setSlTitle(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">Text</label>
                   <textarea rows={2} value={slText} onChange={(e) => setSlText(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Button text</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Button text (optional)</label>
                   <input type="text" value={slCta} onChange={(e) => setSlCta(e.target.value)} className="w-full px-3 py-2 border rounded-xl text-sm" />
                 </div>
                 <div>
@@ -3118,7 +3435,7 @@ export default function App() {
                   <div className={`h-6 rounded-lg mt-2 bg-gradient-to-r ${BG_PRESETS[slBg] || BG_PRESETS.gold}`} />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Background image (optional)</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Picture</label>
                   <input type="file" accept="image/*" onChange={handleSlideImage} className="w-full text-xs" />
                   {slImage && (
                     <div className="mt-2">
@@ -3132,7 +3449,7 @@ export default function App() {
                   <span>Show this slide on the home page</span>
                 </label>
                 <div className="flex space-x-2">
-                  <button type="submit" className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer">
+                  <button type="submit" disabled={!!slideBusy} className="flex-1 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-sm py-3 rounded-xl cursor-pointer disabled:opacity-50">
                     {editingSlideId ? 'Update Slide' : 'Save Slide'}
                   </button>
                   {editingSlideId && (
@@ -3152,10 +3469,10 @@ export default function App() {
                   <div key={sl.id} className="flex items-center gap-3 border rounded-2xl p-3">
                     <div
                       className={`w-28 h-16 rounded-lg shrink-0 bg-gradient-to-r ${BG_PRESETS[sl.bg] || BG_PRESETS.gold}`}
-                      style={sl.image_url ? { backgroundImage: `url(${sl.image_url})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
+                      style={sl.image_url ? { backgroundImage: `url("${sl.image_url}")`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="font-bold text-sm text-slate-900 truncate">{sl.title}</p>
+                      <p className="font-bold text-sm text-slate-900 truncate">{sl.title || 'Picture only'}</p>
                       <p className="text-xs text-slate-500 truncate">{sl.text}</p>
                       <p className={`text-[10px] font-black mt-0.5 ${sl.active !== false ? 'text-emerald-700' : 'text-slate-400'}`}>{sl.active !== false ? 'VISIBLE' : 'HIDDEN'}</p>
                     </div>
