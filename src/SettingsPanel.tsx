@@ -513,7 +513,8 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             <p className="text-xs font-bold text-slate-800">AI chat assistant</p>
             {check('ai_chat_enabled', 'Show the AI chat button to customers on the shop')}
             <p className="text-[11px] text-slate-600">
-              Needs the Edge Function <b>ai-chat</b> and the secret <b>ANTHROPIC_API_KEY</b> in Supabase (see README).
+              Free: works without any key (built-in bot). For a smarter real AI, add a free <b>GEMINI_API_KEY</b>
+              (from aistudio.google.com) in Supabase &gt; Edge Functions &gt; Secrets. Needs the Edge Function <b>ai-chat</b>.
               The admin assistant is in the admin menu: <b>AI Assistant</b>.
             </p>
           </div>

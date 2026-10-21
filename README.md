@@ -84,9 +84,13 @@ npm run dev
     delivery charges and payment options, and tracks an order (order number + last 4 digits of the mobile).
   - Admin: Admin > AI Assistant. Sales summary, orders, unpaid online payments, low stock, customers; on request it
     changes an order status, marks an order paid, or changes stock / price. It cannot delete or change settings.
-  - Setup: create an API key at console.anthropic.com (paid per use), then Supabase > Edge Functions > Secrets:
-    `ANTHROPIC_API_KEY` (and optionally `AI_MODEL`, default `claude-haiku-5-5`). Deploy `ai-chat` with
-    "Verify JWT" ON.
+  - **Free**: deploy `ai-chat` ("Verify JWT" ON). With no key, a free built-in bot answers by keywords
+    (products, prices, sizes, delivery, COD, order tracking; admin: sales, pending orders, low stock, payments to check).
+  - **Free real AI**: get a free key at https://aistudio.google.com/apikey and add the secret `GEMINI_API_KEY`
+    (optional `GEMINI_MODEL`, default `gemini-2.5-flash`). Or a free Groq key: `GROQ_API_KEY`.
+    Free tiers have daily limits; when the limit is reached the customer chat falls back to the built-in bot.
+    Google may use free-tier chats to improve its products - do not put private data in the bot.
+  - Paid alternative: `ANTHROPIC_API_KEY` (Claude). `AI_PROVIDER` = gemini | groq | claude | builtin chooses one.
 
 ## v10: Pakistan addresses and delivery charges
 - Register, checkout and My Profile use a Pakistan-only address: +92 mobile (required), Province -> City -> Area

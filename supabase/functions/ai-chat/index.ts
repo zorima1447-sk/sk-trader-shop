@@ -1,13 +1,13 @@
 // Supabase Edge Function: ai-chat
 //
-// The shop's AI assistant (uses Claude from Anthropic).
+// The shop's AI assistant. Works FREE without any key (built-in bot), or with a free Gemini / Groq key
+// for a real AI, or with a paid Claude key. See "AI providers" below.
 //   mode "customer": answers shoppers - products, prices, sizes, delivery charges, order tracking.
 //   mode "admin":    helps the owner - sales summary, orders, low stock, and simple changes
 //                    (order status, mark paid, stock, price). Needs a logged-in admin (x-admin-token).
 //
-// Secrets (Supabase > Edge Functions > Secrets):
-//   ANTHROPIC_API_KEY  -> from https://console.anthropic.com (paid per use)
-//   AI_MODEL           -> optional, default "claude-haiku-5-5" (fast and low cost)
+// Secrets (Supabase > Edge Functions > Secrets) - all optional:
+//   GEMINI_API_KEY (free), GROQ_API_KEY (free), ANTHROPIC_API_KEY (paid), AI_PROVIDER
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided by Supabase automatically.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -286,21 +286,217 @@ async function runTool(sb: any, name: string, input: any, ctx: { site: string; s
   return { error: 'Unknown tool' };
 }
 
+// ======================= AI providers =======================
+// The first one that has a key is used. With no key at all, the free built-in bot answers.
+//   GEMINI_API_KEY    (free key: https://aistudio.google.com/apikey)       model: GEMINI_MODEL, default gemini-2.5-flash
+//   GROQ_API_KEY      (free key: https://console.groq.com/keys)           model: GROQ_MODEL, default llama-3.3-70b-versatile
+//   ANTHROPIC_API_KEY (paid:     https://console.anthropic.com)          model: AI_MODEL, default claude-haiku-5-5
+//   AI_PROVIDER       optional: "gemini" | "groq" | "claude" | "builtin" to choose one
+
+type Ctx = { sb: any; site: string; store: any };
+type Hist = { role: 'user' | 'assistant'; content: string }[];
+
+async function callTool(ctx: Ctx, name: string, input: any) {
+  try { return await runTool(ctx.sb, name, input || {}, { site: ctx.site, store: ctx.store }); }
+  catch (e) { return { error: String(e) }; }
+}
+
+// ---- Google Gemini (free tier) ----
+function geminiSchema(s: any): any {
+  if (!s || typeof s !== 'object') return s;
+  const out: any = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (k === 'type') out.type = String(v).toUpperCase();
+    else if (k === 'properties') out.properties = Object.fromEntries(Object.entries(v as any).map(([pk, pv]) => [pk, geminiSchema(pv)]));
+    else out[k] = v;
+  }
+  return out;
+}
+
+async function runGemini(key: string, system: string, tools: any[], history: Hist, ctx: Ctx) {
+  const model = Deno.env.get('GEMINI_MODEL') || 'gemini-2.5-flash';
+  const decl = tools.map((t) => {
+    const hasProps = t.input_schema && t.input_schema.properties && Object.keys(t.input_schema.properties).length > 0;
+    return hasProps ? { name: t.name, description: t.description, parameters: geminiSchema(t.input_schema) } : { name: t.name, description: t.description };
+  });
+  const contents: any[] = history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  for (let step = 0; step < 6; step++) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents, tools: [{ functionDeclarations: decl }] }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return { error: `Gemini error (${r.status}). ${r.status === 429 ? 'Free daily limit reached - try again later.' : t.slice(0, 200)}` };
+    }
+    const res = await r.json();
+    const parts = (res.candidates && res.candidates[0] && res.candidates[0].content && res.candidates[0].content.parts) || [];
+    const calls = parts.filter((p: any) => p.functionCall);
+    if (!calls.length) {
+      return { reply: parts.map((p: any) => p.text || '').join('').trim() || 'Sorry, please ask again.' };
+    }
+    contents.push({ role: 'model', parts });
+    const responses = [];
+    for (const p of calls) {
+      const out = await callTool(ctx, p.functionCall.name, p.functionCall.args);
+      responses.push({ functionResponse: { name: p.functionCall.name, response: { result: out } } });
+    }
+    contents.push({ role: 'user', parts: responses });
+  }
+  return { reply: 'Sorry, I could not finish that. Please ask in a simpler way.' };
+}
+
+// ---- Groq (free tier, OpenAI-style API) ----
+async function runGroq(key: string, system: string, tools: any[], history: Hist, ctx: Ctx) {
+  const model = Deno.env.get('GROQ_MODEL') || 'llama-3.3-70b-versatile';
+  const messages: any[] = [{ role: 'system', content: system }, ...history];
+  const fns = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }));
+  for (let step = 0; step < 6; step++) {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages, tools: fns, tool_choice: 'auto', max_tokens: 1024, temperature: 0.3 }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return { error: `Groq error (${r.status}). ${r.status === 429 ? 'Free limit reached - try again in a minute.' : t.slice(0, 200)}` };
+    }
+    const res = await r.json();
+    const msg = res.choices && res.choices[0] && res.choices[0].message;
+    if (!msg) return { reply: 'Sorry, please ask again.' };
+    if (!msg.tool_calls || !msg.tool_calls.length) return { reply: (msg.content || '').trim() || 'Sorry, please ask again.' };
+    messages.push({ role: 'assistant', content: msg.content || '', tool_calls: msg.tool_calls });
+    for (const tc of msg.tool_calls) {
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* ignore */ }
+      const out = await callTool(ctx, tc.function.name, args);
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(out).slice(0, 12000) });
+    }
+  }
+  return { reply: 'Sorry, I could not finish that. Please ask in a simpler way.' };
+}
+
+// ---- Claude (Anthropic, paid) ----
+async function runClaude(key: string, system: string, tools: any[], history: Hist, ctx: Ctx) {
+  const model = Deno.env.get('AI_MODEL') || 'claude-haiku-5-5';
+  const messages: any[] = [...history];
+  for (let step = 0; step < 6; step++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model, max_tokens: 1024, system, tools, messages }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return { error: `AI service error (${r.status}). ${r.status === 401 ? 'Check the ANTHROPIC_API_KEY.' : t.slice(0, 200)}` };
+    }
+    const res = await r.json();
+    const content = res.content || [];
+    if (res.stop_reason !== 'tool_use') {
+      return { reply: content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n').trim() || '...' };
+    }
+    messages.push({ role: 'assistant', content });
+    const results = [];
+    for (const c of content) {
+      if (c.type !== 'tool_use') continue;
+      const out = await callTool(ctx, c.name, c.input);
+      results.push({ type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(out).slice(0, 12000) });
+    }
+    messages.push({ role: 'user', content: results });
+  }
+  return { reply: 'Sorry, I could not finish that. Please ask in a simpler way.' };
+}
+
+// ---- Free built-in bot (no key, no AI): understands common questions by keywords ----
+const CITY_PROVINCE: Record<string, string> = {
+  karachi: 'Sindh', hyderabad: 'Sindh', sukkur: 'Sindh', larkana: 'Sindh', nawabshah: 'Sindh', mirpurkhas: 'Sindh', thatta: 'Sindh', badin: 'Sindh', dadu: 'Sindh', jacobabad: 'Sindh', khairpur: 'Sindh', shikarpur: 'Sindh',
+  lahore: 'Punjab', faisalabad: 'Punjab', rawalpindi: 'Punjab', pindi: 'Punjab', gujranwala: 'Punjab', multan: 'Punjab', sialkot: 'Punjab', bahawalpur: 'Punjab', sargodha: 'Punjab', sheikhupura: 'Punjab', 'rahim yar khan': 'Punjab', jhang: 'Punjab', gujrat: 'Punjab', sahiwal: 'Punjab', okara: 'Punjab', kasur: 'Punjab', jhelum: 'Punjab', murree: 'Punjab', 'dera ghazi khan': 'Punjab', chiniot: 'Punjab', wah: 'Punjab', attock: 'Punjab',
+  peshawar: 'Khyber Pakhtunkhwa', mardan: 'Khyber Pakhtunkhwa', abbottabad: 'Khyber Pakhtunkhwa', swat: 'Khyber Pakhtunkhwa', mingora: 'Khyber Pakhtunkhwa', kohat: 'Khyber Pakhtunkhwa', nowshera: 'Khyber Pakhtunkhwa', mansehra: 'Khyber Pakhtunkhwa', bannu: 'Khyber Pakhtunkhwa', 'dera ismail khan': 'Khyber Pakhtunkhwa',
+  quetta: 'Balochistan', gwadar: 'Balochistan', turbat: 'Balochistan', khuzdar: 'Balochistan', hub: 'Balochistan',
+  islamabad: 'Islamabad Capital Territory', gilgit: 'Gilgit-Baltistan', skardu: 'Gilgit-Baltistan', hunza: 'Gilgit-Baltistan',
+  muzaffarabad: 'Azad Jammu & Kashmir', mirpur: 'Azad Jammu & Kashmir', kotli: 'Azad Jammu & Kashmir',
+};
+const STOP = new Set('hai hain ka ki ke ko se me mein main mujhe kya kia kitna kitni kitne price qeemat rate rs please plz chahiye chaiye batao bataen bata do the a an is are what how much for of and or ap aap koi kuch kaun sa sb sab hy h'.split(' '));
+
+async function runBuiltin(mode: string, history: Hist, ctx: Ctx) {
+  const q = history[history.length - 1].content;
+  const t = q.toLowerCase();
+  const s = ctx.store || {};
+  const contact = [s.whatsapp && `WhatsApp: ${s.whatsapp}`, s.phone && `Phone: ${s.phone}`].filter(Boolean).join(' | ');
+  const has = (...w: string[]) => w.some((x) => t.includes(x));
+  const city = Object.keys(CITY_PROVINCE).sort((a, b) => b.length - a.length).find((c) => t.includes(c));
+
+  if (mode === 'admin') {
+    if (has('sale', 'sales', 'aaj', 'today', 'hafta', 'week', 'mahina', 'month', 'summary')) {
+      const days = has('month', 'mahina', 'mahine') ? 30 : has('week', 'hafta', 'hafte') ? 7 : 1;
+      const r: any = await callTool(ctx, 'sales_summary', { days });
+      return { reply: `Last ${days} day(s): ${r.orders} orders, sales ${r.sales_total}, cancelled ${r.cancelled}, online payments to check: ${r.unpaid_online}.\nBy city: ${Object.entries(r.by_city || {}).map(([k, v]) => `${k} ${v}`).join(', ') || '-'}` };
+    }
+    if (has('stock', 'khatam', 'kam')) {
+      const r: any = await callTool(ctx, 'low_stock', { max_stock: 5 });
+      return { reply: r.length ? 'Low stock:\n' + r.slice(0, 20).map((x: any) => `- ${x.product}${x.size ? ` (${x.size})` : ''}: ${x.stock}`).join('\n') : 'All products have enough stock.' };
+    }
+    if (has('payment', 'paid', 'unpaid', 'verify', 'check')) {
+      const r: any = await callTool(ctx, 'list_orders', { unpaid_online_only: true, limit: 15 });
+      return { reply: r.length ? 'Online payments to check:\n' + r.map((o: any) => `- ${o.invoice_no} ${o.customer_name} ${money(o.total_amount)} (${o.payment_method})`).join('\n') : 'No online payment is waiting.' };
+    }
+    if (has('pending', 'order')) {
+      const r: any = await callTool(ctx, 'list_orders', { status: has('pending') ? 'Pending' : undefined, limit: 15 });
+      return { reply: r.length ? r.map((o: any) => `- ${o.invoice_no} ${o.customer_name}, ${o.city || '-'}, ${money(o.total_amount)}, ${o.status}`).join('\n') : 'No orders found.' };
+    }
+    return { reply: 'Free assistant: ask about "aaj ki sale", "is hafte ki sale", "pending orders", "kam stock" or "payments to check". To let the assistant also change orders, stock and prices, add a free GEMINI_API_KEY (see README).' };
+  }
+
+  // order tracking: order number + 4 digits
+  const orderNo = (q.match(/\b[A-Za-z]{2,6}-\d{6}-\d+\b/) || q.match(/\b[A-Za-z]{2,6}-\d{3,7}\b/) || [])[0];
+  if (orderNo || has('track', 'order kahan', 'mera order', 'order status', 'parcel')) {
+    const last4 = (q.replace(orderNo || '', '').match(/\d{4}(?!\d)/g) || []).pop();
+    if (!orderNo || !last4) return { reply: 'Order track karne ke liye apna order number (jaise SK-261022-1005) aur order wale mobile number ke aakhri 4 hindse likhiye.' };
+    const r: any = await callTool(ctx, 'track_order', { order_number: orderNo, phone_last4: last4 });
+    if (r.error) return { reply: 'Is number aur mobile se koi order nahi mila. Dono dobara check kar lein.' };
+    return { reply: `Order ${r.order_number}: ${r.status}\nPayment: ${r.payment}\nTotal: ${r.total}\n${r.items.join(', ')}\nInvoice: ${r.invoice_link}` };
+  }
+
+  if (city || has('delivery', 'charges', 'shipping', 'cod', 'cash on delivery', 'payment', 'easypaisa', 'jazzcash')) {
+    if (!city) return { reply: `Karachi mein Cash on Delivery hai; baqi shehron ke liye online payment (EasyPaisa / JazzCash / bank). Apna shehar likhiye, main delivery charge bata deta hoon.` };
+    const r: any = await callTool(ctx, 'delivery_info', { city: city.replace(/\b\w/g, (m) => m.toUpperCase()), province: CITY_PROVINCE[city] });
+    return { reply: `${r.city}: delivery ${r.delivery_charge}. Cash on Delivery: ${r.cash_on_delivery}.${r.free_delivery_from && !String(r.free_delivery_from).startsWith('no') ? ` Free delivery from ${r.free_delivery_from}.` : ''}` };
+  }
+
+  if (has('contact', 'number', 'whatsapp', 'call', 'complain', 'shikayat', 'return', 'refund')) {
+    return { reply: `Hum se rabta: ${contact || 'website par WhatsApp button'}.` };
+  }
+
+  if (has('category', 'categories', 'kya kya', 'products hain', 'items')) {
+    const r: any = await callTool(ctx, 'list_categories', {});
+    return { reply: 'Hamari categories:\n' + r.map((c: any) => `- ${c.name} (${c.products})`).join('\n') };
+  }
+
+  const words = t.replace(/[^a-z0-9؀-ۿ ]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
+  if (words.length) {
+    const r: any = await callTool(ctx, 'search_products', { query: words.join(' ') });
+    if (r.length) {
+      return { reply: r.slice(0, 5).map((p: any) => `• ${p.name} - ${p.price}${p.old_price ? ` (was ${p.old_price})` : ''}${p.sizes ? `\n  Sizes: ${p.sizes.join(', ')}` : ''}${p.in_stock ? '' : ' (sold out)'}\n  ${p.link}`).join('\n') };
+    }
+  }
+  if (has('salam', 'hello', 'hi', 'aoa', 'hey')) return { reply: 'Wa Alaikum Assalam! Product ka naam, apna shehar (delivery ke liye) ya order number likhiye.' };
+  return { reply: `Mujhe samajh nahi aaya. Product ka naam likhiye (jaise "shampoo"), delivery ke liye apna shehar, ya order number + mobile ke aakhri 4 hindse. Ya hum se rabta karein: ${contact || 'WhatsApp button'}.` };
+}
+
+// ======================= request handler =======================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
-    const key = Deno.env.get('ANTHROPIC_API_KEY');
-    if (!key) return json({ error: 'The AI assistant is not switched on yet (ANTHROPIC_API_KEY secret is missing).' });
-    const model = Deno.env.get('AI_MODEL') || 'claude-haiku-5-5';
-
     const body = await req.json().catch(() => ({}));
     const mode = body.mode === 'admin' ? 'admin' : 'customer';
     const site = String(body.site_url || '').replace(/\/$/, '');
-    const history = (Array.isArray(body.messages) ? body.messages : [])
+    const history: Hist = (Array.isArray(body.messages) ? body.messages : [])
       .filter((m: any) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
       .slice(-20)
       .map((m: any) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     if (!history.length || history[history.length - 1].role !== 'user') return json({ error: 'No question.' });
+    while (history.length && history[0].role !== 'user') history.shift(); // providers want the user first
 
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
@@ -314,6 +510,7 @@ Deno.serve(async (req) => {
 
     const { data: store } = await sb.from('store_settings').select('*').eq('id', 1).maybeSingle();
     const s = store || {};
+    const ctx: Ctx = { sb, site, store: s };
     const shopName = s.store_name || 'our shop';
     const contact = [s.phone && `phone ${s.phone}`, s.whatsapp && `WhatsApp ${s.whatsapp}`, s.email && `email ${s.email}`].filter(Boolean).join(', ');
 
@@ -330,42 +527,30 @@ Rules:
       : `You are the admin assistant of ${shopName}'s online shop. The person chatting is the logged-in shop owner/admin.
 Help manage the shop: sales summaries, orders, payments, stock and prices. Today is ${new Date().toISOString().slice(0, 10)}.
 Rules:
-- Reply in the admin's language (Urdu, Roman Urdu or English). Be brief; use tables or short lists for data. Use Rs. for money.
+- Reply in the admin's language (Urdu, Roman Urdu or English). Be brief; use short lists for data. Use Rs. for money.
 - Use the tools to read data; never guess numbers.
 - Change something (status, paid, stock, price) only when the admin clearly asks for that exact change. If the request is unclear (which order, which size, what amount), ask first.
 - After a change, say exactly what was changed.
 - You cannot delete orders, change passwords or edit settings - tell the admin where to do it in the admin panel.`;
 
     const tools = mode === 'admin' ? ADMIN_TOOLS : CUSTOMER_TOOLS;
-    const messages: any[] = [...history];
+    const pick = (Deno.env.get('AI_PROVIDER') || '').toLowerCase();
+    const gemini = Deno.env.get('GEMINI_API_KEY');
+    const groq = Deno.env.get('GROQ_API_KEY');
+    const claude = Deno.env.get('ANTHROPIC_API_KEY');
 
-    for (let step = 0; step < 6; step++) {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model, max_tokens: 1024, system, tools, messages }),
-      });
-      if (!r.ok) {
-        const t = await r.text();
-        return json({ error: `AI service error (${r.status}). ${r.status === 401 ? 'Check the ANTHROPIC_API_KEY.' : t.slice(0, 200)}` });
-      }
-      const res = await r.json();
-      const content = res.content || [];
-      if (res.stop_reason !== 'tool_use') {
-        const text = content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n').trim();
-        return json({ reply: text || '...' });
-      }
-      messages.push({ role: 'assistant', content });
-      const results = [];
-      for (const c of content) {
-        if (c.type !== 'tool_use') continue;
-        let out: unknown;
-        try { out = await runTool(sb, c.name, c.input || {}, { site, store: s }); } catch (e) { out = { error: String(e) }; }
-        results.push({ type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(out).slice(0, 12000) });
-      }
-      messages.push({ role: 'user', content: results });
+    let out: any;
+    if ((pick === 'gemini' || !pick) && gemini) out = await runGemini(gemini, system, tools, history, ctx);
+    else if ((pick === 'groq' || !pick) && groq) out = await runGroq(groq, system, tools, history, ctx);
+    else if ((pick === 'claude' || !pick) && claude) out = await runClaude(claude, system, tools, history, ctx);
+    else out = await runBuiltin(mode, history, ctx);
+
+    // if the AI service fails (for example the free daily limit), answer with the free built-in bot instead
+    if (out && out.error && pick !== 'builtin' && mode === 'customer') {
+      const fb = await runBuiltin(mode, history, ctx);
+      return json({ reply: fb.reply, note: out.error });
     }
-    return json({ reply: 'Sorry, I could not finish that. Please ask in a simpler way.' });
+    return json(out);
   } catch (e) {
     return json({ error: String(e) });
   }

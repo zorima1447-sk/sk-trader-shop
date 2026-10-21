@@ -3146,8 +3146,9 @@ export default function App() {
                 <div className="max-w-3xl">
                   <ChatPanel mode="admin" storeName={settings.store_name} tall />
                   <p className="text-[11px] text-slate-500 mt-2">
-                    The assistant can read orders, sales, customers and stock, and on your request change an order status, mark an order paid,
-                    or change stock / price. It cannot delete anything or change settings.
+                    Without an AI key the free built-in assistant answers: "aaj ki sale", "pending orders", "kam stock", "payments to check".
+                    With a free GEMINI_API_KEY it understands any question and, on your request, changes an order status, marks an order paid,
+                    or changes stock / price. It cannot delete anything or change settings.
                   </p>
                 </div>
               )}
