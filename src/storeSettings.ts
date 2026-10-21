@@ -23,6 +23,8 @@ export interface StoreSettings {
   announcement: string;
   show_announcement: boolean;
   accent: string;
+  header_style: 'color' | 'dark' | 'light';
+  page_bg: 'gray' | 'white' | 'warm';
   footer_text: string;
   show_trust: boolean;
   show_categories: boolean;
@@ -57,6 +59,8 @@ export const defaultSettings: StoreSettings = {
   announcement: 'Original Products  |  Cash on Delivery Available  |  Fast Delivery Across Pakistan',
   show_announcement: true,
   accent: 'amber',
+  header_style: 'color',
+  page_bg: 'gray',
   footer_text: '',
   show_trust: true,
   show_categories: true,
@@ -93,6 +97,8 @@ export function mergeSettings(row: any): StoreSettings {
   out.marquee_items = out.marquee_items
     .filter((m: any) => m && typeof m.text === 'string')
     .map((m: any) => ({ icon: String(m.icon || ''), text: m.text }));
+  if (!['color', 'dark', 'light'].includes(out.header_style)) out.header_style = 'color';
+  if (!['gray', 'white', 'warm'].includes(out.page_bg)) out.page_bg = 'gray';
   out.marquee_speed = Number(out.marquee_speed) > 0 ? Number(out.marquee_speed) : 30;
   return out as StoreSettings;
 }
@@ -112,11 +118,31 @@ export const ACCENTS: { key: string; label: string; swatch: string }[] = [
   { key: 'emerald', label: 'Emerald', swatch: '#10b981' },
   { key: 'rose', label: 'Rose', swatch: '#f43f5e' },
   { key: 'blue', label: 'Blue', swatch: '#3b82f6' },
-  { key: 'violet', label: 'Violet', swatch: '#8b5cf6' }
+  { key: 'violet', label: 'Violet', swatch: '#8b5cf6' },
+  { key: 'red', label: 'Red', swatch: '#ef4444' },
+  { key: 'pink', label: 'Pink', swatch: '#ec4899' },
+  { key: 'teal', label: 'Teal', swatch: '#14b8a6' },
+  { key: 'black', label: 'Black', swatch: '#334155' }
+];
+
+// Ready-made themes (Settings > Website Look). Each one only sets the three values below.
+export const THEMES: { key: string; label: string; accent: string; header_style: StoreSettings['header_style']; page_bg: StoreSettings['page_bg'] }[] = [
+  { key: 'market-orange', label: 'Marketplace Orange', accent: 'orange', header_style: 'color', page_bg: 'gray' },
+  { key: 'royal-blue', label: 'Royal Blue', accent: 'blue', header_style: 'color', page_bg: 'gray' },
+  { key: 'luxury-gold', label: 'Luxury Gold', accent: 'amber', header_style: 'dark', page_bg: 'warm' },
+  { key: 'beauty-pink', label: 'Beauty Pink', accent: 'pink', header_style: 'color', page_bg: 'white' },
+  { key: 'fresh-green', label: 'Fresh Green', accent: 'emerald', header_style: 'color', page_bg: 'gray' },
+  { key: 'elegant-purple', label: 'Elegant Purple', accent: 'violet', header_style: 'dark', page_bg: 'gray' },
+  { key: 'clean-white', label: 'Clean White', accent: 'teal', header_style: 'light', page_bg: 'white' },
+  { key: 'classic-black', label: 'Classic Black', accent: 'black', header_style: 'dark', page_bg: 'gray' }
 ];
 
 const PALETTES: Record<string, Record<number, string>> = {
   orange: { 50: '#fff7ed', 100: '#ffedd5', 200: '#fed7aa', 300: '#fdba74', 400: '#fb923c', 500: '#f97316', 600: '#ea580c', 700: '#c2410c', 800: '#9a3412', 900: '#7c2d12' },
+  red: { 50: '#fef2f2', 100: '#fee2e2', 200: '#fecaca', 300: '#fca5a5', 400: '#f87171', 500: '#ef4444', 600: '#dc2626', 700: '#b91c1c', 800: '#991b1b', 900: '#7f1d1d' },
+  pink: { 50: '#fdf2f8', 100: '#fce7f3', 200: '#fbcfe8', 300: '#f9a8d4', 400: '#f472b6', 500: '#ec4899', 600: '#db2777', 700: '#be185d', 800: '#9d174d', 900: '#831843' },
+  teal: { 50: '#f0fdfa', 100: '#ccfbf1', 200: '#99f6e4', 300: '#5eead4', 400: '#2dd4bf', 500: '#14b8a6', 600: '#0d9488', 700: '#0f766e', 800: '#115e59', 900: '#134e4a' },
+  black: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#64748b', 500: '#475569', 600: '#334155', 700: '#1e293b', 800: '#0f172a', 900: '#020617' },
   emerald: { 50: '#ecfdf5', 100: '#d1fae5', 200: '#a7f3d0', 300: '#6ee7b7', 400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857', 800: '#065f46', 900: '#064e3b' },
   rose: { 50: '#fff1f2', 100: '#ffe4e6', 200: '#fecdd3', 300: '#fda4af', 400: '#fb7185', 500: '#f43f5e', 600: '#e11d48', 700: '#be123c', 800: '#9f1239', 900: '#881337' },
   blue: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
@@ -137,6 +163,7 @@ export function accentCss(accent: string): string {
       `.fill-amber-${s}{fill:${c}!important}` +
       `.hover\\:bg-amber-${s}:hover{background-color:${c}!important}` +
       `.hover\\:text-amber-${s}:hover{color:${c}!important}` +
+      `.hover\\:border-amber-${s}:hover{border-color:${c}!important}` +
       `.focus\\:border-amber-${s}:focus{border-color:${c}!important}`;
   });
   return css;

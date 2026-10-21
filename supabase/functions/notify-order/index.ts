@@ -159,6 +159,10 @@ Deno.serve(async (req) => {
         `Address: ${order.shipping_address}\n` +
         `Payment: ${order.payment_method}\n` +
         (order.transaction_id ? `Txn ID: ${order.transaction_id}\n` : '') +
+        (order.payer_name ? `Paid by: ${order.payer_name} (${order.payer_account || '-'})\n` : '') +
+        (order.payer_amount != null ? `Amount paid: PKR ${order.payer_amount}\n` : '') +
+        (order.payment_account_label ? `Paid to: ${order.payment_account_label}\n` : '') +
+        (order.has_payment_proof ? `Screenshot: yes (see Admin > Orders)\n` : '') +
         `Items:\n${lines}\n` +
         `Total: PKR ${order.total_amount}`;
       out.owner = await ownerAlert(`New Order ${order.invoice_no || ''} - PKR ${order.total_amount}`, text);

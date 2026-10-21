@@ -31,7 +31,8 @@ alter table public.products
   add column if not exists image_url text,
   add column if not exists category_name text default 'Hair Care',
   add column if not exists stock_quantity int default 50,
-  add column if not exists sold_quantity int default 0;
+  add column if not exists sold_quantity int default 0,
+  add column if not exists variants jsonb;   -- sizes: [{"name":"500 ML","price":1850,"original_price":2100,"stock":20}, ...]
 
 update public.products set sold_quantity = 0 where sold_quantity is null;
 
@@ -87,7 +88,24 @@ alter table public.orders
   add column if not exists paid_at timestamptz,
   add column if not exists notified boolean default false,
   add column if not exists invoice_sent boolean default false,
-  add column if not exists status text default 'Pending';
+  add column if not exists status text default 'Pending',
+  -- online payment details given by the customer
+  add column if not exists payment_account_id text,
+  add column if not exists payment_account_label text,
+  add column if not exists payer_name text,
+  add column if not exists payer_account text,
+  add column if not exists payer_amount numeric,
+  add column if not exists payer_paid_at timestamptz,
+  add column if not exists has_payment_proof boolean default false,
+  add column if not exists customer_user_id uuid;   -- set when a logged-in customer orders
+create index if not exists orders_customer_user_id_idx on public.orders(customer_user_id);
+
+-- Payment screenshots (kept apart so the order list stays light)
+create table if not exists public.payment_proofs (
+  order_id uuid primary key,
+  image text,
+  created_at timestamptz default now() not null
+);
 
 alter table public.orders
   alter column invoice_no set default ('ZP-' || nextval('public.invoice_seq'));
@@ -105,7 +123,8 @@ alter table public.order_items
   add column if not exists product_id uuid,
   add column if not exists product_name text,
   add column if not exists quantity int default 1,
-  add column if not exists unit_price numeric default 0;
+  add column if not exists unit_price numeric default 0,
+  add column if not exists variant text;
 
 create index if not exists order_items_order_id_idx on public.order_items(order_id);
 
@@ -237,7 +256,9 @@ alter table public.store_settings
   add column if not exists notify_new_product boolean,
   add column if not exists show_marquee boolean,
   add column if not exists marquee_items jsonb,
-  add column if not exists marquee_speed int;
+  add column if not exists marquee_speed int,
+  add column if not exists header_style text,
+  add column if not exists page_bg text;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
@@ -271,8 +292,28 @@ as $$
       sold_quantity  = coalesce(sold_quantity, 0) + p_qty
   where id = p_id;
 $$;
--- Only place_order() (below) may change stock; the website cannot call this directly any more.
+-- Same for one size of a product (also lowers the product's total stock)
+create or replace function public.decrement_variant_stock(p_id uuid, p_variant text, p_qty int)
+returns void
+language sql
+set search_path = public
+as $$
+  update public.products
+  set variants = (
+        select jsonb_agg(
+                 case when x.e ->> 'name' = p_variant
+                      then jsonb_set(x.e, '{stock}', to_jsonb(greatest(coalesce((x.e ->> 'stock')::numeric, 0)::int - p_qty, 0)))
+                      else x.e end
+                 order by x.ord)
+        from jsonb_array_elements(coalesce(variants, '[]'::jsonb)) with ordinality as x(e, ord)),
+      stock_quantity = greatest(coalesce(stock_quantity, 0) - p_qty, 0),
+      sold_quantity  = coalesce(sold_quantity, 0) + p_qty
+  where id = p_id;
+$$;
+
+-- Only place_order() (below) may change stock; the website cannot call these directly any more.
 revoke execute on function public.decrement_stock(uuid, int) from public, anon, authenticated;
+revoke execute on function public.decrement_variant_stock(uuid, text, int) from public, anon, authenticated;
 
 -- ---------- 13. Remove old NOT NULL constraints ----------
 -- Old tables may contain extra columns (for example profiles.email) that are NOT NULL
@@ -469,6 +510,11 @@ declare
   qty int;
   total numeric := 0;
   lines jsonb := '[]'::jsonb;
+  online boolean;
+  proof text;
+  vname text;
+  vrow jsonb;
+  unit numeric;
 begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
@@ -483,13 +529,28 @@ begin
     if qty is null or qty < 1 or qty > 1000 then raise exception 'Invalid quantity.'; end if;
     select * into pr from public.products where id = (it ->> 'product_id')::uuid;
     if pr.id is null then raise exception 'A product in your cart is no longer available.'; end if;
+
+    vname := nullif(trim(coalesce(it ->> 'variant', '')), '');
+    if vname is not null then
+      vrow := null;
+      select x.e into vrow
+      from jsonb_array_elements(coalesce(pr.variants, '[]'::jsonb)) as x(e)
+      where x.e ->> 'name' = vname
+      limit 1;
+      if vrow is null then raise exception 'Size % of % is no longer available.', vname, pr.name; end if;
+      unit := coalesce(nullif((vrow ->> 'price')::numeric, 0), 0);
+    else
+      unit := coalesce(nullif(pr.discounted_price, 0), pr.price, 0);
+    end if;
+
     lines := lines || jsonb_build_object(
       'product_id', pr.id,
-      'product_name', pr.name,
+      'product_name', pr.name || coalesce(' - ' || vname, ''),
+      'variant', vname,
       'quantity', qty,
-      'unit_price', coalesce(nullif(pr.discounted_price, 0), pr.price, 0)
+      'unit_price', unit
     );
-    total := total + coalesce(nullif(pr.discounted_price, 0), pr.price, 0) * qty;
+    total := total + unit * qty;
   end loop;
 
   -- save / update the customer (matched by phone number)
@@ -522,22 +583,45 @@ begin
     cust_id := null;  -- a customer-record problem must not block the order
   end;
 
+  online := coalesce(nullif(p_order ->> 'payment_method', ''), 'cod') <> 'cod';
+  proof := case when online and left(coalesce(p_order ->> 'payment_proof', ''), 11) = 'data:image/'
+                     and length(p_order ->> 'payment_proof') < 3000000
+                then p_order ->> 'payment_proof' end;
+
   insert into public.orders (customer_id, customer_name, customer_phone, customer_email, shipping_address,
-                             total_amount, payment_method, payment_status, paid_amount, transaction_id, status)
+                             total_amount, payment_method, payment_status, paid_amount, transaction_id, status,
+                             payment_account_id, payment_account_label, payer_name, payer_account, payer_amount,
+                             payer_paid_at, has_payment_proof, customer_user_id)
   values (cust_id, trim(p_order ->> 'customer_name'), p_order ->> 'customer_phone',
           nullif(trim(coalesce(p_order ->> 'customer_email', '')), ''), p_order ->> 'shipping_address',
-          total, coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 'Unpaid', 0,
-          case when coalesce(p_order ->> 'payment_method', 'cod') = 'cod' then null
-               else nullif(p_order ->> 'transaction_id', '') end,
-          'Pending')
+          total, left(coalesce(nullif(p_order ->> 'payment_method', ''), 'cod'), 40), 'Unpaid', 0,
+          case when online then left(nullif(trim(coalesce(p_order ->> 'transaction_id', '')), ''), 80) end,
+          'Pending',
+          case when online then left(p_order ->> 'payment_account_id', 80) end,
+          case when online then left(p_order ->> 'payment_account_label', 200) end,
+          case when online then left(nullif(trim(coalesce(p_order ->> 'payer_name', '')), ''), 120) end,
+          case when online then left(nullif(trim(coalesce(p_order ->> 'payer_account', '')), ''), 60) end,
+          case when online and coalesce(p_order ->> 'payer_amount', '') ~ '^[0-9]+(\.[0-9]+)?$'
+               then (p_order ->> 'payer_amount')::numeric end,
+          case when online and coalesce(p_order ->> 'payer_paid_at', '') <> ''
+               then (p_order ->> 'payer_paid_at')::timestamptz end,
+          proof is not null, auth.uid())
   returning * into o;
 
-  insert into public.order_items (order_id, product_id, product_name, quantity, unit_price)
-  select o.id, (l ->> 'product_id')::uuid, l ->> 'product_name', (l ->> 'quantity')::int, (l ->> 'unit_price')::numeric
+  if proof is not null then
+    insert into public.payment_proofs (order_id, image) values (o.id, proof);
+  end if;
+
+  insert into public.order_items (order_id, product_id, product_name, quantity, unit_price, variant)
+  select o.id, (l ->> 'product_id')::uuid, l ->> 'product_name', (l ->> 'quantity')::int, (l ->> 'unit_price')::numeric, l ->> 'variant'
   from jsonb_array_elements(lines) l;
 
   for it in select * from jsonb_array_elements(lines) loop
-    perform public.decrement_stock((it ->> 'product_id')::uuid, (it ->> 'quantity')::int);
+    if coalesce(it ->> 'variant', '') <> '' then
+      perform public.decrement_variant_stock((it ->> 'product_id')::uuid, it ->> 'variant', (it ->> 'quantity')::int);
+    else
+      perform public.decrement_stock((it ->> 'product_id')::uuid, (it ->> 'quantity')::int);
+    end if;
   end loop;
 
   return json_build_object('order', to_jsonb(o), 'items', lines);
@@ -590,6 +674,69 @@ begin
   return query select * from public.reviews order by created_at desc;
 end $$;
 
+
+-- ---------- 15b. CUSTOMER ACCOUNTS (Supabase Auth) ----------
+-- Customers sign up with email + password (Supabase Auth). Name and phone are kept in the
+-- account's user_metadata. These functions give a customer only his own orders.
+
+-- The customer's own orders with their items
+create or replace function public.my_orders()
+returns json
+language sql stable security definer
+set search_path = public
+as $$
+  select coalesce(json_agg(x order by x.created_at desc), '[]'::json)
+  from (
+    select o.id, o.invoice_no, o.created_at, o.total_amount, o.status, o.payment_status, o.payment_method,
+           o.delivered_at, o.shipping_address,
+           coalesce((select json_agg(json_build_object('product_name', i.product_name, 'quantity', i.quantity, 'unit_price', i.unit_price))
+                     from public.order_items i where i.order_id = o.id), '[]'::json) as items
+    from public.orders o
+    where auth.uid() is not null and o.customer_user_id = auth.uid()
+  ) x
+$$;
+
+-- Normalises a Pakistani phone number: 0300-1234567 / +92 300 1234567 -> 923001234567
+create or replace function public.norm_phone(p text)
+returns text
+language sql immutable
+as $$
+  select case
+    when d like '0%' then '92' || substr(d, 2)
+    when length(d) = 10 and d like '3%' then '92' || d
+    else d end
+  from (select regexp_replace(coalesce(p, ''), '[^0-9]', '', 'g') as d) t
+$$;
+
+-- Is this phone number already used by an account? (shown on the Register form)
+create or replace function public.phone_registered(p_phone text)
+returns boolean
+language sql stable security definer
+set search_path = public, auth
+as $$
+  select length(public.norm_phone(p_phone)) >= 10 and exists (
+    select 1 from auth.users u where public.norm_phone(u.raw_user_meta_data ->> 'phone') = public.norm_phone(p_phone)
+  )
+$$;
+
+-- Login with phone number: only the Edge Function "customer-login" (service role) may call this.
+create or replace function public.email_for_phone(p_phone text)
+returns text
+language sql stable security definer
+set search_path = public, auth
+as $$
+  select u.email from auth.users u
+  where length(public.norm_phone(p_phone)) >= 10
+    and public.norm_phone(u.raw_user_meta_data ->> 'phone') = public.norm_phone(p_phone)
+  order by u.created_at
+  limit 1
+$$;
+revoke execute on function public.email_for_phone(text) from public, anon, authenticated;
+do $$ begin
+  grant execute on function public.email_for_phone(text) to service_role;
+exception when undefined_object then null;
+end $$;
+
 -- ---------- 16. ROW LEVEL SECURITY ----------
 -- Customers can only READ the shop (products, categories, slides, settings, active payment accounts, reviews).
 -- Everything else (orders, customers, payments, alert settings, admin users) needs an admin login.
@@ -606,6 +753,7 @@ alter table public.notification_settings enable row level security;
 alter table public.hero_slides           enable row level security;
 alter table public.store_settings        enable row level security;
 alter table public.admin_sessions        enable row level security;
+alter table public.payment_proofs        enable row level security;
 
 -- remove every old policy on these tables (including the old "Allow All")
 do $$
@@ -615,7 +763,7 @@ begin
     select tablename, policyname from pg_policies
     where schemaname = 'public'
       and tablename in ('categories','products','customers','orders','order_items','payments','reviews','profiles',
-                        'payment_accounts','notification_settings','hero_slides','store_settings','admin_sessions')
+                        'payment_accounts','notification_settings','hero_slides','store_settings','admin_sessions','payment_proofs')
   loop
     execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
   end loop;
@@ -647,7 +795,7 @@ grant select (id, product_id, order_id, customer_name, rating, remark, created_a
 do $$
 declare t text;
 begin
-  foreach t in array array['customers','orders','order_items','payments','notification_settings'] loop
+  foreach t in array array['customers','orders','order_items','payments','notification_settings','payment_proofs'] loop
     execute format('create policy "admin only" on public.%I for all using ((select public.is_admin())) with check ((select public.is_admin()))', t);
   end loop;
 end $$;

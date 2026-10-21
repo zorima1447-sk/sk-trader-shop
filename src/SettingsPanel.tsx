@@ -1,24 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { StoreSettings, ACCENTS, MarqueeItem } from './storeSettings';
+import { StoreSettings, ACCENTS, THEMES, MarqueeItem } from './storeSettings';
 import { ICONS, ShopIcon } from './icons';
 import { InvoiceDocument } from './Invoice';
 
+export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages';
+
 interface Props {
+  tab?: SettingsTab; // chosen from the admin side menu
   settings: StoreSettings;
   accounts: any[];
   onSaved: (s: StoreSettings) => void;
   onOpenAccounts: () => void;
 }
 
-type SubTab = 'profile' | 'look' | 'invoice' | 'messages';
+type SubTab = SettingsTab;
 
 const input = 'w-full px-3 py-2 border rounded-xl text-sm bg-white focus:outline-none focus:border-amber-500';
 const label = 'block text-xs font-bold text-slate-700 mb-1';
 
-export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccounts }: Props) {
+export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSaved, onOpenAccounts }: Props) {
   const [f, setF] = useState<StoreSettings>(settings);
-  const [tab, setTab] = useState<SubTab>('profile');
+  const [ownTab, setTab] = useState<SubTab>('profile');
+  const tab = fixedTab || ownTab;
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setF(settings); }, [settings]);
@@ -127,14 +131,18 @@ export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccou
 
   return (
     <form onSubmit={save} className="bg-white rounded-3xl p-6 border shadow-sm">
-      <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">Settings</h3>
+      <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">
+        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages' }[tab]}
+      </h3>
 
-      <div className="flex flex-wrap gap-2 mb-6">
-        {tabBtn('profile', 'Store Profile')}
-        {tabBtn('look', 'Website Look')}
-        {tabBtn('invoice', 'Invoice')}
-        {tabBtn('messages', 'Customer Messages')}
-      </div>
+      {!fixedTab && (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {tabBtn('profile', 'Store Profile')}
+          {tabBtn('look', 'Website Look')}
+          {tabBtn('invoice', 'Invoice')}
+          {tabBtn('messages', 'Customer Messages')}
+        </div>
+      )}
 
       {tab === 'profile' && (
         <div className="grid md:grid-cols-2 gap-4 max-w-3xl">
@@ -198,7 +206,61 @@ export default function SettingsPanel({ settings, accounts, onSaved, onOpenAccou
       {tab === 'look' && (
         <div className="space-y-5 max-w-3xl">
           <div>
-            <label className={label}>Accent colour (buttons, highlights)</label>
+            <label className={label}>Theme (one click changes colour, header and background)</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {THEMES.map((t) => {
+                const sw = (ACCENTS.find(a => a.key === t.accent) || ACCENTS[0]).swatch;
+                const active = f.accent === t.accent && f.header_style === t.header_style && f.page_bg === t.page_bg;
+                const headBg = t.header_style === 'dark' ? '#0f172a' : t.header_style === 'light' ? '#ffffff' : sw;
+                const pageBg = t.page_bg === 'white' ? '#ffffff' : t.page_bg === 'warm' ? '#f5f5f4' : '#f1f5f9';
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setF(prev => ({ ...prev, accent: t.accent, header_style: t.header_style, page_bg: t.page_bg }))}
+                    className={`rounded-xl border-2 overflow-hidden text-left cursor-pointer ${active ? 'border-slate-900' : 'border-slate-200 hover:border-slate-400'}`}
+                  >
+                    <div style={{ background: pageBg }} className="h-20">
+                      <div style={{ background: headBg }} className={`h-6 flex items-center gap-1 px-2 ${t.header_style === 'light' ? 'border-b' : ''}`}>
+                        <span className="w-6 h-2 rounded-sm" style={{ background: t.header_style === 'light' ? '#0f172a' : '#ffffff' }} />
+                        <span className="flex-1 h-2.5 rounded-sm bg-white border" />
+                      </div>
+                      <div className="flex gap-1.5 p-2">
+                        <span className="flex-1 h-9 rounded bg-white shadow-sm" />
+                        <span className="flex-1 h-9 rounded bg-white shadow-sm flex items-end p-1"><span className="w-full h-1.5 rounded-sm" style={{ background: sw }} /></span>
+                      </div>
+                    </div>
+                    <div className="px-2 py-1.5 text-[11px] font-bold text-slate-700 bg-white border-t flex items-center justify-between">
+                      {t.label}
+                      {active && <span className="text-emerald-600">✓</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className={label}>Header style</label>
+              <select className={input} value={f.header_style} onChange={(e) => set('header_style', e.target.value as any)}>
+                <option value="color">Coloured (theme colour)</option>
+                <option value="dark">Dark</option>
+                <option value="light">White</option>
+              </select>
+            </div>
+            <div>
+              <label className={label}>Page background</label>
+              <select className={input} value={f.page_bg} onChange={(e) => set('page_bg', e.target.value as any)}>
+                <option value="gray">Light grey</option>
+                <option value="white">White</option>
+                <option value="warm">Warm grey</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className={label}>Accent colour (buttons, prices, highlights)</label>
             <div className="flex flex-wrap gap-3">
               {ACCENTS.map((a) => (
                 <button

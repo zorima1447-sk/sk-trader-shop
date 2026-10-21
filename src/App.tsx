@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
-import SettingsPanel from './SettingsPanel';
+import SettingsPanel, { SettingsTab } from './SettingsPanel';
+import { AuthPage, AccountPage, AuthMode } from './CustomerAuth';
 import { InvoiceDocument, InvoiceItem } from './Invoice';
 import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache } from './storeSettings';
 import { ShopIcon } from './icons';
@@ -30,11 +31,25 @@ interface Product {
   stock_quantity: number;
   sold_quantity?: number;
   created_at?: string;
+  variants?: Variant[] | null;
+}
+
+// One size / pack of a product, e.g. "250 ML" or "500 ML" (each with its own price and stock)
+interface Variant {
+  name: string;
+  price: number;
+  original_price?: number;
+  stock: number;
 }
 
 interface CartItem extends Product {
   quantity: number;
+  cartKey: string;   // product id, or "product id|size" when a size was chosen
+  variant?: string;  // chosen size
 }
+
+const variantsOf = (p: { variants?: Variant[] | null }): Variant[] =>
+  Array.isArray(p.variants) ? p.variants.filter(v => v && String(v.name || '').trim()) : [];
 
 interface OrderItem {
   id?: string;
@@ -55,6 +70,12 @@ interface Order {
   payment_status: string;
   status: string;
   transaction_id?: string;
+  payment_account_label?: string | null;
+  payer_name?: string | null;
+  payer_account?: string | null;
+  payer_amount?: number | null;
+  payer_paid_at?: string | null;
+  has_payment_proof?: boolean | null;
   delivered_at?: string | null;
   paid_amount?: number | null;
   paid_at?: string | null;
@@ -132,7 +153,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v8 (21-Oct-2026)';
+const BUILD = 'v9 (21-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -193,10 +214,71 @@ async function uploadSiteImage(dataUrl: string, prefix: 'slide'): Promise<string
 
 const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#f1f5f9"/><text x="150" y="155" font-family="Arial" font-size="18" fill="#94a3b8" text-anchor="middle">No image</text></svg>');
 
+// ---- Search: short names, part of a word, several words and small spelling mistakes all match ----
+const normText = (t: string) => (t || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim();
+
+function withinOneEdit(a: string, b: string) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++;
+    else if (a.length < b.length) j++;
+    else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
+function isSubsequence(q: string, w: string) {
+  let i = 0;
+  for (const ch of w) if (ch === q[i]) i++;
+  return i === q.length;
+}
+
+function wordScore(t: string, words: string[]) {
+  let best = 0;
+  for (const w of words) {
+    if (!w) continue;
+    let sc = 0;
+    if (w === t) sc = 3;
+    else if (w.startsWith(t)) sc = 2.5;
+    else if (t.length >= 2 && w.includes(t)) sc = 1.5;
+    else if (t.length >= 3 && w[0] === t[0] && isSubsequence(t, w)) sc = 1; // "strtng" -> "straightening"
+    else if (t.length >= 4 && (withinOneEdit(t, w) || withinOneEdit(t, w.slice(0, t.length)))) sc = 0.8; // small typo
+    if (sc > best) best = sc;
+  }
+  return best;
+}
+
+// 0 = no match; higher = better match
+function searchScore(p: { name: string; category_name?: string; description?: string }, query: string) {
+  const terms = normText(query).split(' ').filter(Boolean);
+  if (terms.length === 0) return 1;
+  const nameWords = normText(p.name).split(' ');
+  const otherWords = normText(`${p.category_name || ''} ${p.description || ''}`).split(' ');
+  const nameJoined = nameWords.join('');
+  let total = 0;
+  for (const t of terms) {
+    let best = Math.max(wordScore(t, nameWords) * 2, wordScore(t, otherWords));
+    if (!best && t.length >= 3 && nameJoined.includes(t)) best = 2; // "500ml" matches "500 ML"
+    if (!best) return 0;
+    total += best;
+  }
+  return total;
+}
+
 const money = (n: number | string | null | undefined) => 'Rs. ' + Number(n || 0).toLocaleString('en-PK');
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin'>('store');
+  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin' | 'auth' | 'account'>('store');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('look');
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  // Customer account (Supabase Auth)
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  // Item the visitor wanted to add before logging in; added automatically after login / sign-up
+  const [pendingCart, setPendingCart] = useState<{ product: Product; qty: number; variant?: Variant; buyNow?: boolean } | null>(null);
   
   // Store States
   const [products, setProducts] = useState<Product[]>(BOOT_CACHE?.products || []);
@@ -208,6 +290,8 @@ export default function App() {
   const [heroIndex, setHeroIndex] = useState(0);
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [qvVariant, setQvVariant] = useState<string>('');
   const [sortBy, setSortBy] = useState<'best' | 'low' | 'high' | 'new' | 'popular'>('best');
   const [reviews, setReviews] = useState<Review[]>([]);
   const [rvName, setRvName] = useState('');
@@ -222,6 +306,14 @@ export default function App() {
   const [geo, setGeo] = useState<GeoValue>(emptyGeo());
   const [customerEmail, setCustomerEmail] = useState('');
   const [marketingOptIn, setMarketingOptIn] = useState(true);
+  // Online payment details asked from the customer
+  const [payAccountId, setPayAccountId] = useState<string>('');
+  const [payerName, setPayerName] = useState('');
+  const [payerAccount, setPayerAccount] = useState('');
+  const [payerAmount, setPayerAmount] = useState('');
+  const [payerPaidAt, setPayerPaidAt] = useState('');
+  const [paymentProof, setPaymentProof] = useState('');
+  const [proofView, setProofView] = useState<string | null>(null);
   const [settings, setSettings] = useState<StoreSettings>(BOOT_CACHE?.settings ? mergeSettings(BOOT_CACHE.settings) : defaultSettings);
   const [booted, setBooted] = useState<boolean>(!!BOOT_CACHE?.settings); // true = something real to show
   const [fresh, setFresh] = useState(false); // true = data from the database has arrived
@@ -274,7 +366,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('products');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('dashboard');
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -283,6 +375,7 @@ export default function App() {
   const [originalPrice, setOriginalPrice] = useState('');
   const [discountedPrice, setDiscountedPrice] = useState('');
   const [productStock, setProductStock] = useState('');
+  const [pVariants, setPVariants] = useState<{ name: string; price: string; original_price: string; stock: string }[]>([]);
   const [productCategory, setProductCategory] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -356,6 +449,38 @@ export default function App() {
     fetchPaymentAccounts();
     fetchReviews();
   }, []);
+
+  // Customer login state (also handles the "set a new password" link from the email)
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }: any) => setAuthUser(data && data.session ? data.session.user : null));
+    const { data: sub } = supabase.auth.onAuthStateChange((event: string, session: any) => {
+      setAuthUser(session ? session.user : null);
+      if (event === 'PASSWORD_RECOVERY') { setAuthMode('reset'); setCurrentView('auth'); }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // After login / sign-up: add the item the customer wanted, then go back to the shop
+  useEffect(() => {
+    if (!authUser || !pendingCart) return;
+    const pc = pendingCart;
+    setPendingCart(null);
+    setCurrentView('store');
+    if (addToCart(pc.product, pc.qty, pc.variant, false, true) && pc.buyNow) setIsCartOpen(true);
+  }, [authUser]);
+
+  // Logged-in customer: fill the checkout form from his profile
+  useEffect(() => {
+    if (!authUser) return;
+    const m = authUser.user_metadata || {};
+    if (m.name) setCustomerName(prev => prev || m.name);
+    if (authUser.email) setCustomerEmail(prev => prev || authUser.email);
+    if (m.address) setShippingAddress(prev => prev || m.address);
+    if (m.phone) {
+      const local = String(m.phone).replace(/^92/, '');
+      setGeo(g => (g.phoneNumber ? g : { ...g, phoneNumber: local }));
+    }
+  }, [authUser]);
 
   // Back / forward buttons open or close the product page
   useEffect(() => {
@@ -934,6 +1059,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAdminLoggedIn]);
 
+  const showPaymentProof = async (orderId: string) => {
+    const { data, error } = await supabase.from('payment_proofs').select('image').eq('order_id', orderId).maybeSingle();
+    if (reportError('payment screenshot', error)) return;
+    if (!data || !data.image) { alert('No screenshot found.'); return; }
+    setProofView(data.image);
+  };
+
   const handleUpdateOrderStatus = async (id: string, status: string) => {
     const delivered_at = status === 'Delivered' ? new Date().toISOString() : null;
     const { error } = await supabase.from('orders').update({ status, delivered_at }).eq('id', id);
@@ -966,6 +1098,7 @@ export default function App() {
     setLoggedInUserRole(user.role);
     setLoggedInUserName(user.username);
     setCurrentView('admin');
+    setAdminTab('dashboard');
     setNewOrderCount(0);
     fetchOrders();
     fetchUsers();
@@ -1000,10 +1133,21 @@ export default function App() {
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!productName || !discountedPrice) {
+    const cleanVariants: Variant[] = pVariants
+      .filter(v => v.name.trim())
+      .map(v => ({
+        name: v.name.trim(),
+        price: parseFloat(v.price) || 0,
+        original_price: parseFloat(v.original_price) || parseFloat(v.price) || 0,
+        stock: parseInt(v.stock) || 0
+      }));
+    if (cleanVariants.some(v => !(v.price > 0))) { alert('Please enter a selling price for every size.'); return; }
+    if (!productName || (!discountedPrice && cleanVariants.length === 0)) {
       alert('Product Name and Discounted Price are required!');
       return;
     }
+    // With sizes, the product shows the cheapest size's price and the total stock of all sizes
+    const cheapest = cleanVariants.slice().sort((a, b) => a.price - b.price)[0];
 
     setIsUploading(true);
     let finalImageUrl = imageUrl || imagePreview || 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
@@ -1011,12 +1155,13 @@ export default function App() {
     const prodData = {
       name: productName,
       description: productDesc,
-      original_price: parseFloat(originalPrice) || parseFloat(discountedPrice),
-      discounted_price: parseFloat(discountedPrice),
-      price: parseFloat(discountedPrice),
+      original_price: cheapest ? Number(cheapest.original_price || cheapest.price) : (parseFloat(originalPrice) || parseFloat(discountedPrice)),
+      discounted_price: cheapest ? cheapest.price : parseFloat(discountedPrice),
+      price: cheapest ? cheapest.price : parseFloat(discountedPrice),
       category_name: productCategory || 'Hair Care',
       image_url: finalImageUrl,
-      stock_quantity: parseInt(productStock) || 0
+      stock_quantity: cheapest ? cleanVariants.reduce((t, v) => t + v.stock, 0) : (parseInt(productStock) || 0),
+      variants: cleanVariants.length ? cleanVariants : null
     };
 
     if (editingProductId) {
@@ -1049,6 +1194,7 @@ export default function App() {
     setProductCategory(p.category_name);
     setImageUrl(p.image_url);
     setImagePreview(p.image_url);
+    setPVariants(variantsOf(p).map(v => ({ name: v.name, price: String(v.price), original_price: String(v.original_price || ''), stock: String(v.stock ?? 0) })));
   };
 
   const handleDeleteProduct = async (id: string) => {
@@ -1071,6 +1217,7 @@ export default function App() {
     setImageUrl('');
     setImageFile(null);
     setImagePreview(null);
+    setPVariants([]);
   };
 
   const handleAddCategory = async (e: React.FormEvent) => {
@@ -1171,8 +1318,24 @@ export default function App() {
     }
   };
 
-  const addToCart = (product: Product, qty = 1) => {
-    const inCart = cart.find(i => i.id === product.id)?.quantity || 0;
+  const addToCart = (base: Product, qty = 1, variant?: Variant, buyNow = false, skipLoginCheck = false) => {
+    // A product with sizes: the size must be chosen on the product page first
+    if (!variant && variantsOf(base).length > 0) { openProduct(base); return false; }
+    // Not logged in: ask to log in / register first (like big marketplaces), then add it automatically
+    if (!authUser && !skipLoginCheck) {
+      setPendingCart({ product: base, qty, variant, buyNow });
+      if (quickView) closeProduct();
+      setIsCartOpen(false);
+      setAuthMode('login');
+      setCurrentView('auth');
+      window.scrollTo({ top: 0 });
+      return false;
+    }
+    const product: Product = variant
+      ? { ...base, discounted_price: Number(variant.price), price: Number(variant.price), original_price: Number(variant.original_price || variant.price), stock_quantity: Number(variant.stock || 0) }
+      : base;
+    const key = variant ? `${base.id}|${variant.name}` : base.id;
+    const inCart = cart.find(i => i.cartKey === key)?.quantity || 0;
     if (typeof product.stock_quantity === 'number' && inCart + qty > product.stock_quantity) {
       setToastMessage(
         product.stock_quantity <= 0
@@ -1183,22 +1346,22 @@ export default function App() {
       return false;
     }
     setCart((prevCart) => {
-      const existing = prevCart.find((item) => item.id === product.id);
+      const existing = prevCart.find((item) => item.cartKey === key);
       if (existing) {
         return prevCart.map((item) =>
-          item.id === product.id ? { ...item, quantity: item.quantity + qty } : item
+          item.cartKey === key ? { ...item, quantity: item.quantity + qty } : item
         );
       }
-      return [...prevCart, { ...product, quantity: qty }];
+      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined }];
     });
 
-    setToastMessage(`${qty} x ${product.name} added to cart!`);
+    setToastMessage(`${qty} x ${product.name}${variant ? ` (${variant.name})` : ''} added to cart!`);
     setTimeout(() => setToastMessage(null), 2500);
     return true;
   };
 
   const changeCartQty = (id: string, delta: number) => {
-    const item = cart.find(i => i.id === id);
+    const item = cart.find(i => i.cartKey === id);
     if (!item) return;
     const next = item.quantity + delta;
     if (next <= 0) { removeFromCart(id); return; }
@@ -1207,11 +1370,11 @@ export default function App() {
       setTimeout(() => setToastMessage(null), 2500);
       return;
     }
-    setCart(prev => prev.map(i => i.id === id ? { ...i, quantity: next } : i));
+    setCart(prev => prev.map(i => i.cartKey === id ? { ...i, quantity: next } : i));
   };
 
   const removeFromCart = (id: string) => {
-    setCart((prevCart) => prevCart.filter((item) => item.id !== id));
+    setCart((prevCart) => prevCart.filter((item) => item.cartKey !== id));
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
@@ -1226,6 +1389,14 @@ export default function App() {
     if (!/^\S+@\S+\.\S+$/.test(customerEmail.trim())) {
       alert('Please enter a valid email address.');
       return;
+    }
+
+    const payAccount = paymentAccounts.find(a => a.id === payAccountId);
+    if (paymentMethod !== 'cod') {
+      if (!payAccount) { alert('Please choose the account you paid to.'); return; }
+      if (!payerName.trim() || !payerAccount.trim()) { alert('Please enter the name and the mobile / account number you paid from.'); return; }
+      if (transactionId.trim().length < 4) { alert('Please enter the Transaction ID (TID) from your payment message.'); return; }
+      if (!(Number(payerAmount) > 0)) { alert('Please enter the amount you paid.'); return; }
     }
 
     setIsSubmitting(true);
@@ -1259,10 +1430,17 @@ export default function App() {
           customer_phone: fullPhone,
           customer_email: customerEmail.trim() || null,
           shipping_address: fullAddress,
-          payment_method: paymentMethod,
-          transaction_id: paymentMethod === 'cod' ? null : (transactionId || null)
+          payment_method: paymentMethod === 'cod' ? 'cod' : (payAccount ? payAccount.type : 'online'),
+          transaction_id: paymentMethod === 'cod' ? null : (transactionId.trim() || null),
+          payment_account_id: paymentMethod === 'cod' ? null : payAccountId,
+          payment_account_label: paymentMethod === 'cod' || !payAccount ? null : `${payAccount.type} - ${payAccount.account_title} - ${payAccount.account_number}`,
+          payer_name: paymentMethod === 'cod' ? null : payerName.trim(),
+          payer_account: paymentMethod === 'cod' ? null : payerAccount.trim(),
+          payer_amount: paymentMethod === 'cod' ? null : Number(payerAmount),
+          payer_paid_at: paymentMethod === 'cod' || !payerPaidAt ? null : new Date(payerPaidAt).toISOString(),
+          payment_proof: paymentMethod === 'cod' ? null : (paymentProof || null)
         },
-        p_items: cart.map(item => ({ product_id: item.id, quantity: item.quantity }))
+        p_items: cart.map(item => ({ product_id: item.id, quantity: item.quantity, variant: item.variant || null }))
       });
 
       if (orderError || !placed || !placed.order) {
@@ -1304,6 +1482,7 @@ export default function App() {
       setRateDrafts({});
       setConfirmedInvoice(order.invoice_no || String(order.id).slice(0, 8).toUpperCase());
       setOrderSuccess(true);
+      setTransactionId(''); setPayerName(''); setPayerAccount(''); setPayerAmount(''); setPayerPaidAt(''); setPaymentProof('');
       setCart([]);
     } finally {
       setIsSubmitting(false);
@@ -1320,10 +1499,14 @@ export default function App() {
   const hi = displaySlides.length ? heroIndex % displaySlides.length : 0;
 
   const priceOf = (p: Product) => Number(p.discounted_price || p.price || 0);
+  const q = searchQuery.trim();
+  const scoreMap = new Map<string, number>();
+  if (q) products.forEach(p => scoreMap.set(p.id, searchScore(p, q)));
   const visibleProducts = filteredProducts
-    .filter(p => !searchQuery.trim() || (p.name + ' ' + (p.description || '') + ' ' + (p.category_name || '')).toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    .filter(p => !q || (scoreMap.get(p.id) || 0) > 0)
     .slice()
     .sort((a, b) => {
+      if (q && sortBy === 'best') return (scoreMap.get(b.id) || 0) - (scoreMap.get(a.id) || 0);
       if (sortBy === 'low') return priceOf(a) - priceOf(b);
       if (sortBy === 'high') return priceOf(b) - priceOf(a);
       if (sortBy === 'new') return String(b.created_at || '').localeCompare(String(a.created_at || ''));
@@ -1346,6 +1529,8 @@ export default function App() {
   const openProduct = (p: Product, replace = false) => {
     setQuickView(p);
     setQvQty(1);
+    const vs = variantsOf(p);
+    setQvVariant((vs.find(v => Number(v.stock) > 0) || vs[0] || { name: '' }).name);
     try {
       const url = `${window.location.pathname}?product=${p.id}`;
       if (replace && window.history.state && window.history.state.product) window.history.replaceState({ product: p.id }, '', url);
@@ -1360,6 +1545,116 @@ export default function App() {
     }
   };
 
+  const adminLogout = async () => {
+    await supabase.rpc('admin_logout');
+    setAdminToken(null);
+    setIsAdminLoggedIn(false);
+    setAdminOrders([]);
+    setAdminUsers([]);
+    setAdminMenuOpen(false);
+    setCurrentView('store');
+    fetchReviews();
+  };
+
+  // Admin side menu (grouped like a seller centre)
+  const ADMIN_MENU: { title: string; items: { id: string; label: string; icon: any; open?: () => void; badge?: () => number }[] }[] = [
+    { title: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, open: () => fetchOrders() }] },
+    { title: 'Orders', items: [
+      { id: 'orders', label: 'Orders', icon: FileText, open: () => { setNewOrderCount(0); fetchOrders(); }, badge: () => newOrderCount },
+      { id: 'payments', label: 'Payments', icon: Wallet, open: () => fetchOrders() },
+      { id: 'customers', label: 'Customers', icon: Users, open: () => fetchCustomers() },
+      { id: 'reviews', label: 'Reviews', icon: Star, open: () => fetchReviews() }
+    ] },
+    { title: 'Products', items: [
+      { id: 'products', label: 'Products', icon: Package },
+      { id: 'categories', label: 'Categories', icon: Tag }
+    ] },
+    { title: 'Store Design', items: [
+      { id: 'slides', label: 'Home Banner', icon: ImageIcon, open: () => fetchSlides() },
+      { id: 'settings:look', label: 'Theme & Look', icon: Settings }
+    ] },
+    { title: 'Settings', items: [
+      { id: 'settings:profile', label: 'Store Profile', icon: Building },
+      { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
+      { id: 'settings:invoice', label: 'Invoice', icon: Printer },
+      { id: 'settings:messages', label: 'Customer Messages', icon: Mail },
+      { id: 'notifications', label: 'Order Alerts', icon: MessageCircle },
+      { id: 'users', label: 'Admin Users', icon: UserPlus }
+    ] }
+  ];
+
+  // Live suggestions under the search box
+  const suggestions = q
+    ? products.filter(p => (scoreMap.get(p.id) || 0) > 0).sort((a, b) => (scoreMap.get(b.id) || 0) - (scoreMap.get(a.id) || 0)).slice(0, 6)
+    : [];
+  const categoryHits = q ? categories.filter(c => searchScore({ name: c.name }, q) > 0).slice(0, 4) : [];
+
+  // Header colours for the chosen theme (Settings > Website Look)
+  const H = settings.header_style === 'dark'
+    ? { bar: 'bg-slate-900 text-white', name: 'text-white', sub: 'text-amber-400', btn: 'bg-amber-600 hover:bg-amber-700', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-amber-500 text-white' }
+    : settings.header_style === 'light'
+      ? { bar: 'bg-white text-slate-900 border-b', name: 'text-slate-900', sub: 'text-amber-600', btn: 'bg-amber-600 hover:bg-amber-700', icon: 'text-slate-700', hover: 'hover:bg-slate-100', input: 'bg-slate-100', badge: 'bg-amber-600 text-white' }
+      : { bar: 'bg-amber-600 text-white', name: 'text-white', sub: 'text-white/80', btn: 'bg-amber-800 hover:bg-amber-900', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-white text-amber-700' };
+  const pageBg = settings.page_bg === 'white' ? 'bg-white' : settings.page_bg === 'warm' ? 'bg-stone-100' : 'bg-slate-100';
+
+  const searchBox = (phone: boolean) => (
+    <form
+      onSubmit={(e) => { e.preventDefault(); setSearchOpen(false); (document.activeElement as HTMLElement)?.blur?.(); scrollToProducts(); }}
+      className={phone ? 'sm:hidden flex mt-2 relative' : 'hidden sm:flex flex-1 max-w-2xl relative'}
+      role="search"
+    >
+      <input
+        type="search"
+        placeholder={`Search in ${settings.store_name}`}
+        value={searchQuery}
+        onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+        onFocus={() => setSearchOpen(true)}
+        onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+        className={`flex-1 min-w-0 ${phone ? 'px-3 py-2' : 'px-4 py-2.5'} rounded-l-lg text-sm text-slate-800 ${H.input} focus:outline-none`}
+      />
+      <button type="submit" className={`${H.btn} ${phone ? 'px-3' : 'px-4'} rounded-r-lg cursor-pointer`} aria-label="Search">
+        <Search className={`${phone ? 'w-4 h-4' : 'w-5 h-5'} text-white`} />
+      </button>
+      {searchOpen && q && (suggestions.length > 0 || categoryHits.length > 0) && (
+        <div className="absolute top-full left-0 right-0 mt-1 bg-white text-slate-800 rounded-lg shadow-2xl border z-50 overflow-hidden">
+          {categoryHits.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-3 pb-2 border-b">
+              {categoryHits.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); setSelectedCategory(c.name); setSearchQuery(''); setSearchOpen(false); scrollToProducts(); }}
+                  className="text-[11px] font-semibold bg-amber-50 text-amber-700 px-2.5 py-1 rounded-full cursor-pointer"
+                >
+                  in {c.name}
+                </button>
+              ))}
+            </div>
+          )}
+          {suggestions.map(p => (
+            <button
+              key={p.id}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); setSearchOpen(false); openProduct(p); }}
+              className="w-full flex items-center gap-3 px-3 py-2 hover:bg-slate-50 text-left cursor-pointer"
+            >
+              <img src={p.image_url || PLACEHOLDER_IMG} alt="" className="w-10 h-10 object-cover rounded bg-slate-100 shrink-0" />
+              <span className="flex-1 min-w-0 text-sm truncate">{p.name}</span>
+              <span className="text-xs font-bold text-amber-600 shrink-0">{money(p.discounted_price || p.price)}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onMouseDown={(e) => { e.preventDefault(); setSearchOpen(false); scrollToProducts(); }}
+            className="w-full text-xs font-semibold text-slate-600 px-3 py-2.5 border-t bg-slate-50 text-left cursor-pointer"
+          >
+            See all results for "{q}"
+          </button>
+        </div>
+      )}
+    </form>
+  );
+
   // Products on discount for the "Flash Sale" row (biggest discount first)
   const saleProducts = products
     .filter(p => discountPct(p) > 0 && p.stock_quantity > 0)
@@ -1369,7 +1664,6 @@ export default function App() {
   // Picture for a category tile: the first product of that category that has a picture
   const categoryImage = (name: string) => (products.find(p => p.category_name === name && p.image_url) || ({} as any)).image_url || '';
 
-  const activePaymentAccount = paymentAccounts.find(a => a.type.toLowerCase().includes(paymentMethod.toLowerCase())) || paymentAccounts[0];
 
   // First visit only: a short loading screen instead of the built-in default look
   if (!booted && currentView === 'store') {
@@ -1381,7 +1675,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 font-sans text-slate-800">
+    <div className={`min-h-screen ${pageBg} font-sans text-slate-800`}>
       <style>{accentCss(settings.accent)}</style>
       {dbError && (
         <div className="bg-red-600 text-white text-xs font-bold px-4 py-2 text-center">
@@ -1415,7 +1709,7 @@ export default function App() {
       )}
 
       {/* Main header: logo, search, cart */}
-      <header className="bg-amber-600 text-white sticky top-0 z-40 shadow-md">
+      <header className={`${H.bar} sticky top-0 z-40 shadow-md`}>
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3">
           <div className="flex items-center gap-3 md:gap-8">
             <button
@@ -1426,63 +1720,54 @@ export default function App() {
               {settings.logo_url ? (
                 <img src={settings.logo_url} alt={settings.store_name} className="h-9 w-9 sm:h-11 sm:w-11 object-contain rounded bg-white p-0.5 shrink-0" />
               ) : (
-                <Package className="w-8 h-8 text-white shrink-0" />
+                <Package className={`w-8 h-8 ${H.icon} shrink-0`} />
               )}
               <span className="min-w-0">
-                <span className="text-base sm:text-xl md:text-2xl font-black tracking-wide text-white block whitespace-nowrap truncate leading-tight">{settings.store_name}</span>
+                <span className={`text-base sm:text-xl md:text-2xl font-black tracking-wide ${H.name} block whitespace-nowrap truncate leading-tight`}>{settings.store_name}</span>
                 {settings.header_subtitle && (
-                  <span className="text-[9px] sm:text-[11px] text-white/80 font-medium tracking-wide block truncate leading-tight">{settings.header_subtitle}</span>
+                  <span className={`text-[9px] sm:text-[11px] ${H.sub} font-medium tracking-wide block truncate leading-tight`}>{settings.header_subtitle}</span>
                 )}
               </span>
             </button>
 
-            {currentView === 'store' && (
-              <form
-                onSubmit={(e) => { e.preventDefault(); scrollToProducts(); }}
-                className="hidden sm:flex flex-1 max-w-2xl"
-                role="search"
-              >
-                <input
-                  type="search"
-                  placeholder={`Search in ${settings.store_name}`}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="flex-1 min-w-0 px-4 py-2.5 rounded-l-lg text-sm text-slate-800 bg-white focus:outline-none"
-                />
-                <button type="submit" className="bg-amber-800 hover:bg-amber-900 px-4 rounded-r-lg cursor-pointer" aria-label="Search">
-                  <Search className="w-5 h-5 text-white" />
-                </button>
-              </form>
-            )}
+            {currentView === 'store' && searchBox(false)}
 
             <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
-              {isAdminLoggedIn ? (
+              {/* Admin: a lock icon only */}
+              <button
+                onClick={() => setCurrentView(isAdminLoggedIn ? (currentView === 'admin' ? 'store' : 'admin') : 'login')}
+                className={`p-2 rounded-lg ${H.hover} transition cursor-pointer relative`}
+                aria-label={isAdminLoggedIn ? (currentView === 'admin' ? 'Back to store' : 'Admin panel') : 'Admin login'}
+                title={isAdminLoggedIn ? (currentView === 'admin' ? 'Back to store' : 'Admin panel') : 'Admin login'}
+              >
+                {isAdminLoggedIn && currentView === 'admin'
+                  ? <ShoppingCart className={`w-5 h-5 sm:w-6 sm:h-6 ${H.icon}`} />
+                  : <Lock className={`w-5 h-5 sm:w-6 sm:h-6 ${H.icon}`} />}
+                {isAdminLoggedIn && currentView !== 'admin' && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400" />}
+              </button>
+
+              {currentView !== 'admin' && (
                 <button
-                  onClick={() => setCurrentView(currentView === 'admin' ? 'store' : 'admin')}
-                  className="bg-white text-amber-700 font-bold px-3 py-2 rounded-lg text-xs flex items-center shadow cursor-pointer whitespace-nowrap"
+                  onClick={() => { if (authUser) setCurrentView('account'); else { setAuthMode('login'); setCurrentView('auth'); } }}
+                  className={`flex items-center gap-1.5 p-2 rounded-lg ${H.hover} transition cursor-pointer`}
+                  aria-label={authUser ? 'My account' : 'Login or sign up'}
                 >
-                  <LayoutDashboard className="w-4 h-4 sm:mr-1.5" />
-                  <span className="hidden sm:inline">{currentView === 'admin' ? 'Back to Store' : 'Admin Portal'}</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => setCurrentView('login')}
-                  className="text-white/90 hover:text-white hover:bg-white/10 px-2.5 py-2 rounded-lg text-xs flex items-center transition whitespace-nowrap cursor-pointer"
-                  aria-label="Admin Login"
-                >
-                  <Lock className="w-4 h-4 sm:mr-1.5" /> <span className="hidden sm:inline">Admin</span>
+                  <User className={`w-5 h-5 sm:w-6 sm:h-6 ${H.icon}`} />
+                  <span className={`hidden md:inline text-xs font-semibold ${H.name} max-w-[7rem] truncate`}>
+                    {authUser ? `Hi, ${String((authUser.user_metadata && authUser.user_metadata.name) || 'Account').split(' ')[0]}` : 'Login / Sign up'}
+                  </span>
                 </button>
               )}
 
               {currentView === 'store' && (
                 <button
                   onClick={() => setIsCartOpen(true)}
-                  className="relative p-2 rounded-lg hover:bg-white/10 transition cursor-pointer"
+                  className={`relative p-2 rounded-lg ${H.hover} transition cursor-pointer`}
                   aria-label="Open cart"
                 >
-                  <ShoppingCart className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
+                  <ShoppingCart className={`w-6 h-6 sm:w-7 sm:h-7 ${H.icon}`} />
                   {cart.length > 0 && (
-                    <span className="absolute -top-0.5 -right-0.5 bg-white text-amber-700 text-[10px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow">
+                    <span className={`absolute -top-0.5 -right-0.5 ${H.badge} text-[10px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow`}>
                       {cart.reduce((a, b) => a + b.quantity, 0)}
                     </span>
                   )}
@@ -1491,26 +1776,13 @@ export default function App() {
             </div>
           </div>
 
-          {currentView === 'store' && (
-            <form onSubmit={(e) => { e.preventDefault(); scrollToProducts(); }} className="sm:hidden flex mt-2" role="search">
-              <input
-                type="search"
-                placeholder={`Search in ${settings.store_name}`}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 min-w-0 px-3 py-2 rounded-l-lg text-sm text-slate-800 bg-white focus:outline-none"
-              />
-              <button type="submit" className="bg-amber-800 px-3 rounded-r-lg cursor-pointer" aria-label="Search">
-                <Search className="w-4 h-4 text-white" />
-              </button>
-            </form>
-          )}
+          {currentView === 'store' && searchBox(true)}
         </div>
       </header>
 
       {/* VIEW 1: CUSTOMER STORE VIEW */}
       {currentView === 'store' && (
-        <div className="bg-slate-100">
+        <div className={pageBg}>
           {/* Category list + banner */}
           <section className="max-w-7xl mx-auto sm:px-4 sm:pt-4">
             <div className="flex gap-4">
@@ -1771,7 +2043,10 @@ export default function App() {
                         <button onClick={() => openProduct(product)} className="text-left cursor-pointer">
                           <h3 className="text-xs sm:text-[13px] text-slate-800 line-clamp-2 min-h-[2rem] sm:min-h-[2.25rem] leading-snug">{product.name}</h3>
                         </button>
-                        <p className="text-amber-600 font-bold text-base sm:text-lg mt-1 leading-tight">{money(product.discounted_price || product.price)}</p>
+                        <p className="text-amber-600 font-bold text-base sm:text-lg mt-1 leading-tight">
+                          {variantsOf(product).length > 0 && <span className="text-[10px] font-normal text-slate-500 mr-1">from</span>}
+                          {money(product.discounted_price || product.price)}
+                        </p>
                         <p className="text-[11px] min-h-[1rem]">
                           {pct > 0 && (
                             <>
@@ -1796,7 +2071,7 @@ export default function App() {
                           disabled={soldOut}
                           className="mt-auto pt-0 w-full border border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed font-semibold text-[11px] sm:text-xs py-1.5 rounded transition flex items-center justify-center cursor-pointer mt-2"
                         >
-                          <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : 'Add to Cart'}
+                          <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : variantsOf(product).length > 0 ? 'Choose Size' : 'Add to Cart'}
                         </button>
                       </div>
                     </div>
@@ -1894,14 +2169,19 @@ export default function App() {
 
           {/* Product page (opens over the shop; the phone's Back button closes it) */}
           {quickView && (() => {
-            const p = quickView;
+            const vs = variantsOf(quickView);
+            const chosenV = vs.find(v => v.name === qvVariant) || vs[0];
+            // the chosen size decides price and stock
+            const p: Product = chosenV
+              ? { ...quickView, discounted_price: Number(chosenV.price), price: Number(chosenV.price), original_price: Number(chosenV.original_price || chosenV.price), stock_quantity: Number(chosenV.stock || 0) }
+              : quickView;
             const pct = discountPct(p);
             const r = ratingOf(p.id);
             const soldOut = p.stock_quantity <= 0;
             const related = products.filter(x => x.id !== p.id && x.category_name === p.category_name).slice(0, 10);
             const productReviews = reviews.filter(rv => rv.product_id === p.id);
-            const buyNow = () => { if (addToCart(p, qvQty)) { closeProduct(); setIsCartOpen(true); } };
-            const addOnly = () => { addToCart(p, qvQty); };
+            const buyNow = () => { if (addToCart(quickView, qvQty, chosenV, true)) { closeProduct(); setIsCartOpen(true); } };
+            const addOnly = () => { addToCart(quickView, qvQty, chosenV); };
             return (
               <div key={p.id} className="fixed inset-0 z-50 bg-black/60 md:flex md:items-start md:justify-center md:p-6 overflow-y-auto" onClick={closeProduct}>
                 <div className="bg-slate-100 md:bg-white w-full min-h-full md:min-h-0 md:max-w-5xl md:rounded-lg relative pb-20 md:pb-0" onClick={(e) => e.stopPropagation()}>
@@ -1962,6 +2242,28 @@ export default function App() {
                           {soldOut ? 'Out of stock' : p.stock_quantity <= 5 ? `Only ${p.stock_quantity} left - order soon` : 'In stock'}
                         </p>
                       </div>
+
+                      {vs.length > 0 && (
+                        <div className="bg-white px-3 py-3 md:p-0">
+                          <p className="text-xs text-slate-500 mb-2">Size: <b className="text-slate-800">{chosenV ? chosenV.name : ''}</b></p>
+                          <div className="flex flex-wrap gap-2">
+                            {vs.map(v => {
+                              const out = Number(v.stock) <= 0;
+                              const on = chosenV && v.name === chosenV.name;
+                              return (
+                                <button
+                                  key={v.name}
+                                  type="button"
+                                  onClick={() => { setQvVariant(v.name); setQvQty(1); }}
+                                  className={`px-3 py-1.5 rounded border text-sm cursor-pointer ${on ? 'border-amber-600 text-amber-700 bg-amber-50 font-semibold' : 'border-slate-300 text-slate-700 hover:border-amber-400'} ${out ? 'opacity-50 line-through' : ''}`}
+                                >
+                                  {v.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
 
                       {!soldOut && (
                         <div className="bg-white px-3 py-3 md:p-0 flex items-center gap-3">
@@ -2064,6 +2366,12 @@ export default function App() {
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {proofView && (
+        <div className="fixed inset-0 z-[80] bg-black/70 flex items-center justify-center p-4" onClick={() => setProofView(null)}>
+          <img src={proofView} alt="Payment screenshot" className="max-h-[90vh] max-w-full rounded-lg shadow-2xl bg-white" />
         </div>
       )}
 
@@ -2292,13 +2600,14 @@ export default function App() {
               <>
                 <div className="flex-1 overflow-y-auto py-4 space-y-3">
                   {cart.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
+                    <div key={item.cartKey} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
                       <div>
                         <h4 className="font-bold text-slate-800 text-sm">{item.name}</h4>
+                        {item.variant && <p className="text-[11px] text-slate-500">Size: {item.variant}</p>}
                         <div className="flex items-center space-x-2 mt-1.5">
                           <button
                             type="button"
-                            onClick={() => changeCartQty(item.id, -1)}
+                            onClick={() => changeCartQty(item.cartKey, -1)}
                             className="w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center cursor-pointer"
                             aria-label="Decrease quantity"
                           >
@@ -2307,7 +2616,7 @@ export default function App() {
                           <span className="text-sm font-bold w-6 text-center">{item.quantity}</span>
                           <button
                             type="button"
-                            onClick={() => changeCartQty(item.id, 1)}
+                            onClick={() => changeCartQty(item.cartKey, 1)}
                             className="w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center cursor-pointer"
                             aria-label="Increase quantity"
                           >
@@ -2321,7 +2630,7 @@ export default function App() {
                           PKR {(item.discounted_price || item.price) * item.quantity}
                         </span>
                         <button
-                          onClick={() => removeFromCart(item.id)}
+                          onClick={() => removeFromCart(item.cartKey)}
                           className="text-red-500 hover:text-red-700 cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -2336,6 +2645,18 @@ export default function App() {
                   </div>
                 </div>
 
+                {!authUser && (
+                  <div className="border-t pt-3 text-xs text-slate-600 flex items-center justify-between gap-2">
+                    <span>Have an account? Log in for faster checkout and to track your orders.</span>
+                    <button
+                      type="button"
+                      onClick={() => { setIsCartOpen(false); setAuthMode('login'); setCurrentView('auth'); }}
+                      className="shrink-0 border border-amber-600 text-amber-700 font-semibold px-3 py-1.5 rounded cursor-pointer"
+                    >
+                      Login
+                    </button>
+                  </div>
+                )}
                 <form onSubmit={handleCheckout} className="border-t pt-4 space-y-4">
                   <h4 className="font-extrabold text-slate-800 text-base">Customer & Shipping Details</h4>
                   
@@ -2394,63 +2715,125 @@ export default function App() {
                     <span>Email me about new products and deals (you can unsubscribe any time).</span>
                   </label>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-2">Select Payment Method</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethod('cod')}
-                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
-                          paymentMethod === 'cod' ? 'border-amber-500 bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-600'
-                        }`}
-                      >
-                        <Building className="w-4 h-4 mb-1" /> Cash on Delivery
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethod('easypaisa')}
-                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
-                          paymentMethod === 'easypaisa' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-600'
-                        }`}
-                      >
-                        <Hash className="w-4 h-4 mb-1" /> EasyPaisa
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethod('ubl')}
-                        className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer ${
-                          paymentMethod === 'ubl' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'bg-slate-50 text-slate-600'
-                        }`}
-                      >
-                        <CreditCard className="w-4 h-4 mb-1" /> Bank / UBL
-                      </button>
-                    </div>
-                  </div>
+                  {/* ---- Payment ---- */}
+                  {(() => {
+                    const accounts = paymentAccounts.filter(acc => acc.is_active !== false);
+                    const chosen = accounts.find(acc => acc.id === payAccountId);
+                    const field = 'w-full px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:border-amber-500';
+                    return (
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-slate-600">Select Payment Method</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPaymentMethod('cod')}
+                            className={`p-3 rounded-xl border-2 text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${paymentMethod === 'cod' ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
+                          >
+                            <Wallet className="w-5 h-5" /> Cash on Delivery
+                            <span className="text-[10px] font-medium text-slate-500">Pay when you receive</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={accounts.length === 0}
+                            onClick={() => {
+                              setPaymentMethod('online');
+                              if (!payAccountId && accounts[0]) setPayAccountId(accounts[0].id);
+                              if (!payerAmount) setPayerAmount(String(totalAmount));
+                              if (!payerPaidAt) {
+                                const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+                                setPayerPaidAt(d.toISOString().slice(0, 16));
+                              }
+                            }}
+                            className={`p-3 rounded-xl border-2 text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${paymentMethod !== 'cod' ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
+                          >
+                            <CreditCard className="w-5 h-5" /> Online Payment
+                            <span className="text-[10px] font-medium text-slate-500">EasyPaisa / JazzCash / Bank</span>
+                          </button>
+                        </div>
 
-                  {paymentMethod !== 'cod' && (
-                    <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-xl text-xs space-y-2">
-                      <div className="font-bold text-emerald-900 border-b pb-1">Payment Account Details:</div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-600">Account Number:</span>
-                        <span className="font-extrabold text-emerald-800 text-sm">{activePaymentAccount ? activePaymentAccount.account_number : '0300-1234567'}</span>
+                        {paymentMethod !== 'cod' && (
+                          <div className="border rounded-xl overflow-hidden">
+                            <div className="bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 border-b">Step 1: Choose an account and send the payment</div>
+                            <div className="p-3 space-y-2">
+                              {accounts.map(acc => (
+                                <label key={acc.id} className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer ${payAccountId === acc.id ? 'border-amber-500 bg-amber-50' : 'border-slate-200'}`}>
+                                  <input type="radio" name="pay-account" checked={payAccountId === acc.id} onChange={() => setPayAccountId(acc.id)} />
+                                  <span className="flex-1 min-w-0">
+                                    <span className="block text-sm font-bold text-slate-900">{acc.type}</span>
+                                    <span className="block text-[11px] text-slate-500 truncate">{acc.account_title}</span>
+                                  </span>
+                                  <span className="text-xs font-mono font-bold text-slate-800">{acc.account_number}</span>
+                                </label>
+                              ))}
+                              {chosen && (
+                                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-slate-700 space-y-1">
+                                  <p>Send exactly <b className="text-amber-700 text-sm">{money(totalAmount)}</b> to:</p>
+                                  <p className="font-bold text-slate-900">{chosen.type} · {chosen.account_title}</p>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-black text-base text-slate-900">{chosen.account_number}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => { navigator.clipboard?.writeText(chosen.account_number); setToastMessage('Account number copied'); setTimeout(() => setToastMessage(null), 2000); }}
+                                      className="text-[11px] font-bold border border-amber-600 text-amber-700 px-2 py-0.5 rounded cursor-pointer"
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 border-y">Step 2: Enter your payment details</div>
+                            <div className="p-3 grid grid-cols-2 gap-3">
+                              <div className="col-span-2 sm:col-span-1">
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Account holder name (sender) *</label>
+                                <input value={payerName} onChange={(e) => setPayerName(e.target.value)} placeholder="Name on your account" className={field} />
+                              </div>
+                              <div className="col-span-2 sm:col-span-1">
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Sent from (mobile / account no.) *</label>
+                                <input value={payerAccount} onChange={(e) => setPayerAccount(e.target.value)} placeholder="e.g. 0300-1234567" inputMode="tel" className={field} />
+                              </div>
+                              <div className="col-span-2">
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Transaction ID (TID) *</label>
+                                <input value={transactionId} onChange={(e) => setTransactionId(e.target.value)} placeholder="From your payment SMS / app receipt" className={field + ' font-mono'} />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Amount paid (Rs.) *</label>
+                                <input value={payerAmount} onChange={(e) => setPayerAmount(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" className={field} />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Date & time of payment</label>
+                                <input type="datetime-local" value={payerPaidAt} onChange={(e) => setPayerPaidAt(e.target.value)} className={field} />
+                              </div>
+                              <div className="col-span-2">
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Screenshot of payment (recommended)</label>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={async (e) => {
+                                    const file = e.target.files && e.target.files[0];
+                                    if (!file) return;
+                                    try { setPaymentProof(await resizeImage(file, 1000)); } catch (err: any) { alert(err.message || String(err)); }
+                                  }}
+                                  className="w-full text-xs"
+                                />
+                                {paymentProof && (
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <img src={paymentProof} alt="Payment screenshot" className="h-16 rounded border" />
+                                    <button type="button" onClick={() => setPaymentProof('')} className="text-[11px] text-red-600 font-bold cursor-pointer">Remove</button>
+                                  </div>
+                                )}
+                              </div>
+                              {Number(payerAmount) > 0 && Number(payerAmount) < totalAmount && (
+                                <p className="col-span-2 text-[11px] text-red-600 font-semibold">The amount is less than the order total ({money(totalAmount)}).</p>
+                              )}
+                              <p className="col-span-2 text-[11px] text-slate-500">We check your payment and then confirm the order. You will get the invoice by email.</p>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-600">Account Title:</span>
-                        <span className="font-bold text-slate-800">{activePaymentAccount ? activePaymentAccount.account_title : 'Zorima Official'}</span>
-                      </div>
-                      <div>
-                        <label className="block font-semibold text-slate-700 mt-2 mb-1">Enter Transaction / Reference ID:</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="e.g. TR-123456789"
-                          value={transactionId}
-                          onChange={(e) => setTransactionId(e.target.value)}
-                          className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white"
-                        />
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   <button
                     type="submit"
@@ -2521,131 +2904,175 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEW 3: FULL ENTERPRISE ADMIN CONTROL DASHBOARD */}
-      {currentView === 'admin' && isAdminLoggedIn && (
-        <div className="max-w-7xl mx-auto px-4 py-8">
-          <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-              <h2 className="text-2xl font-black text-amber-400 flex items-center">
-                <LayoutDashboard className="w-6 h-6 mr-2" /> {settings.store_name} Admin Control Center
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">
-                User: <span className="text-amber-300 font-bold">{loggedInUserName}</span> | Role: <span className="text-amber-300 font-bold">{loggedInUserRole}</span> | Build: {BUILD}
-              </p>
-            </div>
-            <button
-              onClick={async () => {
-                await supabase.rpc('admin_logout');
-                setAdminToken(null);
-                setIsAdminLoggedIn(false);
-                setAdminOrders([]);
-                setAdminUsers([]);
-                setCurrentView('store');
-                fetchReviews();
-              }}
-              className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center cursor-pointer"
-            >
-              <LogOut className="w-4 h-4 mr-1.5" /> Logout
-            </button>
-          </div>
+      {/* Customer login / register */}
+      {currentView === 'auth' && (
+        <AuthPage
+          storeName={settings.store_name}
+          mode={authMode}
+          setMode={setAuthMode}
+          notice={pendingCart ? `Please login or register to add "${pendingCart.product.name}${pendingCart.variant ? ` (${pendingCart.variant.name})` : ''}" to your cart.` : ''}
+          onDone={() => { if (!pendingCart) setCurrentView('store'); }}
+        />
+      )}
 
-          <div className="flex border-b mb-8 space-x-2 overflow-x-auto pb-2">
-            <button
-              onClick={() => setAdminTab('products')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'products' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Plus className="w-4 h-4 mr-1.5 text-amber-500" /> Products (Edit/Delete)
-            </button>
-            <button
-              onClick={() => setAdminTab('categories')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'categories' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Tag className="w-4 h-4 mr-1.5 text-amber-500" /> Categories
-            </button>
-            <button
-              onClick={() => {
-                setAdminTab('orders');
-                setNewOrderCount(0);
-                fetchOrders();
-              }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'orders' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <FileText className="w-4 h-4 mr-1.5 text-amber-500" /> Orders ({adminOrders.length})
-              {newOrderCount > 0 && (
-                <span className="ml-2 bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full">{newOrderCount} new</span>
-              )}
-            </button>
-            <button
-              onClick={() => setAdminTab('users')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'users' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <UserPlus className="w-4 h-4 mr-1.5 text-amber-500" /> Admin Users & Passwords
-            </button>
-            <button
-              onClick={() => setAdminTab('accounts')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'accounts' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Bank & UBL Accounts (Add/Delete)
-            </button>
-            <button
-              onClick={() => setAdminTab('notifications')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'notifications' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Settings className="w-4 h-4 mr-1.5 text-amber-500" /> Order Alerts
-            </button>
-            <button
-              onClick={() => { setAdminTab('payments'); fetchOrders(); }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'payments' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Wallet className="w-4 h-4 mr-1.5 text-amber-500" /> Payments
-            </button>
-            <button
-              onClick={() => { setAdminTab('reviews'); fetchReviews(); }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'reviews' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Star className="w-4 h-4 mr-1.5 text-amber-500" /> Reviews ({reviews.length})
-            </button>
-            <button
-              onClick={() => { setAdminTab('customers'); fetchCustomers(); }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'customers' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Users className="w-4 h-4 mr-1.5 text-amber-500" /> Customers ({customers.length})
-            </button>
-            <button
-              onClick={() => { setAdminTab('slides'); fetchSlides(); }}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'slides' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <ImageIcon className="w-4 h-4 mr-1.5 text-amber-500" /> Home Slides
-            </button>
-            <button
-              onClick={() => setAdminTab('settings')}
-              className={`pb-3 px-4 text-xs md:text-sm font-bold flex items-center border-b-2 whitespace-nowrap transition cursor-pointer ${
-                adminTab === 'settings' ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Settings className="w-4 h-4 mr-1.5 text-amber-500" /> Settings
-            </button>
-          </div>
+      {/* Customer "My Account" */}
+      {currentView === 'account' && authUser && (
+        <AccountPage
+          user={authUser}
+          onShop={() => setCurrentView('store')}
+          onLogout={async () => { await supabase.auth.signOut(); setCurrentView('store'); }}
+        />
+      )}
+
+      {/* VIEW 3: ADMIN (seller-centre style: side menu + pages) */}
+      {currentView === 'admin' && isAdminLoggedIn && (() => {
+        const goAdmin = (id: string) => {
+          const item = ADMIN_MENU.flatMap(g => g.items).find(i => i.id === id);
+          if (id.startsWith('settings:')) { setAdminTab('settings'); setSettingsTab(id.split(':')[1] as SettingsTab); }
+          else setAdminTab(id as any);
+          if (item && item.open) item.open();
+          setAdminMenuOpen(false);
+          window.scrollTo({ top: 0 });
+        };
+        const activeId = adminTab === 'settings' ? `settings:${settingsTab}` : adminTab;
+        const activeItem = ADMIN_MENU.flatMap(g => g.items).find(i => i.id === activeId);
+        return (
+          <div className="flex items-start">
+            <aside className={`${adminMenuOpen ? 'fixed inset-0 z-50 flex' : 'hidden'} md:flex md:sticky md:top-[68px] md:z-auto md:h-[calc(100vh-68px)] md:w-60 shrink-0`}>
+              <div className="bg-slate-900 text-slate-300 w-64 md:w-60 h-full overflow-y-auto flex flex-col">
+                <div className="px-4 py-4 border-b border-slate-800">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">Admin</p>
+                  <p className="text-sm font-bold text-white truncate">{loggedInUserName}</p>
+                  <p className="text-[11px] text-amber-400">{loggedInUserRole}</p>
+                </div>
+                <nav className="flex-1 py-2">
+                  {ADMIN_MENU.map(g => (
+                    <div key={g.title} className="mb-1">
+                      <p className="px-4 pt-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">{g.title}</p>
+                      {g.items.map(it => {
+                        const Icon = it.icon;
+                        const on = it.id === activeId;
+                        const badge = it.badge ? it.badge() : 0;
+                        return (
+                          <button
+                            key={it.id}
+                            onClick={() => goAdmin(it.id)}
+                            className={`w-full flex items-center gap-3 px-4 py-2 text-sm text-left cursor-pointer border-l-4 ${on ? 'bg-slate-800 text-white border-amber-500' : 'border-transparent hover:bg-slate-800/60 hover:text-white'}`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${on ? 'text-amber-400' : ''}`} />
+                            <span className="flex-1 truncate">{it.label}</span>
+                            {badge > 0 && <span className="bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{badge}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </nav>
+                <div className="p-3 border-t border-slate-800 space-y-2">
+                  <button onClick={() => { setCurrentView('store'); setAdminMenuOpen(false); }} className="w-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white py-2 rounded cursor-pointer">
+                    View my shop
+                  </button>
+                  <button onClick={adminLogout} className="w-full text-xs font-semibold bg-red-600 hover:bg-red-700 text-white py-2 rounded flex items-center justify-center gap-1.5 cursor-pointer">
+                    <LogOut className="w-3.5 h-3.5" /> Logout
+                  </button>
+                  <p className="text-[10px] text-slate-500 text-center">Build: {BUILD}</p>
+                </div>
+              </div>
+              <div className="flex-1 bg-black/50 md:hidden" onClick={() => setAdminMenuOpen(false)} />
+            </aside>
+
+            <div className="flex-1 min-w-0 px-3 sm:px-6 py-4 sm:py-6">
+              <div className="flex items-center gap-3 mb-5">
+                <button onClick={() => setAdminMenuOpen(true)} className="md:hidden bg-slate-900 text-white px-3 py-2 rounded-lg text-xs font-bold cursor-pointer">☰ Menu</button>
+                <h2 className="text-lg sm:text-xl font-bold text-slate-900">{activeItem ? activeItem.label : 'Admin'}</h2>
+              </div>
+
+              {adminTab === 'dashboard' && (() => {
+                const now = new Date();
+                const sameDay = (iso?: string) => !!iso && new Date(iso).toDateString() === now.toDateString();
+                const sameMonth = (iso?: string) => { if (!iso) return false; const d = new Date(iso); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); };
+                const live = adminOrders.filter(o => o.status !== 'Cancelled');
+                const todays = live.filter(o => sameDay((o as any).created_at));
+                const pending = live.filter(o => (o.status || 'Pending') === 'Pending');
+                const toVerify = live.filter(o => o.payment_method && o.payment_method !== 'cod' && o.payment_status !== 'Paid');
+                const monthSales = live.filter(o => sameMonth((o as any).created_at)).reduce((t, o) => t + Number(o.total_amount || 0), 0);
+                const lowStock = products.filter(p => p.stock_quantity <= 5).sort((a, b) => a.stock_quantity - b.stock_quantity).slice(0, 8);
+                const card = (title: string, value: string | number, note: string, go: string, tone: string) => (
+                  <button onClick={() => goAdmin(go)} className="bg-white rounded-xl border p-4 text-left hover:shadow-md transition cursor-pointer">
+                    <p className="text-xs text-slate-500">{title}</p>
+                    <p className={`text-2xl font-black mt-1 ${tone}`}>{value}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">{note}</p>
+                  </button>
+                );
+                return (
+                  <div className="space-y-5">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      {card("Today's orders", todays.length, money(todays.reduce((t, o) => t + Number(o.total_amount || 0), 0)), 'orders', 'text-slate-900')}
+                      {card('Pending orders', pending.length, 'Waiting to be confirmed', 'orders', 'text-amber-600')}
+                      {card('Payments to verify', toVerify.length, 'Online payments not yet checked', 'orders', 'text-red-600')}
+                      {card('Sales this month', money(monthSales), `${live.filter(o => sameMonth((o as any).created_at)).length} orders`, 'payments', 'text-emerald-700')}
+                    </div>
+
+                    <div className="grid lg:grid-cols-3 gap-5">
+                      <div className="lg:col-span-2 bg-white rounded-xl border">
+                        <div className="flex items-center justify-between px-4 py-3 border-b">
+                          <h3 className="text-sm font-bold text-slate-900">Latest orders</h3>
+                          <button onClick={() => goAdmin('orders')} className="text-xs text-amber-700 font-semibold cursor-pointer">See all</button>
+                        </div>
+                        {adminOrders.length === 0 ? (
+                          <p className="px-4 py-8 text-sm text-slate-400 text-center">No orders yet.</p>
+                        ) : (
+                          <div className="divide-y">
+                            {adminOrders.slice(0, 6).map(o => (
+                              <div key={o.id} className="flex items-center gap-3 px-4 py-2.5 text-xs">
+                                <span className="font-bold text-slate-900 w-20 shrink-0">{o.invoice_no || '-'}</span>
+                                <span className="flex-1 min-w-0 truncate text-slate-700">{o.customer_name}</span>
+                                <span className="hidden sm:inline text-slate-500 uppercase">{o.payment_method || 'cod'}</span>
+                                <span className="font-bold text-slate-900">{money(o.total_amount)}</span>
+                                <span className={`px-2 py-0.5 rounded-full font-semibold ${o.status === 'Delivered' ? 'bg-emerald-100 text-emerald-800' : o.status === 'Cancelled' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>{o.status || 'Pending'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="bg-white rounded-xl border">
+                        <div className="flex items-center justify-between px-4 py-3 border-b">
+                          <h3 className="text-sm font-bold text-slate-900">Low stock</h3>
+                          <button onClick={() => goAdmin('products')} className="text-xs text-amber-700 font-semibold cursor-pointer">Products</button>
+                        </div>
+                        {lowStock.length === 0 ? (
+                          <p className="px-4 py-8 text-sm text-slate-400 text-center">All products have enough stock.</p>
+                        ) : (
+                          <div className="divide-y">
+                            {lowStock.map(p => (
+                              <div key={p.id} className="flex items-center gap-2 px-4 py-2 text-xs">
+                                <span className="flex-1 min-w-0 truncate text-slate-700">{p.name}</span>
+                                <span className={`font-bold ${p.stock_quantity <= 0 ? 'text-red-600' : 'text-amber-600'}`}>{p.stock_quantity <= 0 ? 'Sold out' : `${p.stock_quantity} left`}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl border p-4">
+                      <h3 className="text-sm font-bold text-slate-900 mb-3">Quick actions</h3>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          ['products', '+ Add product'],
+                          ['slides', 'Banner pictures'],
+                          ['settings:look', 'Change theme'],
+                          ['accounts', 'Payment accounts'],
+                          ['settings:profile', 'Logo & contact']
+                        ].map(([id, text]) => (
+                          <button key={id} onClick={() => goAdmin(id)} className="text-xs font-semibold border border-slate-300 hover:border-amber-500 hover:text-amber-700 px-3 py-2 rounded-lg cursor-pointer">{text}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
           {/* TAB 1: PRODUCTS MANAGER */}
           {adminTab === 'products' && (
@@ -2718,7 +3145,7 @@ export default function App() {
                       <label className="block text-xs font-bold text-emerald-700 mb-1">After Discount Price (PKR) *</label>
                       <input
                         type="number"
-                        required
+                        required={pVariants.length === 0}
                         placeholder="1850"
                         value={discountedPrice}
                         onChange={(e) => setDiscountedPrice(e.target.value)}
@@ -2727,12 +3154,52 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div>
+                  {/* Sizes / variants */}
+                  <div className="border rounded-xl p-3 bg-slate-50 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-slate-700">Sizes / packs (optional) - e.g. 250 ML, 500 ML, 1 Litre</p>
+                      <button
+                        type="button"
+                        onClick={() => setPVariants(v => [...v, { name: '', price: '', original_price: '', stock: '' }])}
+                        className="text-[11px] font-bold bg-slate-900 text-amber-400 px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                      >
+                        + Add size
+                      </button>
+                    </div>
+                    {pVariants.length === 0 && (
+                      <p className="text-[11px] text-slate-500">No sizes: the product is sold at one price. Add sizes if it comes in different packs; the customer then picks one.</p>
+                    )}
+                    {pVariants.length > 0 && (
+                      <div className="grid grid-cols-[1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 text-[10px] font-bold text-slate-500 px-0.5">
+                        <span>Size name</span><span>Sale price</span><span>Old price</span><span>Stock</span><span></span>
+                      </div>
+                    )}
+                    {pVariants.map((v, i) => {
+                      const upd = (k: 'name' | 'price' | 'original_price' | 'stock', val: string) =>
+                        setPVariants(list => list.map((x, idx) => idx === i ? { ...x, [k]: val } : x));
+                      return (
+                        <div key={i} className="grid grid-cols-[1.4fr_1fr_1fr_0.8fr_auto] gap-1.5">
+                          <input value={v.name} onChange={(e) => upd('name', e.target.value)} placeholder="500 ML" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                          <input value={v.price} onChange={(e) => upd('price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Rs." inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                          <input value={v.original_price} onChange={(e) => upd('original_price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="(optional)" inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                          <input value={v.stock} onChange={(e) => upd('stock', e.target.value.replace(/[^0-9]/g, ''))} placeholder="0" inputMode="numeric" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                          <button type="button" onClick={() => setPVariants(list => list.filter((_, idx) => idx !== i))} className="px-2 text-red-600 cursor-pointer" aria-label="Remove size">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {pVariants.length > 0 && (
+                      <p className="text-[11px] text-slate-500">With sizes, the price and stock above are not used: the shop shows the cheapest size and the total stock.</p>
+                    )}
+                  </div>
+
+                  <div className={pVariants.length > 0 ? 'hidden' : ''}>
                     <label className="block text-xs font-bold text-slate-700 mb-1">Stock Quantity (items available) *</label>
                     <input
                       type="number"
                       min="0"
-                      required
+                      required={pVariants.length === 0}
                       placeholder="e.g. 100"
                       value={productStock}
                       onChange={(e) => setProductStock(e.target.value)}
@@ -2947,7 +3414,27 @@ export default function App() {
                           ))}
                         </td>
                         <td className="p-3.5 font-black text-emerald-700">PKR {order.total_amount}</td>
-                        <td className="p-3.5 font-semibold text-slate-700 uppercase">{order.payment_method || 'COD'}</td>
+                        <td className="p-3.5 text-slate-700 min-w-[11rem]">
+                          <div className="font-semibold uppercase">{order.payment_method || 'COD'}</div>
+                          {order.payment_method && order.payment_method !== 'cod' && (
+                            <div className="mt-1 space-y-0.5 text-[11px] text-slate-600">
+                              {order.payment_account_label && <div>To: {order.payment_account_label}</div>}
+                              {order.payer_name && <div>From: <b>{order.payer_name}</b> ({order.payer_account})</div>}
+                              {order.transaction_id && <div>TID: <span className="font-mono font-bold">{order.transaction_id}</span></div>}
+                              {order.payer_amount != null && (
+                                <div className={Number(order.payer_amount) < Number(order.total_amount) ? 'text-red-600 font-bold' : ''}>
+                                  Paid: PKR {order.payer_amount}{order.payer_paid_at ? ` · ${fmtDateTime(order.payer_paid_at)}` : ''}
+                                </div>
+                              )}
+                              {order.has_payment_proof && (
+                                <button onClick={() => showPaymentProof(order.id)} className="text-blue-700 font-bold underline cursor-pointer">View screenshot</button>
+                              )}
+                              <div className={`inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${order.payment_status === 'Paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                {order.payment_status === 'Paid' ? 'Verified' : 'To verify'}
+                              </div>
+                            </div>
+                          )}
+                        </td>
                         <td className="p-3.5">
                           <select
                             value={order.status || 'Pending'}
@@ -3092,6 +3579,7 @@ export default function App() {
           {/* TAB 11: SETTINGS */}
           {adminTab === 'settings' && (
             <SettingsPanel
+              tab={settingsTab}
               settings={settings}
               accounts={paymentAccounts}
               onSaved={setSettings}
@@ -3668,8 +4156,10 @@ export default function App() {
               </div>
             </div>
           )}
-        </div>
-      )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Footer */}
       <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">

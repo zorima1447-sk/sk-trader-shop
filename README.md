@@ -17,7 +17,8 @@ The repository root must contain `package.json` and `index.html`. Only the files
 .gitignore  .env.example  README.md  package.json  index.html  vite.config.ts  tailwind.config.js  postcss.config.js  supabase_setup.sql
 supabase/functions/notify-order/index.ts
 supabase/functions/notify-customers/index.ts
-src/App.tsx  src/GeoFields.tsx  src/Invoice.tsx  src/SettingsPanel.tsx  src/storeSettings.ts  src/main.tsx  src/index.css  src/supabaseClient.ts
+supabase/functions/customer-login/index.ts
+src/App.tsx  src/CustomerAuth.tsx  src/icons.tsx  src/GeoFields.tsx  src/Invoice.tsx  src/SettingsPanel.tsx  src/storeSettings.ts  src/main.tsx  src/index.css  src/supabaseClient.ts
 src/components/ProductForm.jsx
 ```
 
@@ -66,6 +67,33 @@ npm install
 npm run dev
 ```
 
+## v9: customer accounts, online payment, sizes, admin menu
+- **Customer accounts** (Supabase Auth): Login with phone number or email + password, Register, Forgot password,
+  Google / Facebook buttons, "My Account" (My Orders with invoice links, profile, change password).
+  A visitor who presses Add to Cart / Buy Now is asked to log in or register first; the item is added right after.
+- **Online payment**: the customer chooses one of your Payment Accounts, sees the amount and account number (Copy button),
+  then enters sender name, sender number, Transaction ID, amount, date/time and a screenshot. Admin > Orders shows
+  all of it ("View screenshot") and the owner alert includes it. Cash on Delivery stays available.
+- **Sizes** (250 ML / 500 ML ...): Admin > Products > "+ Add size" (name, price, old price, stock for each size).
+  The customer picks the size on the product page; price and stock come from that size (checked in the database).
+- **Search** finds short / partial words, several words in any order and small spelling mistakes, with live suggestions.
+- **Admin** has a side menu (Dashboard, Orders, Payments, Customers, Reviews, Products, Categories, Home Banner,
+  Theme & Look, Store Profile, Payment Accounts, Invoice, Customer Messages, Order Alerts, Admin Users) and a Dashboard.
+- **Themes**: Settings > Theme & Look - 8 ready themes, header style, page background, 10 accent colours.
+- Header: the admin button is a lock icon.
+
+### One-time setup for v9
+1. Supabase > SQL Editor: run the whole `supabase_setup.sql` again (safe; keeps all data).
+2. Supabase > Edge Functions: deploy `customer-login` (new) and re-deploy `notify-order`.
+3. Supabase > Authentication > URL Configuration: Site URL = `https://sk-trader-shop.vercel.app`,
+   and add the same address under Redirect URLs.
+4. Supabase > Authentication > Sign In / Providers > Email: keep "Confirm email" ON (customers confirm by email)
+   or turn it OFF (customers can buy right after registering).
+5. Optional: Google / Facebook login - turn the provider on in Supabase > Authentication > Providers
+   (needs a Google Cloud / Facebook developer app). Until then those buttons show a friendly message.
+6. Optional: Supabase's built-in email sender is limited to a few emails per hour. For many customers,
+   add your own SMTP (for example Resend) in Supabase > Authentication > Emails > SMTP Settings.
+
 ## v8: shop look and banner
 - Marketplace-style home page: coloured header with search, category list + banner, scrolling strip, Flash Sale
   (discounted products), category tiles, "Just For You" product grid with sorting.
@@ -76,7 +104,6 @@ npm run dev
 - Admin > Settings > Website Look > **Scrolling strip**: text and icon (or emoji) for each item, order, speed, on/off.
   An "Orange" accent colour is available too.
 - A reload shows the last saved look at once (kept in the browser) instead of the built-in default look.
-- Existing databases: run `update_v8.sql` once (new columns for the strip + permission for banner pictures).
 
 ## Security (v7)
 - Admin passwords are stored only as bcrypt hashes and are checked inside the database (`admin_login`).
