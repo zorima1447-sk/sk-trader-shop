@@ -67,6 +67,14 @@ npm install
 npm run dev
 ```
 
+## v14: pictures for shades and sizes
+- Each option (shade / size) can have its own picture (Admin > Products > Options, picture box at the start of the row).
+- "+ Add from pictures": select many pictures at once; the file name becomes the shade name ("4.0 Medium Brown.jpg").
+  A shade that already exists with that name just gets the picture. Good for 60+ shades.
+- Product page: picking a shade/size shows its picture as the main picture; with pictures the shades show as a
+  picture grid (with a search box when there are more than 12), plus the dropdown. The cart shows the shade's picture.
+- Pictures go to Supabase Storage (bucket site-assets, files variant-*.jpg). Run `supabase_setup.sql` again first.
+
 ## v13: hair colour shades (product options)
 - Admin > Products > Options: choose what the options are called (Size, Shade, Color, Pack, Weight or your own word),
   "+ Add many" pastes many shade names at once (one per line), each option can have a colour dot, price, old price, stock.

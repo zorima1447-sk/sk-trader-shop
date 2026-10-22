@@ -46,6 +46,7 @@ interface Variant {
   original_price?: number;
   stock: number;
   color?: string; // optional swatch colour (e.g. hair colour shade), "#8b4513"
+  image?: string; // optional picture of this shade / size
 }
 
 interface CartItem extends Product {
@@ -170,7 +171,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v13 (22-Oct-2026)';
+const BUILD = 'v14 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -215,7 +216,7 @@ function resizeImage(file: File, maxW: number): Promise<string> {
 
 // Uploads a data-URL image to Supabase Storage (bucket "site-assets") and returns its public link.
 // If the upload is not possible the image stays embedded (it still works, the page is just heavier).
-async function uploadSiteImage(dataUrl: string, prefix: 'slide'): Promise<string> {
+async function uploadSiteImage(dataUrl: string, prefix: 'slide' | 'variant'): Promise<string> {
   if (!dataUrl.startsWith('data:')) return dataUrl;
   try {
     const blob = await (await fetch(dataUrl)).blob();
@@ -285,6 +286,8 @@ function searchScore(p: { name: string; category_name?: string; description?: st
   return total;
 }
 
+const STORAGE_WARNING = 'The picture could not be uploaded to Supabase Storage, so it was not added (it would make the shop slow).\n\nRun the latest supabase_setup.sql in Supabase > SQL Editor (it allows option pictures), then try again.';
+
 const money = (n: number | string | null | undefined) => 'Rs. ' + Number(n || 0).toLocaleString('en-PK');
 
 export default function App() {
@@ -314,6 +317,7 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [shareItem, setShareItem] = useState<{ title: string; url: string } | null>(null);
   const [qvVariant, setQvVariant] = useState<string>('');
+  const [optSearch, setOptSearch] = useState(''); // search box over many shades
   // Admin: city filter + sort for Orders and Customers
   const [orderCity, setOrderCity] = useState('All');
   const [orderSort, setOrderSort] = useState<'new' | 'old' | 'city' | 'amount'>('new');
@@ -402,7 +406,8 @@ export default function App() {
   const [originalPrice, setOriginalPrice] = useState('');
   const [discountedPrice, setDiscountedPrice] = useState('');
   const [productStock, setProductStock] = useState('');
-  const [pVariants, setPVariants] = useState<{ name: string; price: string; original_price: string; stock: string; color: string }[]>([]);
+  const [pVariants, setPVariants] = useState<{ name: string; price: string; original_price: string; stock: string; color: string; image: string }[]>([]);
+  const [variantUpload, setVariantUpload] = useState(''); // progress text while option pictures upload
   const [pVariantLabel, setPVariantLabel] = useState('Size');
   const [bulkShades, setBulkShades] = useState<string | null>(null); // "add many" text box (one name per line)
   const [productCategory, setProductCategory] = useState('');
@@ -1228,6 +1233,46 @@ export default function App() {
     }
   };
 
+  // One picture for one option (shade / size)
+  const uploadVariantImage = async (index: number, file: File) => {
+    setVariantUpload('Uploading picture...');
+    try {
+      const url = await uploadSiteImage(await resizeImage(file, 700), 'variant');
+      if (url.startsWith('data:')) { alert(STORAGE_WARNING); setVariantUpload(''); return; }
+      setPVariants(list => list.map((x, i) => (i === index ? { ...x, image: url } : x)));
+    } catch (err: any) {
+      alert(err.message || String(err));
+    }
+    setVariantUpload('');
+  };
+
+  // Many pictures at once: the file name is the shade name ("4.0 Medium Brown.jpg").
+  // An existing option with that name gets the picture; a new name becomes a new option.
+  const addVariantsFromPictures = async (files: File[]) => {
+    const nameOf = (f: File) => f.name.replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' ').trim();
+    const results: { name: string; url: string }[] = [];
+    for (let i = 0; i < files.length; i++) {
+      setVariantUpload(`Uploading picture ${i + 1} of ${files.length}...`);
+      try {
+        const url = await uploadSiteImage(await resizeImage(files[i], 700), 'variant');
+        if (url.startsWith('data:')) { alert(STORAGE_WARNING); break; }
+        results.push({ name: nameOf(files[i]), url });
+      } catch (err: any) {
+        alert(`${files[i].name}: ${err.message || err}`);
+      }
+    }
+    setVariantUpload('');
+    setPVariants(list => {
+      const next = list.slice();
+      results.forEach(r => {
+        const hit = next.findIndex(x => x.name.trim().toLowerCase() === r.name.toLowerCase());
+        if (hit >= 0) next[hit] = { ...next[hit], image: r.url };
+        else next.push({ name: r.name, price: discountedPrice, original_price: originalPrice, stock: productStock || '0', color: '', image: r.url });
+      });
+      return next;
+    });
+  };
+
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanVariants: Variant[] = pVariants
@@ -1237,7 +1282,8 @@ export default function App() {
         price: parseFloat(v.price) || 0,
         original_price: parseFloat(v.original_price) || parseFloat(v.price) || 0,
         stock: parseInt(v.stock) || 0,
-        ...(v.color ? { color: v.color } : {})
+        ...(v.color ? { color: v.color } : {}),
+        ...(v.image ? { image: v.image } : {})
       }));
     if (cleanVariants.some(v => !(v.price > 0))) { alert('Please enter a selling price for every size.'); return; }
     if (!productName || (!discountedPrice && cleanVariants.length === 0)) {
@@ -1293,7 +1339,7 @@ export default function App() {
     setProductCategory(p.category_name);
     setImageUrl(p.image_url);
     setImagePreview(p.image_url);
-    setPVariants(variantsOf(p).map(v => ({ name: v.name, price: String(v.price), original_price: String(v.original_price || ''), stock: String(v.stock ?? 0), color: v.color || '' })));
+    setPVariants(variantsOf(p).map(v => ({ name: v.name, price: String(v.price), original_price: String(v.original_price || ''), stock: String(v.stock ?? 0), color: v.color || '', image: v.image || '' })));
     setPVariantLabel(p.variant_label || 'Size');
     setBulkShades(null);
   };
@@ -1435,7 +1481,7 @@ export default function App() {
       return false;
     }
     const product: Product = variant
-      ? { ...base, discounted_price: Number(variant.price), price: Number(variant.price), original_price: Number(variant.original_price || variant.price), stock_quantity: Number(variant.stock || 0) }
+      ? { ...base, discounted_price: Number(variant.price), price: Number(variant.price), original_price: Number(variant.original_price || variant.price), stock_quantity: Number(variant.stock || 0), image_url: variant.image || base.image_url }
       : base;
     const key = variant ? `${base.id}|${variant.name}` : base.id;
     const inCart = cart.find(i => i.cartKey === key)?.quantity || 0;
@@ -1648,6 +1694,7 @@ export default function App() {
 
   // ---- Product page: has its own link (?product=<id>) and closes with the phone's Back button ----
   const openProduct = (p: Product, replace = false) => {
+    setOptSearch('');
     setQuickView(p);
     setQvQty(1);
     const vs = variantsOf(p);
@@ -2325,7 +2372,7 @@ export default function App() {
             const chosenV = vs.find(v => v.name === qvVariant) || vs[0];
             // the chosen size decides price and stock
             const p: Product = chosenV
-              ? { ...quickView, discounted_price: Number(chosenV.price), price: Number(chosenV.price), original_price: Number(chosenV.original_price || chosenV.price), stock_quantity: Number(chosenV.stock || 0) }
+              ? { ...quickView, discounted_price: Number(chosenV.price), price: Number(chosenV.price), original_price: Number(chosenV.original_price || chosenV.price), stock_quantity: Number(chosenV.stock || 0), image_url: chosenV.image || quickView.image_url }
               : quickView;
             const pct = discountPct(p);
             const r = ratingOf(p.id);
@@ -2398,12 +2445,49 @@ export default function App() {
                       {vs.length > 0 && (() => {
                         const label = (quickView.variant_label || 'Size').trim();
                         const anyColor = vs.some(v => v.color);
+                        const anyImage = vs.some(v => v.image);
+                        const shown = optSearch.trim() ? vs.filter(v => v.name.toLowerCase().includes(optSearch.trim().toLowerCase())) : vs;
                         return (
                           <div className="bg-white px-3 py-3 md:p-0">
                             <p className="text-sm text-slate-600 mb-2 flex items-center gap-2">
                               {label}: <b className="text-slate-900">{chosenV ? chosenV.name : ''}</b>
                               {chosenV && chosenV.color && <span className="w-4 h-4 rounded-full border" style={{ background: chosenV.color }} />}
                             </p>
+                            {anyImage && (
+                              <div className="mb-2">
+                                {vs.length > 12 && (
+                                  <input
+                                    value={optSearch}
+                                    onChange={(e) => setOptSearch(e.target.value)}
+                                    placeholder={`Search ${label.toLowerCase()} (e.g. 4.0 or brown)`}
+                                    className="w-full mb-2 px-3 py-2 border rounded-lg text-sm"
+                                  />
+                                )}
+                                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-72 overflow-y-auto pr-1">
+                                  {shown.map(v => {
+                                    const on = chosenV && v.name === chosenV.name;
+                                    const out = Number(v.stock) <= 0;
+                                    return (
+                                      <button
+                                        key={v.name}
+                                        type="button"
+                                        onClick={() => { setQvVariant(v.name); setQvQty(1); }}
+                                        className={`text-left rounded-lg border-2 overflow-hidden cursor-pointer ${on ? 'border-amber-600' : 'border-transparent hover:border-slate-300'} ${out ? 'opacity-50' : ''}`}
+                                        title={v.name}
+                                      >
+                                        <span className="block aspect-square bg-slate-100">
+                                          {v.image
+                                            ? <img src={v.image} alt={v.name} loading="lazy" className="w-full h-full object-cover" />
+                                            : <span className="block w-full h-full" style={{ background: v.color || '#f1f5f9' }} />}
+                                        </span>
+                                        <span className="block px-1 py-0.5 text-[10px] leading-tight text-slate-700 line-clamp-2">{v.name}{out ? ' (sold out)' : ''}</span>
+                                      </button>
+                                    );
+                                  })}
+                                  {shown.length === 0 && <p className="col-span-full text-xs text-slate-500">No {label.toLowerCase()} matches.</p>}
+                                </div>
+                              </div>
+                            )}
                             {vs.length > 8 ? (
                               // many options (e.g. hair colour shades): a dropdown
                               <div className="flex items-center gap-2">
@@ -3459,7 +3543,7 @@ export default function App() {
                       <div className="flex gap-1.5">
                         <button
                           type="button"
-                          onClick={() => setPVariants(v => [...v, { name: '', price: v.length ? v[v.length - 1].price : discountedPrice, original_price: v.length ? v[v.length - 1].original_price : originalPrice, stock: '', color: '' }])}
+                          onClick={() => setPVariants(v => [...v, { name: '', price: v.length ? v[v.length - 1].price : discountedPrice, original_price: v.length ? v[v.length - 1].original_price : originalPrice, stock: '', color: '', image: '' }])}
                           className="text-[11px] font-bold bg-slate-900 text-amber-400 px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
                         >
                           + Add one
@@ -3471,6 +3555,17 @@ export default function App() {
                         >
                           + Add many
                         </button>
+                        <label className="text-[11px] font-bold bg-amber-600 text-white px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap">
+                          + Add from pictures
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            disabled={!!variantUpload}
+                            onChange={(e) => { const fs: File[] = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) addVariantsFromPictures(fs); }}
+                          />
+                        </label>
                       </div>
                     </div>
 
@@ -3496,7 +3591,7 @@ export default function App() {
                               setPVariants(v => [
                                 ...v,
                                 ...names.filter(n => !v.some(x => x.name.toLowerCase() === n.toLowerCase()))
-                                  .map(n => ({ name: n, price: discountedPrice, original_price: originalPrice, stock: productStock || '0', color: '' }))
+                                  .map(n => ({ name: n, price: discountedPrice, original_price: originalPrice, stock: productStock || '0', color: '', image: '' }))
                               ]);
                               setBulkShades(null);
                             }}
@@ -3508,20 +3603,36 @@ export default function App() {
                       </div>
                     )}
 
+                    {variantUpload && <p className="text-xs font-bold text-amber-700">{variantUpload}</p>}
+                    <p className="text-[11px] text-slate-500">
+                      Tip for many shades: name each picture file like the shade (e.g. <b>4.0 Medium Brown.jpg</b>) and use
+                      "+ Add from pictures" - every picture becomes a shade with its picture (an existing shade with that name just gets the picture).
+                    </p>
                     {pVariants.length === 0 && bulkShades === null && (
                       <p className="text-[11px] text-slate-500">No options: the product is sold at one price. Add options if it comes in different sizes or shades; the customer then picks one.</p>
                     )}
                     {pVariants.length > 0 && (
-                      <div className="grid grid-cols-[auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 text-[10px] font-bold text-slate-500 px-0.5">
-                        <span>Colour</span><span>{pVariantLabel || 'Option'} name</span><span>Sale price</span><span>Old price</span><span>Stock</span><span></span>
+                      <div className="grid grid-cols-[auto_auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 text-[10px] font-bold text-slate-500 px-0.5">
+                        <span>Pic</span><span>Colour</span><span>{pVariantLabel || 'Option'} name</span><span>Sale price</span><span>Old price</span><span>Stock</span><span></span>
                       </div>
                     )}
                     <div className="space-y-1.5 max-h-80 overflow-y-auto">
                       {pVariants.map((v, i) => {
-                        const upd = (k: 'name' | 'price' | 'original_price' | 'stock' | 'color', val: string) =>
+                        const upd = (k: 'name' | 'price' | 'original_price' | 'stock' | 'color' | 'image', val: string) =>
                           setPVariants(list => list.map((x, idx) => idx === i ? { ...x, [k]: val } : x));
                         return (
-                          <div key={i} className="grid grid-cols-[auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 items-center">
+                          <div key={i} className="grid grid-cols-[auto_auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 items-center">
+                            <span className="relative w-9 h-9">
+                              <label className="block w-9 h-9 rounded border bg-white overflow-hidden cursor-pointer" title="Picture of this option">
+                                {v.image
+                                  ? <img src={v.image} alt="" className="w-full h-full object-cover" />
+                                  : <span className="w-full h-full flex items-center justify-center text-slate-400"><ImageIcon className="w-4 h-4" /></span>}
+                                <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; e.target.value = ''; if (fl) uploadVariantImage(i, fl); }} />
+                              </label>
+                              {v.image && (
+                                <button type="button" onClick={() => upd('image', '')} className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-white border text-[9px] leading-none cursor-pointer" aria-label="Remove picture">×</button>
+                              )}
+                            </span>
                             <span className="relative w-7 h-7">
                               <input
                                 type="color"
