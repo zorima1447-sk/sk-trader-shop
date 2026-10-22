@@ -28,3 +28,14 @@ html { scroll-behavior: smooth; }
   #invoice-print { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none; }
   .no-print { display: none !important; }
 }
+
+/* Product description with formatting */
+.rich-text ul { list-style: disc; padding-left: 1.4rem; margin: 0.25rem 0; }
+.rich-text ol { list-style: decimal; padding-left: 1.4rem; margin: 0.25rem 0; }
+.rich-text p { margin: 0 0 0.4rem; }
+.rich-text h2 { font-size: 1.25rem; font-weight: 800; margin: 0.4rem 0; }
+.rich-text h3 { font-size: 1.1rem; font-weight: 700; margin: 0.35rem 0; }
+.rich-text b, .rich-text strong { font-weight: 700; }
+
+/* Short pages (login, account, track order): keep the footer at the bottom of the screen */
+.site-bottom-footer { position: sticky; top: 100vh; top: 100dvh; }

@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
+import { RichTextEditor, RichTextView, htmlToText } from './RichText';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import AiChatBubble, { ChatPanel } from './AiChat';
 import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
 import { InvoiceDocument, InvoiceItem, printInvoice } from './Invoice';
-import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, fontCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, fontCss, isLightColor, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
 import PkAddressFields from './PkAddressFields';
 import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
 import { ShopIcon } from './icons';
@@ -171,7 +172,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v15.2 (22-Oct-2026)';
+const BUILD = 'v16 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -286,7 +287,7 @@ function searchScore(p: { name: string; category_name?: string; description?: st
   const terms = normText(query).split(' ').filter(Boolean);
   if (terms.length === 0) return 1;
   const nameWords = normText(p.name).split(' ');
-  const otherWords = normText(`${p.category_name || ''} ${p.description || ''}`).split(' ');
+  const otherWords = normText(`${p.category_name || ''} ${htmlToText(p.description || '')}`).split(' ');
   const nameJoined = nameWords.join('');
   let total = 0;
   for (const t of terms) {
@@ -1798,12 +1799,20 @@ export default function App() {
   const categoryHits = q ? categories.filter(c => searchScore({ name: c.name }, q) > 0).slice(0, 4) : [];
 
   // Header colours for the chosen theme (Settings > Website Look)
-  const H = settings.header_style === 'dark'
+  const hc = settings.header_color;
+  const H = hc
+    ? (isLightColor(hc)
+      ? { bar: 'text-slate-900 border-b', name: 'text-slate-900', sub: 'text-slate-600', btn: 'bg-amber-600 hover:bg-amber-700', icon: 'text-slate-800', hover: 'hover:bg-black/5', input: 'bg-white', badge: 'bg-amber-600 text-white' }
+      : { bar: 'text-white', name: 'text-white', sub: 'text-white/80', btn: 'bg-black/25 hover:bg-black/40', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-white text-slate-900' })
+    : settings.header_style === 'dark'
     ? { bar: 'bg-slate-900 text-white', name: 'text-white', sub: 'text-amber-400', btn: 'bg-amber-600 hover:bg-amber-700', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-amber-500 text-white' }
     : settings.header_style === 'light'
       ? { bar: 'bg-white text-slate-900 border-b', name: 'text-slate-900', sub: 'text-amber-600', btn: 'bg-amber-600 hover:bg-amber-700', icon: 'text-slate-700', hover: 'hover:bg-slate-100', input: 'bg-slate-100', badge: 'bg-amber-600 text-white' }
       : { bar: 'bg-amber-600 text-white', name: 'text-white', sub: 'text-white/80', btn: 'bg-amber-800 hover:bg-amber-900', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-white text-amber-700' };
-  const pageBg = settings.page_bg === 'white' ? 'bg-white' : settings.page_bg === 'warm' ? 'bg-stone-100' : 'bg-slate-100';
+  const pageBg = settings.page_bg_color ? '' : settings.page_bg === 'white' ? 'bg-white' : settings.page_bg === 'warm' ? 'bg-stone-100' : 'bg-slate-100';
+  const footLight = !!settings.footer_color && isLightColor(settings.footer_color);
+  const footHead = footLight ? 'text-slate-900' : 'text-white';
+  const pageBgStyle = settings.page_bg_color ? { backgroundColor: settings.page_bg_color } : undefined;
 
   // Search bar design (Settings > Website Look > Search bar)
   const sShape = settings.search_shape;
@@ -1907,7 +1916,7 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen ${pageBg} font-sans site-font text-slate-800`}>
+    <div className={`min-h-screen ${pageBg} font-sans site-font text-slate-800`} style={pageBgStyle}>
       <style>{fontCss(settings)}</style>
       <style>{accentCss(settings.accent)}</style>
       {dbError && (
@@ -1926,7 +1935,10 @@ export default function App() {
 
       {/* Thin top bar */}
       {currentView === 'store' && settings.show_announcement && settings.announcement && (
-        <div className="bg-slate-50 border-b text-[11px] text-slate-600">
+        <div
+          className={`${settings.topbar_color ? '' : 'bg-slate-50'} border-b text-[11px] ${settings.topbar_text_color ? '' : 'text-slate-600'}`}
+          style={{ ...(settings.topbar_color ? { backgroundColor: settings.topbar_color } : {}), ...(settings.topbar_text_color ? { color: settings.topbar_text_color } : {}) }}
+        >
           <div className="max-w-7xl mx-auto px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">
             <span className="truncate">{settings.announcement}</span>
             <div className="flex items-center gap-4 shrink-0 font-semibold">
@@ -1947,7 +1959,7 @@ export default function App() {
       )}
 
       {/* Main header: logo, search, cart */}
-      <header className={`${H.bar} sticky top-0 z-40 shadow-md`}>
+      <header className={`${H.bar} sticky top-0 z-40 shadow-md`} style={hc ? { backgroundColor: hc } : undefined}>
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3">
           <div className="flex items-center gap-3 md:gap-8">
             <button
@@ -1961,7 +1973,7 @@ export default function App() {
                 <Package className={`w-8 h-8 ${H.icon} shrink-0`} />
               )}
               <span className="min-w-0">
-                <span className={`text-base sm:text-xl md:text-2xl font-black tracking-wide ${H.name} block whitespace-nowrap truncate leading-tight`}>{settings.store_name}</span>
+                <span className={`site-heading text-base sm:text-xl md:text-2xl font-black tracking-wide ${H.name} block whitespace-nowrap truncate leading-tight`}>{settings.store_name}</span>
                 {settings.header_subtitle && (
                   <span className={`text-[9px] sm:text-[11px] ${H.sub} font-medium tracking-wide block truncate leading-tight`}>{settings.header_subtitle}</span>
                 )}
@@ -2100,7 +2112,10 @@ export default function App() {
           {/* Scrolling strip (Settings > Website Look) */}
           {settings.show_marquee && settings.marquee_items.length > 0 && (
             <div className="max-w-7xl mx-auto sm:px-4 sm:mt-2">
-              <div className="bg-amber-600 text-white overflow-hidden whitespace-nowrap py-2 sm:rounded-lg">
+              <div
+                className={`${settings.strip_color ? '' : 'bg-amber-600'} ${settings.strip_text_color ? '' : 'text-white'} overflow-hidden whitespace-nowrap py-2 sm:rounded-lg`}
+                style={{ ...(settings.strip_color ? { backgroundColor: settings.strip_color } : {}), ...(settings.strip_text_color ? { color: settings.strip_text_color } : {}) }}
+              >
                 <div className="marquee-track inline-flex text-xs md:text-sm font-bold" style={{ animationDuration: `${settings.marquee_speed}s` }}>
                   {[0, 1, 2, 3].map((k) => (
                     <span key={k} className="inline-flex">
@@ -2366,12 +2381,16 @@ export default function App() {
           )}
 
           {/* Footer */}
-          <footer className="bg-slate-950 text-slate-400" data-build={BUILD}>
+          <footer
+            className={`${settings.footer_color ? '' : 'bg-slate-950'} ${footLight ? 'text-slate-700' : 'text-slate-400'}`}
+            style={settings.footer_color ? { backgroundColor: settings.footer_color } : undefined}
+            data-build={BUILD}
+          >
             <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
               <div>
                 <div className="flex items-center space-x-2 mb-2">
                   {settings.logo_url && <img src={settings.logo_url} alt="" className="h-8 w-8 object-contain rounded" />}
-                  <h4 className="text-white font-black">{settings.store_name}</h4>
+                  <h4 className={`${footHead} font-black`}>{settings.store_name}</h4>
                 </div>
                 <p className="text-xs mb-2">{settings.tagline}</p>
                 <div className="text-xs space-y-0.5">
@@ -2388,7 +2407,7 @@ export default function App() {
                 )}
               </div>
               <div>
-                <h4 className="text-white font-black mb-2">Quick Links</h4>
+                <h4 className={`${footHead} font-black mb-2`}>Quick Links</h4>
                 <ul className="space-y-1 text-xs">
                   <li><button onClick={() => { setCurrentView('track'); window.scrollTo({ top: 0 }); }} className="hover:text-amber-400 cursor-pointer">Track your order</button></li>
                   <li><button onClick={() => { setSelectedCategory('All'); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">Best Sellers</button></li>
@@ -2398,7 +2417,7 @@ export default function App() {
                 </ul>
               </div>
               <div>
-                <h4 className="text-white font-black mb-2">Payment Options</h4>
+                <h4 className={`${footHead} font-black mb-2`}>Payment Options</h4>
                 <div className="flex flex-wrap gap-2">
                   {['Cash on Delivery', ...Array.from(new Set(paymentAccounts.map(a => a.type)))].map(t => (
                     <span key={t} className="bg-slate-800 text-slate-300 text-[11px] font-bold px-2.5 py-1 rounded">{t}</span>
@@ -2599,7 +2618,7 @@ export default function App() {
                   {p.description && (
                     <div className="bg-white mt-2 md:mt-0 px-3 py-4 md:px-6 md:border-t">
                       <h3 className="text-sm font-bold text-slate-900 mb-2">Product details</h3>
-                      <p className="text-sm text-slate-600 whitespace-pre-line">{p.description}</p>
+                      <RichTextView text={p.description} className="text-sm text-slate-600" />
                     </div>
                   )}
 
@@ -3549,13 +3568,7 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">Product Description</label>
-                    <textarea
-                      rows={3}
-                      placeholder="Product details & usage"
-                      value={productDesc}
-                      onChange={(e) => setProductDesc(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
-                    />
+                    <RichTextEditor value={productDesc} onChange={setProductDesc} placeholder="Product details & usage" />
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-2xl border">
@@ -4751,7 +4764,10 @@ export default function App() {
 
       {/* Small footer for the other pages (the shop page has its own main footer) */}
       {currentView !== 'store' && (
-        <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
+        <footer
+          className={`site-bottom-footer ${settings.footer_color ? '' : 'bg-slate-900'} ${footLight ? 'text-slate-700' : 'text-slate-400'} py-6 text-center border-t border-slate-800 text-sm mt-12`}
+          style={settings.footer_color ? { backgroundColor: settings.footer_color } : undefined}
+        >
           &copy; {new Date().getFullYear()} {settings.store_name}. All Rights Reserved.
         </footer>
       )}

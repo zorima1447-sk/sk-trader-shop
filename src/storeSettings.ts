@@ -63,6 +63,14 @@ export interface StoreSettings {
   notify_new_product: boolean;
   font_family: string;         // key from FONTS below
   font_scale: number;          // text size in %, 100 = normal
+  heading_font: string;        // font for headings + shop name ('same' = same as the main font)
+  header_color: string;        // '' = from the header style, or any "#rrggbb"
+  page_bg_color: string;       // '' = from the page background choice
+  strip_color: string;         // scrolling strip background ('' = theme colour)
+  strip_text_color: string;
+  topbar_color: string;        // thin announcement bar at the very top
+  topbar_text_color: string;
+  footer_color: string;
   search_shape: 'square' | 'rounded' | 'pill';
   search_button: 'auto' | 'accent' | 'dark' | 'light';
   search_size: 'normal' | 'large';
@@ -125,6 +133,14 @@ export const defaultSettings: StoreSettings = {
   notify_new_product: false,
   font_family: 'system',
   font_scale: 100,
+  heading_font: 'same',
+  header_color: '',
+  page_bg_color: '',
+  strip_color: '',
+  strip_text_color: '',
+  topbar_color: '',
+  topbar_text_color: '',
+  footer_color: '',
   search_shape: 'rounded',
   search_button: 'auto',
   search_size: 'normal',
@@ -158,8 +174,12 @@ export function mergeSettings(row: any): StoreSettings {
   out.delivery_other = Math.max(0, Number(out.delivery_other) || 0);
   out.free_delivery_over = Math.max(0, Number(out.free_delivery_over) || 0);
   out.gst_rate = Math.max(0, Number(out.gst_rate) || 0);
-  if (!FONTS.some((x) => x.key === out.font_family)) out.font_family = 'system';
-  out.font_scale = Math.min(140, Math.max(80, Number(out.font_scale) || 100));
+  if (!FONTS.some((x) => x.key === out.font_family && !x.display)) out.font_family = 'system';
+  if (out.heading_font !== 'same' && !FONTS.some((x) => x.key === out.heading_font)) out.heading_font = 'same';
+  (['header_color', 'page_bg_color', 'strip_color', 'strip_text_color', 'topbar_color', 'topbar_text_color', 'footer_color'] as const).forEach((k) => {
+    out[k] = isHex(out[k]) ? String(out[k]).toLowerCase() : '';
+  });
+  out.font_scale = Math.min(160, Math.max(70, Number(out.font_scale) || 100));
   if (!['square', 'rounded', 'pill'].includes(out.search_shape)) out.search_shape = 'rounded';
   if (!['auto', 'accent', 'dark', 'light'].includes(out.search_button)) out.search_button = 'auto';
   if (!['normal', 'large'].includes(out.search_size)) out.search_size = 'normal';
@@ -180,43 +200,81 @@ export async function fetchStoreSettings(sb: any): Promise<StoreSettings> {
   return mergeSettings(data);
 }
 
+export const isHex = (v: any) => /^#[0-9a-f]{6}$/i.test(String(v || ''));
+
+// true when a colour is light (then dark text is used on it)
+export function isLightColor(hex: string): boolean {
+  if (!isHex(hex)) return false;
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (r * 299 + g * 587 + b * 114) / 1000 > 160;
+}
+
 // Fonts the admin can pick (Settings > Store Profile). Google Fonts are loaded only when chosen.
-export const FONTS: { key: string; label: string; family: string; google?: string }[] = [
-  { key: 'system', label: 'Default (phone / computer font)', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
-  { key: 'poppins', label: 'Poppins', family: "'Poppins', sans-serif", google: 'Poppins' },
-  { key: 'montserrat', label: 'Montserrat', family: "'Montserrat', sans-serif", google: 'Montserrat' },
-  { key: 'roboto', label: 'Roboto', family: "'Roboto', sans-serif", google: 'Roboto' },
-  { key: 'open-sans', label: 'Open Sans', family: "'Open Sans', sans-serif", google: 'Open Sans' },
-  { key: 'lato', label: 'Lato', family: "'Lato', sans-serif", google: 'Lato' },
-  { key: 'nunito', label: 'Nunito', family: "'Nunito', sans-serif", google: 'Nunito' },
-  { key: 'raleway', label: 'Raleway', family: "'Raleway', sans-serif", google: 'Raleway' },
-  { key: 'quicksand', label: 'Quicksand', family: "'Quicksand', sans-serif", google: 'Quicksand' },
-  { key: 'josefin', label: 'Josefin Sans', family: "'Josefin Sans', sans-serif", google: 'Josefin Sans' },
-  { key: 'playfair', label: 'Playfair Display (elegant)', family: "'Playfair Display', serif", google: 'Playfair Display' },
-  { key: 'cormorant', label: 'Cormorant Garamond (luxury)', family: "'Cormorant Garamond', serif", google: 'Cormorant Garamond' }
+// display = decorative font, offered for headings only. w = font weights that exist for that font.
+export type FontDef = { key: string; label: string; family: string; google?: string; w?: string; group: string; display?: boolean };
+export const FONTS: FontDef[] = [
+  { key: 'system', label: 'Default (phone / computer font)', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", group: 'Simple & clean' },
+  { key: 'inter', label: 'Inter', family: "'Inter', sans-serif", google: 'Inter', group: 'Simple & clean' },
+  { key: 'roboto', label: 'Roboto', family: "'Roboto', sans-serif", google: 'Roboto', group: 'Simple & clean' },
+  { key: 'open-sans', label: 'Open Sans', family: "'Open Sans', sans-serif", google: 'Open Sans', group: 'Simple & clean' },
+  { key: 'lato', label: 'Lato', family: "'Lato', sans-serif", google: 'Lato', w: '400;700;900', group: 'Simple & clean' },
+  { key: 'work-sans', label: 'Work Sans', family: "'Work Sans', sans-serif", google: 'Work Sans', group: 'Simple & clean' },
+  { key: 'mulish', label: 'Mulish', family: "'Mulish', sans-serif", google: 'Mulish', group: 'Simple & clean' },
+  { key: 'ubuntu', label: 'Ubuntu', family: "'Ubuntu', sans-serif", google: 'Ubuntu', w: '400;500;700', group: 'Simple & clean' },
+  { key: 'poppins', label: 'Poppins', family: "'Poppins', sans-serif", google: 'Poppins', group: 'Modern' },
+  { key: 'montserrat', label: 'Montserrat', family: "'Montserrat', sans-serif", google: 'Montserrat', group: 'Modern' },
+  { key: 'outfit', label: 'Outfit', family: "'Outfit', sans-serif", google: 'Outfit', group: 'Modern' },
+  { key: 'dm-sans', label: 'DM Sans', family: "'DM Sans', sans-serif", google: 'DM Sans', group: 'Modern' },
+  { key: 'manrope', label: 'Manrope', family: "'Manrope', sans-serif", google: 'Manrope', group: 'Modern' },
+  { key: 'rubik', label: 'Rubik', family: "'Rubik', sans-serif", google: 'Rubik', group: 'Modern' },
+  { key: 'barlow', label: 'Barlow', family: "'Barlow', sans-serif", google: 'Barlow', group: 'Modern' },
+  { key: 'raleway', label: 'Raleway', family: "'Raleway', sans-serif", google: 'Raleway', group: 'Modern' },
+  { key: 'oswald', label: 'Oswald (tall, bold)', family: "'Oswald', sans-serif", google: 'Oswald', w: '400;500;600;700', group: 'Modern' },
+  { key: 'nunito', label: 'Nunito', family: "'Nunito', sans-serif", google: 'Nunito', group: 'Soft & friendly' },
+  { key: 'quicksand', label: 'Quicksand', family: "'Quicksand', sans-serif", google: 'Quicksand', w: '400;500;600;700', group: 'Soft & friendly' },
+  { key: 'comfortaa', label: 'Comfortaa', family: "'Comfortaa', sans-serif", google: 'Comfortaa', w: '400;700', group: 'Soft & friendly' },
+  { key: 'josefin', label: 'Josefin Sans', family: "'Josefin Sans', sans-serif", google: 'Josefin Sans', w: '400;500;600;700', group: 'Soft & friendly' },
+  { key: 'playfair', label: 'Playfair Display', family: "'Playfair Display', serif", google: 'Playfair Display', group: 'Elegant & luxury' },
+  { key: 'cormorant', label: 'Cormorant Garamond', family: "'Cormorant Garamond', serif", google: 'Cormorant Garamond', w: '400;500;600;700', group: 'Elegant & luxury' },
+  { key: 'eb-garamond', label: 'EB Garamond', family: "'EB Garamond', serif", google: 'EB Garamond', group: 'Elegant & luxury' },
+  { key: 'lora', label: 'Lora', family: "'Lora', serif", google: 'Lora', w: '400;500;600;700', group: 'Elegant & luxury' },
+  { key: 'merriweather', label: 'Merriweather', family: "'Merriweather', serif", google: 'Merriweather', w: '400;700', group: 'Elegant & luxury' },
+  { key: 'libre-baskerville', label: 'Libre Baskerville', family: "'Libre Baskerville', serif", google: 'Libre Baskerville', w: '400;700', group: 'Elegant & luxury' },
+  { key: 'cinzel', label: 'Cinzel (royal capitals)', family: "'Cinzel', serif", google: 'Cinzel', group: 'Elegant & luxury' },
+  { key: 'urdu', label: 'Noto Nastaliq Urdu (اردو)', family: "'Noto Nastaliq Urdu', serif", google: 'Noto Nastaliq Urdu', w: '400;700', group: 'Urdu' },
+  { key: 'marcellus', label: 'Marcellus', family: "'Marcellus', serif", google: 'Marcellus', w: '400', group: 'Headings only', display: true },
+  { key: 'abril', label: 'Abril Fatface', family: "'Abril Fatface', serif", google: 'Abril Fatface', w: '400', group: 'Headings only', display: true },
+  { key: 'bebas', label: 'Bebas Neue', family: "'Bebas Neue', sans-serif", google: 'Bebas Neue', w: '400', group: 'Headings only', display: true },
+  { key: 'dancing', label: 'Dancing Script (handwriting)', family: "'Dancing Script', cursive", google: 'Dancing Script', w: '400;700', group: 'Headings only', display: true },
+  { key: 'great-vibes', label: 'Great Vibes (signature)', family: "'Great Vibes', cursive", google: 'Great Vibes', w: '400', group: 'Headings only', display: true },
+  { key: 'pacifico', label: 'Pacifico', family: "'Pacifico', cursive", google: 'Pacifico', w: '400', group: 'Headings only', display: true }
 ];
 
 export const FONT_SIZES: { value: number; label: string }[] = [
-  { value: 90, label: 'Small' },
+  { value: 85, label: 'Small' },
   { value: 100, label: 'Normal' },
   { value: 110, label: 'Large' },
   { value: 120, label: 'Extra large' },
-  { value: 130, label: 'Very large' }
+  { value: 135, label: 'Very large' },
+  { value: 150, label: 'Huge' }
 ];
 
-export function googleFontUrl(names: string[]): string {
-  const fams = names.map((n) => 'family=' + n.replace(/ /g, '+') + ':wght@400;500;600;700;800').join('&');
+// Google Fonts link for one or more fonts from the list above
+export function googleFontUrl(fonts: FontDef[]): string {
+  const fams = fonts.filter((f) => f.google).map((f) => 'family=' + (f.google as string).replace(/ /g, '+') + ':wght@' + (f.w || '400;500;600;700;800')).join('&');
   return `https://fonts.googleapis.com/css2?${fams}&display=swap`;
 }
 
 // CSS for the chosen font and text size (put inside a <style> tag)
-export function fontCss(st: Pick<StoreSettings, 'font_family' | 'font_scale'>): string {
+export function fontCss(st: Pick<StoreSettings, 'font_family' | 'font_scale' | 'heading_font'>): string {
   let css = '';
   const f = FONTS.find((x) => x.key === st.font_family);
-  if (f && f.google) {
-    css += `@import url('${googleFontUrl([f.google])}');`;
-    css += `.site-font,.site-font *{font-family:${f.family}!important}`;
-  }
+  const h = st.heading_font && st.heading_font !== 'same' ? FONTS.find((x) => x.key === st.heading_font) : undefined;
+  const load = [f, h].filter((x): x is FontDef => !!(x && x.google));
+  if (load.length) css += `@import url('${googleFontUrl(load)}');`;
+  if (f && f.google) css += `.site-font,.site-font *{font-family:${f.family}!important}`;
+  if (h) css += `.site-font h1,.site-font h2,.site-font .site-heading{font-family:${h.family}!important}`;
   if (st.font_scale && st.font_scale !== 100) css += `html{font-size:${st.font_scale}%}`;
   return css;
 }
@@ -231,8 +289,41 @@ export const ACCENTS: { key: string; label: string; swatch: string }[] = [
   { key: 'red', label: 'Red', swatch: '#ef4444' },
   { key: 'pink', label: 'Pink', swatch: '#ec4899' },
   { key: 'teal', label: 'Teal', swatch: '#14b8a6' },
-  { key: 'black', label: 'Black', swatch: '#334155' }
+  { key: 'black', label: 'Black', swatch: '#334155' },
+  { key: '#4f46e5', label: 'Indigo', swatch: '#4f46e5' },
+  { key: '#0891b2', label: 'Cyan', swatch: '#0891b2' },
+  { key: '#0284c7', label: 'Sky', swatch: '#0284c7' },
+  { key: '#1e3a8a', label: 'Navy', swatch: '#1e3a8a' },
+  { key: '#9333ea', label: 'Purple', swatch: '#9333ea' },
+  { key: '#c026d3', label: 'Magenta', swatch: '#c026d3' },
+  { key: '#be123c', label: 'Crimson', swatch: '#be123c' },
+  { key: '#7f1d1d', label: 'Maroon', swatch: '#7f1d1d' },
+  { key: '#65a30d', label: 'Lime green', swatch: '#65a30d' },
+  { key: '#166534', label: 'Dark green', swatch: '#166534' },
+  { key: '#ca8a04', label: 'Mustard', swatch: '#ca8a04' },
+  { key: '#b45309', label: 'Bronze', swatch: '#b45309' },
+  { key: '#78350f', label: 'Brown', swatch: '#78350f' },
+  { key: '#a16207', label: 'Gold', swatch: '#a16207' },
+  { key: '#db2777', label: 'Hot pink', swatch: '#db2777' },
+  { key: '#e11d48', label: 'Ruby', swatch: '#e11d48' }
 ];
+
+// Colour shown for an accent key (preset name or any "#rrggbb" colour)
+export function accentSwatch(key: string): string {
+  if (/^#[0-9a-f]{6}$/i.test(key || '')) return key;
+  return (ACCENTS.find((a) => a.key === key) || ACCENTS[0]).swatch;
+}
+
+// Builds 50..900 shades from any colour (600 = the colour itself)
+function paletteFromHex(hex: string): Record<number, string> {
+  const n = parseInt(hex.slice(1), 16);
+  const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const mix = (target: number, amt: number) => '#' + rgb.map((c) => Math.round(c + (target - c) * amt).toString(16).padStart(2, '0')).join('');
+  return {
+    50: mix(255, 0.93), 100: mix(255, 0.85), 200: mix(255, 0.7), 300: mix(255, 0.5), 400: mix(255, 0.28),
+    500: mix(255, 0.12), 600: hex, 700: mix(0, 0.15), 800: mix(0, 0.3), 900: mix(0, 0.45)
+  };
+}
 
 // Ready-made themes (Settings > Website Look). Each one only sets the three values below.
 export const THEMES: { key: string; label: string; accent: string; header_style: StoreSettings['header_style']; page_bg: StoreSettings['page_bg'] }[] = [
@@ -260,7 +351,7 @@ const PALETTES: Record<string, Record<number, string>> = {
 
 // Re-maps the "amber" colour classes used across the site to the chosen accent colour.
 export function accentCss(accent: string): string {
-  const p = PALETTES[accent];
+  const p = /^#[0-9a-f]{6}$/i.test(accent || '') ? paletteFromHex(accent) : PALETTES[accent];
   if (!p) return '';
   let css = '';
   [50, 100, 200, 300, 400, 500, 600, 700, 800, 900].forEach((s) => {
@@ -273,7 +364,9 @@ export function accentCss(accent: string): string {
       `.hover\\:bg-amber-${s}:hover{background-color:${c}!important}` +
       `.hover\\:text-amber-${s}:hover{color:${c}!important}` +
       `.hover\\:border-amber-${s}:hover{border-color:${c}!important}` +
-      `.focus\\:border-amber-${s}:focus{border-color:${c}!important}`;
+      `.focus\\:border-amber-${s}:focus{border-color:${c}!important}` +
+      `.ring-amber-${s}{--tw-ring-color:${c}!important}` +
+      `.accent-amber-${s}{accent-color:${c}!important}`;
   });
   return css;
 }

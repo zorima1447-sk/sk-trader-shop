@@ -299,7 +299,15 @@ alter table public.store_settings
   add column if not exists categories_title text,
   add column if not exists show_brands boolean,
   add column if not exists brands_title text,
-  add column if not exists brands jsonb;
+  add column if not exists brands jsonb,
+  add column if not exists heading_font text,
+  add column if not exists header_color text,
+  add column if not exists page_bg_color text,
+  add column if not exists strip_color text,
+  add column if not exists strip_text_color text,
+  add column if not exists topbar_color text,
+  add column if not exists topbar_text_color text,
+  add column if not exists footer_color text;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { StoreSettings, ACCENTS, THEMES, MarqueeItem, Brand, FONTS, FONT_SIZES, googleFontUrl, deliveryChargeFor } from './storeSettings';
+import { StoreSettings, ACCENTS, THEMES, accentSwatch, FontDef, MarqueeItem, Brand, FONTS, FONT_SIZES, googleFontUrl, deliveryChargeFor } from './storeSettings';
 import { ICONS, ShopIcon } from './icons';
 import { PROVINCES } from './pakistan';
 import { InvoiceDocument } from './Invoice';
@@ -140,9 +140,61 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
     const link = document.createElement('link');
     link.id = 'font-previews';
     link.rel = 'stylesheet';
-    link.href = googleFontUrl(FONTS.filter((x) => x.google).map((x) => x.google as string));
+    link.href = googleFontUrl(FONTS.filter((x) => x.google));
     document.head.appendChild(link);
   }, [tab]);
+
+  // font cards grouped by style
+  const fontGrid = (list: FontDef[], current: string, pick: (k: string) => void, sample: string, big = false) => {
+    const groups = Array.from(new Set(list.map((x) => x.group)));
+    return (
+      <div className="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
+        {groups.map((g) => (
+          <div key={g}>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">{g}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {list.filter((x) => x.group === g).map((x) => (
+                <button
+                  key={x.key}
+                  type="button"
+                  onClick={() => pick(x.key)}
+                  className={`text-left px-3 py-2.5 rounded-xl border bg-white cursor-pointer ${current === x.key ? 'border-slate-900 ring-2 ring-amber-400' : 'border-slate-200 hover:border-slate-400'}`}
+                >
+                  <span className={`block ${big ? 'text-xl' : 'text-base'} text-slate-900 truncate`} style={{ fontFamily: x.family }}>{sample}</span>
+                  <span className="block text-[11px] text-slate-500 mt-0.5">{x.label}{current === x.key ? '  ✓' : ''}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // one "any colour" row: colour picker + code + reset
+  const colorRow = (k: 'header_color' | 'page_bg_color' | 'strip_color' | 'strip_text_color' | 'topbar_color' | 'topbar_text_color' | 'footer_color', text: string, fallback: string) => (
+    <div className="flex flex-wrap items-center gap-2 bg-white border rounded-xl p-2">
+      <span className="text-xs font-bold text-slate-700 w-44">{text}</span>
+      <input
+        type="color"
+        value={f[k] || fallback}
+        onChange={(e) => set(k, e.target.value)}
+        className="w-11 h-8 p-0 border rounded-lg cursor-pointer"
+        aria-label={text}
+      />
+      <input
+        key={f[k]}
+        className={input + ' max-w-[7rem] font-mono text-xs'}
+        defaultValue={f[k]}
+        placeholder="automatic"
+        onChange={(e) => { const v = e.target.value.trim(); if (/^#[0-9a-f]{6}$/i.test(v)) set(k, v.toLowerCase()); }}
+        aria-label={text + ' code'}
+      />
+      {f[k]
+        ? <button type="button" onClick={() => set(k, '')} className="text-[11px] text-slate-500 underline cursor-pointer">Reset (automatic)</button>
+        : <span className="text-[11px] text-slate-400">automatic</span>}
+    </div>
+  );
 
   const toggleAccount = (id: string) => {
     const cur = f.invoice_account_ids || [];
@@ -257,20 +309,19 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div className="md:col-span-2 p-4 bg-slate-50 rounded-2xl border space-y-4">
             <p className="text-sm font-extrabold text-slate-800">Font & text size (whole website)</p>
             <div>
-              <label className={label}>Font</label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {FONTS.map((x) => (
-                  <button
-                    key={x.key}
-                    type="button"
-                    onClick={() => set('font_family', x.key)}
-                    className={`text-left px-3 py-2.5 rounded-xl border bg-white cursor-pointer ${f.font_family === x.key ? 'border-slate-900 ring-2 ring-amber-400' : 'border-slate-200 hover:border-slate-400'}`}
-                  >
-                    <span className="block text-base text-slate-900" style={{ fontFamily: x.family }}>{f.store_name || 'Your Store'} - Rs. 1,250</span>
-                    <span className="block text-[11px] text-slate-500 mt-0.5">{x.label}{f.font_family === x.key ? '  ✓' : ''}</span>
-                  </button>
-                ))}
-              </div>
+              <label className={label}>Main font (all text) - {FONTS.filter((x) => !x.display).length} fonts</label>
+              {fontGrid(FONTS.filter((x) => !x.display), f.font_family, (k) => set('font_family', k), `${f.store_name || 'Your Store'} - Rs. 1,250`)}
+            </div>
+            <div>
+              <label className={label}>Heading font (shop name and section headings like "Our Brands")</label>
+              <button
+                type="button"
+                onClick={() => set('heading_font', 'same')}
+                className={`mb-2 px-3 py-2 rounded-xl border bg-white text-xs font-bold cursor-pointer ${f.heading_font === 'same' ? 'border-slate-900 ring-2 ring-amber-400' : 'border-slate-200'}`}
+              >
+                Same as main font {f.heading_font === 'same' ? '✓' : ''}
+              </button>
+              {fontGrid(FONTS.filter((x) => x.key !== 'system'), f.heading_font, (k) => set('heading_font', k), f.store_name || 'Our Brands', true)}
             </div>
             <div>
               <label className={label}>Text size</label>
@@ -287,7 +338,25 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">Makes all text, buttons and boxes on the website bigger or smaller. Save to see it on the site.</p>
+              <div className="flex items-center gap-3 mt-3">
+                <span className="text-xs text-slate-500">A</span>
+                <input
+                  type="range"
+                  min={70}
+                  max={160}
+                  step={5}
+                  value={f.font_scale}
+                  onChange={(e) => set('font_scale', Number(e.target.value))}
+                  className="flex-1 accent-amber-600 cursor-pointer"
+                  aria-label="Text size"
+                />
+                <span className="text-xl font-bold text-slate-700">A</span>
+                <span className="w-14 text-right text-sm font-bold text-slate-800">{f.font_scale}%</span>
+              </div>
+              <p className="mt-2 text-slate-800 border rounded-xl bg-white px-3 py-2" style={{ fontSize: `${(f.font_scale / 100) * 14}px` }}>
+                Preview: Keratin Shampoo 1000 ML - <b>Rs. 3,300</b>
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Drag the slider (70% - 160%) or press a size. Makes all text, buttons and boxes on the website bigger or smaller. Save to see it on the site.</p>
             </div>
           </div>
         </div>
@@ -411,7 +480,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             <label className={label}>Theme (one click changes colour, header and background)</label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {THEMES.map((t) => {
-                const sw = (ACCENTS.find(a => a.key === t.accent) || ACCENTS[0]).swatch;
+                const sw = accentSwatch(t.accent);
                 const active = f.accent === t.accent && f.header_style === t.header_style && f.page_bg === t.page_bg;
                 const headBg = t.header_style === 'dark' ? '#0f172a' : t.header_style === 'light' ? '#ffffff' : sw;
                 const pageBg = t.page_bg === 'white' ? '#ffffff' : t.page_bg === 'warm' ? '#f5f5f4' : '#f1f5f9';
@@ -475,6 +544,36 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
                 </button>
               ))}
             </div>
+            <div className="flex flex-wrap items-center gap-3 mt-3 p-3 bg-white border rounded-xl">
+              <span className="text-xs font-bold text-slate-700">Any colour:</span>
+              <input
+                type="color"
+                value={accentSwatch(f.accent)}
+                onChange={(e) => set('accent', e.target.value)}
+                className="w-12 h-9 p-0 border rounded-lg cursor-pointer"
+                aria-label="Pick any colour"
+              />
+              <input
+                key={f.accent}
+                className={input + ' max-w-[8rem] font-mono'}
+                defaultValue={accentSwatch(f.accent)}
+                onChange={(e) => { const v = e.target.value.trim(); if (/^#[0-9a-f]{6}$/i.test(v)) set('accent', v.toLowerCase()); }}
+                aria-label="Colour code"
+              />
+              <span className="text-[11px] text-slate-500">Pick any colour, or type a colour code like #e11d48</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-2">
+            <p className="text-xs font-bold text-slate-700">Colours of each part (any colour)</p>
+            <p className="text-[11px] text-slate-500">Leave a part on "automatic" to use the theme. Text colour on the header and footer changes by itself so it stays readable.</p>
+            {colorRow('header_color', 'Header (top bar with search)', accentSwatch(f.accent))}
+            {colorRow('page_bg_color', 'Page background', '#f1f5f9')}
+            {colorRow('topbar_color', 'Thin top line - background', '#f8fafc')}
+            {colorRow('topbar_text_color', 'Thin top line - text', '#475569')}
+            {colorRow('strip_color', 'Scrolling strip - background', accentSwatch(f.accent))}
+            {colorRow('strip_text_color', 'Scrolling strip - text', '#ffffff')}
+            {colorRow('footer_color', 'Footer', '#020617')}
           </div>
 
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
@@ -527,7 +626,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
               {(() => {
                 const r = f.search_shape;
                 const big = f.search_size === 'large';
-                const btn = f.search_button === 'dark' ? '#0f172a' : f.search_button === 'light' ? '#ffffff' : (ACCENTS.find(a => a.key === f.accent) || ACCENTS[0]).swatch;
+                const btn = f.search_button === 'dark' ? '#0f172a' : f.search_button === 'light' ? '#ffffff' : accentSwatch(f.accent);
                 return (
                   <div className="flex max-w-md">
                     <div className={`flex-1 bg-white border ${r === 'pill' ? 'rounded-l-full pl-5' : r === 'square' ? '' : 'rounded-l-lg'} px-3 ${big ? 'py-3 text-base' : 'py-2 text-sm'} text-slate-400`}>
