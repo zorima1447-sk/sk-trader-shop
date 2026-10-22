@@ -5,7 +5,7 @@ import { ICONS, ShopIcon } from './icons';
 import { PROVINCES } from './pakistan';
 import { InvoiceDocument } from './Invoice';
 
-export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery';
+export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery' | 'brands';
 
 interface Props {
   tab?: SettingsTab; // chosen from the admin side menu
@@ -185,7 +185,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   return (
     <form onSubmit={save} className="bg-white rounded-3xl p-6 border shadow-sm">
       <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">
-        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges' }[tab]}
+        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges', brands: 'Our Brands' }[tab]}
       </h3>
 
       {!fixedTab && (
@@ -350,6 +350,61 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
         </div>
       )}
 
+      {tab === 'brands' && (
+        <div className="space-y-4 max-w-3xl">
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            {check('show_brands', 'Show "Our Brands" on the home page')}
+            <div>
+              <label className={label}>Heading</label>
+              <input className={input} value={f.brands_title} onChange={(e) => set('brands_title', e.target.value)} placeholder="Our Brands" />
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Add, rename or delete brands here, then press <b>Save Settings</b> at the bottom. When a shopper taps a brand, the shop searches for its
+            <b> search word</b> (for example "Freecia") and shows those products. A logo is optional - without a logo the brand name is shown in a nice style.
+          </p>
+          <div className="space-y-2">
+            {brands.length === 0 && <p className="text-sm text-slate-400 bg-white border rounded-xl p-4 text-center">No brands yet. Press "+ Add brand".</p>}
+            {brands.map((b, i) => (
+              <div key={i} className="bg-white border rounded-xl p-3 space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="w-20 h-14 shrink-0 rounded-lg border bg-slate-50 flex items-center justify-center overflow-hidden">
+                    {b.logo_url ? <img src={b.logo_url} alt="" className="max-w-full max-h-full object-contain" /> : <span className="text-[10px] text-slate-400">No logo</span>}
+                  </span>
+                  <div className="flex-1 grid sm:grid-cols-2 gap-2">
+                    <div>
+                      <label className={label}>Brand name</label>
+                      <input className={input} value={b.name} onChange={(e) => setBrand(i, { name: e.target.value })} placeholder="e.g. Freecia Professional" />
+                    </div>
+                    <div>
+                      <label className={label}>Search word</label>
+                      <input className={input} value={b.keyword} onChange={(e) => setBrand(i, { keyword: e.target.value })} placeholder={b.name.split(' ')[0] || 'e.g. Freecia'} />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="px-3 py-1.5 border rounded-lg text-xs font-bold text-amber-700 cursor-pointer">
+                    {b.logo_url ? 'Change logo' : 'Add logo'}
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; if (fl) uploadBrandLogo(i, fl); e.target.value = ''; }} />
+                  </label>
+                  {b.logo_url && <button type="button" onClick={() => setBrand(i, { logo_url: '' })} className="px-3 py-1.5 border rounded-lg text-xs text-slate-600 cursor-pointer">Remove logo</button>}
+                  <button type="button" onClick={() => moveBrand(i, -1)} className="px-3 py-1.5 border rounded-lg text-xs cursor-pointer" aria-label="Move up">↑ Up</button>
+                  <button type="button" onClick={() => moveBrand(i, 1)} className="px-3 py-1.5 border rounded-lg text-xs cursor-pointer" aria-label="Move down">↓ Down</button>
+                  <button
+                    type="button"
+                    onClick={() => { if (window.confirm(`Delete brand "${b.name || 'this brand'}"?`)) set('brands', brands.filter((_, idx) => idx !== i)); }}
+                    className="ml-auto px-3 py-1.5 border border-red-200 text-red-600 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={() => set('brands', [...brands, { name: '', logo_url: '', keyword: '' }])} className="px-4 py-2 rounded-xl border-2 border-dashed border-amber-400 text-amber-700 text-sm font-bold cursor-pointer w-full">+ Add brand</button>
+        </div>
+      )}
+
       {tab === 'look' && (
         <div className="space-y-5 max-w-3xl">
           <div>
@@ -488,41 +543,12 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           </div>
 
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
-            <p className="text-xs font-bold text-slate-700">Categories & Our Brands (home page)</p>
-            <div className="grid sm:grid-cols-2 gap-3">
-              <div>
-                <label className={label}>Categories heading</label>
-                <input className={input} value={f.categories_title} onChange={(e) => set('categories_title', e.target.value)} placeholder="Shop by Category" />
-              </div>
-              <div>
-                <label className={label}>Brands heading</label>
-                <input className={input} value={f.brands_title} onChange={(e) => set('brands_title', e.target.value)} placeholder="Our Brands" />
-              </div>
+            <p className="text-xs font-bold text-slate-700">Categories (home page)</p>
+            <div>
+              <label className={label}>Categories heading</label>
+              <input className={input} value={f.categories_title} onChange={(e) => set('categories_title', e.target.value)} placeholder="Shop by Category" />
             </div>
-            <p className="text-[11px] text-slate-500">
-              When a shopper taps a brand, the shop searches for its <b>search word</b> (for example "Freecia") and shows those products.
-              A logo is optional - without a logo the brand name is shown in a nice style.
-            </p>
-            <div className="space-y-2">
-              {brands.map((b, i) => (
-                <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white border rounded-xl p-2">
-                  <span className="w-14 h-10 shrink-0 rounded-lg border bg-slate-50 flex items-center justify-center overflow-hidden">
-                    {b.logo_url ? <img src={b.logo_url} alt="" className="max-w-full max-h-full object-contain" /> : <span className="text-[9px] text-slate-400">No logo</span>}
-                  </span>
-                  <input className={input + ' sm:flex-1'} value={b.name} onChange={(e) => setBrand(i, { name: e.target.value })} placeholder="Brand name" />
-                  <input className={input + ' sm:w-36'} value={b.keyword} onChange={(e) => setBrand(i, { keyword: e.target.value })} placeholder="Search word" />
-                  <label className="text-[11px] font-bold text-amber-700 cursor-pointer whitespace-nowrap">
-                    {b.logo_url ? 'Change logo' : 'Add logo'}
-                    <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; if (fl) uploadBrandLogo(i, fl); e.target.value = ''; }} />
-                  </label>
-                  {b.logo_url && <button type="button" onClick={() => setBrand(i, { logo_url: '' })} className="text-[11px] text-slate-500 cursor-pointer">No logo</button>}
-                  <button type="button" onClick={() => moveBrand(i, -1)} className="px-2 py-1 border rounded-lg text-xs cursor-pointer" aria-label="Move up">↑</button>
-                  <button type="button" onClick={() => moveBrand(i, 1)} className="px-2 py-1 border rounded-lg text-xs cursor-pointer" aria-label="Move down">↓</button>
-                  <button type="button" onClick={() => set('brands', brands.filter((_, idx) => idx !== i))} className="px-2 py-1 border border-red-200 text-red-600 rounded-lg text-xs cursor-pointer">Remove</button>
-                </div>
-              ))}
-            </div>
-            <button type="button" onClick={() => set('brands', [...brands, { name: '', logo_url: '', keyword: '' }])} className="text-xs font-bold text-amber-700 cursor-pointer">+ Add brand</button>
+            <p className="text-[11px] text-slate-500">Brands are managed in Admin &gt; Settings &gt; Our Brands.</p>
           </div>
 
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">

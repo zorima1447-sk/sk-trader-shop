@@ -171,7 +171,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v15 (22-Oct-2026)';
+const BUILD = 'v15.2 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -1781,6 +1781,7 @@ export default function App() {
     ] },
     { title: 'Settings', items: [
       { id: 'settings:profile', label: 'Store Profile', icon: Building },
+      { id: 'settings:brands', label: 'Our Brands', icon: BadgeCheck },
       { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
       { id: 'settings:delivery', label: 'Delivery Charges', icon: Truck },
       { id: 'settings:invoice', label: 'Invoice', icon: Printer },
@@ -2096,6 +2097,26 @@ export default function App() {
             </div>
           </section>
 
+          {/* Scrolling strip (Settings > Website Look) */}
+          {settings.show_marquee && settings.marquee_items.length > 0 && (
+            <div className="max-w-7xl mx-auto sm:px-4 sm:mt-2">
+              <div className="bg-amber-600 text-white overflow-hidden whitespace-nowrap py-2 sm:rounded-lg">
+                <div className="marquee-track inline-flex text-xs md:text-sm font-bold" style={{ animationDuration: `${settings.marquee_speed}s` }}>
+                  {[0, 1, 2, 3].map((k) => (
+                    <span key={k} className="inline-flex">
+                      {settings.marquee_items.map((m, i) => (
+                        <span key={i} className="inline-flex items-center gap-1.5 mx-5 md:mx-8">
+                          <ShopIcon name={m.icon} className="w-4 h-4" />
+                          {m.text}
+                        </span>
+                      ))}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Categories (centred, rounded cards) */}
           {settings.show_categories && categories.length > 0 && (
             <section className="max-w-7xl mx-auto px-3 sm:px-4 mt-5 sm:mt-7">
@@ -2111,9 +2132,9 @@ export default function App() {
                       onClick={() => { setSelectedCategory(active ? 'All' : cat.name); scrollToProducts(); }}
                       className={`group w-[30%] max-w-[9rem] sm:w-36 bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 px-2 py-3 sm:p-4 flex flex-col items-center gap-2 cursor-pointer ${active ? 'ring-2 ring-amber-500' : ''}`}
                     >
-                      <span className={`w-16 h-16 sm:w-20 sm:h-20 rounded-full p-[3px] bg-gradient-to-br ${CAT_RINGS[i % CAT_RINGS.length]} shadow-md group-hover:rotate-6 transition-transform duration-300`}>
+                      <span className={`w-16 h-16 sm:w-20 sm:h-20 rounded-full p-[3px] bg-gradient-to-br ${CAT_RINGS[i % CAT_RINGS.length]} shadow-md`}>
                         <span className="w-full h-full rounded-full bg-white overflow-hidden flex items-center justify-center">
-                          {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-7 h-7 text-amber-600" />}
+                          {img ? <img src={img} alt="" className="w-full h-full object-contain p-1.5 group-hover:scale-110 transition-transform duration-300" /> : <Package className="w-7 h-7 text-amber-600" />}
                         </span>
                       </span>
                       <span className="text-[11px] sm:text-sm font-semibold text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
@@ -2154,26 +2175,6 @@ export default function App() {
             </section>
           )}
 
-          {/* Scrolling strip (Settings > Website Look) */}
-          {settings.show_marquee && settings.marquee_items.length > 0 && (
-            <div className="max-w-7xl mx-auto sm:px-4 mt-2 sm:mt-3">
-              <div className="bg-amber-600 text-white overflow-hidden whitespace-nowrap py-2 sm:rounded-lg">
-                <div className="marquee-track inline-flex text-xs md:text-sm font-bold" style={{ animationDuration: `${settings.marquee_speed}s` }}>
-                  {[0, 1, 2, 3].map((k) => (
-                    <span key={k} className="inline-flex">
-                      {settings.marquee_items.map((m, i) => (
-                        <span key={i} className="inline-flex items-center gap-1.5 mx-5 md:mx-8">
-                          <ShopIcon name={m.icon} className="w-4 h-4" />
-                          {m.text}
-                        </span>
-                      ))}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Flash sale: discounted products */}
           {saleProducts.length > 0 && !searchQuery.trim() && (
             <section className="max-w-7xl mx-auto sm:px-4 mt-4 sm:mt-6">
@@ -2195,10 +2196,11 @@ export default function App() {
                     <button
                       key={p.id}
                       onClick={() => openProduct(p)}
-                      className="w-32 sm:w-40 shrink-0 text-left group cursor-pointer"
+                      className="w-32 sm:w-40 shrink-0 text-left group cursor-pointer rounded-2xl border border-slate-100 hover:border-amber-300 hover:shadow-lg p-2 transition"
                     >
-                      <div className="aspect-square bg-slate-50 rounded overflow-hidden mb-2">
-                        <img src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                      <div className="aspect-square bg-white rounded-xl overflow-hidden mb-2 relative">
+                        <img src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
+                        {discountPct(p) > 0 && <span className="absolute top-1 left-1 bg-amber-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">-{discountPct(p)}%</span>}
                       </div>
                       <p className="text-xs text-slate-700 line-clamp-2 min-h-[2rem]">{p.name}</p>
                       <p className="text-amber-600 font-bold text-sm sm:text-base mt-1">{money(p.discounted_price || p.price)}</p>
@@ -2257,18 +2259,20 @@ export default function App() {
                   const pct = discountPct(product);
                   const r = ratingOf(product.id);
                   return (
-                    <div key={product.id} className="bg-white rounded-md overflow-hidden hover:shadow-lg transition-shadow flex flex-col group">
-                      <div className="aspect-square bg-slate-50 relative overflow-hidden">
+                    <div key={product.id} className="bg-white rounded-2xl overflow-hidden border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 hover:border-amber-300 transition duration-300 flex flex-col group">
+                      <div className="aspect-square bg-white relative overflow-hidden border-b border-slate-100">
                         <button onClick={() => openProduct(product)} className="block w-full h-full cursor-pointer" aria-label={`View ${product.name}`}>
                           <img
                             src={product.image_url || PLACEHOLDER_IMG}
                             alt={product.name}
-                            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${soldOut ? 'opacity-50' : ''}`}
+                            className={`w-full h-full object-contain p-3 group-hover:scale-110 transition-transform duration-500 ${soldOut ? 'opacity-50' : ''}`}
                             onError={(e) => { (e.target as HTMLImageElement).src = PLACEHOLDER_IMG; }}
                           />
                         </button>
-                        {soldOut && (
-                          <span className="absolute top-2 left-2 bg-slate-900/85 text-white text-[10px] font-bold px-2 py-0.5 rounded">Sold Out</span>
+                        {soldOut ? (
+                          <span className="absolute top-2 left-2 bg-slate-900/85 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">Sold Out</span>
+                        ) : pct > 0 && (
+                          <span className="absolute top-2 left-2 bg-amber-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow">-{pct}%</span>
                         )}
                         <button
                           onClick={() => toggleWishlist(product.id)}
@@ -2309,7 +2313,7 @@ export default function App() {
                         <button
                           onClick={() => addToCart(product)}
                           disabled={soldOut}
-                          className="mt-auto pt-0 w-full border border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed font-semibold text-[11px] sm:text-xs py-1.5 rounded transition flex items-center justify-center cursor-pointer mt-2"
+                          className="mt-auto pt-0 w-full border border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed font-semibold text-[11px] sm:text-xs py-1.5 rounded-full transition flex items-center justify-center cursor-pointer mt-2"
                         >
                           <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : variantsOf(product).length > 0 ? `Choose ${product.variant_label || 'Size'}` : 'Add to Cart'}
                         </button>
@@ -2362,7 +2366,7 @@ export default function App() {
           )}
 
           {/* Footer */}
-          <footer className="bg-slate-950 text-slate-400">
+          <footer className="bg-slate-950 text-slate-400" data-build={BUILD}>
             <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
               <div>
                 <div className="flex items-center space-x-2 mb-2">
@@ -2404,7 +2408,7 @@ export default function App() {
             </div>
             <div className="border-t border-slate-800 text-center text-[11px] py-4">
               {settings.footer_text && <p className="mb-1 whitespace-pre-line">{settings.footer_text}</p>}
-              &copy; {new Date().getFullYear()} {settings.store_name}. All rights reserved. <span className="opacity-40">{BUILD}</span>
+              &copy; {new Date().getFullYear()} {settings.store_name}. All rights reserved.
             </div>
           </footer>
 
@@ -2641,9 +2645,9 @@ export default function App() {
                       <h3 className="text-sm font-bold text-slate-900 mb-3">You may also like</h3>
                       <div className="flex gap-3 overflow-x-auto pb-1">
                         {related.map(x => (
-                          <button key={x.id} onClick={() => openProduct(x, true)} className="w-28 sm:w-36 shrink-0 text-left cursor-pointer">
-                            <div className="aspect-square bg-slate-50 rounded overflow-hidden mb-1.5">
-                              <img src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-cover" />
+                          <button key={x.id} onClick={() => openProduct(x, true)} className="group w-28 sm:w-36 shrink-0 text-left cursor-pointer">
+                            <div className="aspect-square bg-white border border-slate-100 rounded-xl overflow-hidden mb-1.5">
+                              <img src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
                             </div>
                             <p className="text-[11px] text-slate-700 line-clamp-2 min-h-[1.75rem]">{x.name}</p>
                             <p className="text-amber-600 font-bold text-sm">{money(x.discounted_price || x.price)}</p>
