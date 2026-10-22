@@ -59,7 +59,9 @@ export function ChatPanel({ mode, storeName, onClose, tall = false }: { mode: 'c
         body: { mode, messages: next.filter((m, i) => !(i === 0 && m.role === 'assistant')), site_url: window.location.origin }
       });
       const reply = error
-        ? 'The assistant is not available right now. Please try again later.'
+        ? (mode === 'admin'
+          ? `The assistant could not be reached (${error.message}). Check that the Edge Function "ai-chat" is deployed in Supabase.`
+          : 'The assistant is not available right now. Please try again later, or contact us on WhatsApp.')
         : (data && (data.reply || data.error)) || '...';
       setMsgs(m => [...m, { role: 'assistant', content: reply }]);
     } finally {
@@ -83,7 +85,7 @@ export function ChatPanel({ mode, storeName, onClose, tall = false }: { mode: 'c
         {msgs.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap ${m.role === 'user' ? 'bg-amber-600 text-white rounded-br-sm' : 'bg-white border text-slate-800 rounded-bl-sm'}`}>
-              <Linkify text={m.content} />
+              <Linkify text={m.content.replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\s*[*-]\s+/gm, '• ')} />
             </div>
           </div>
         ))}

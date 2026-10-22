@@ -171,7 +171,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v14 (22-Oct-2026)';
+const BUILD = 'v14.1 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -1984,27 +1984,7 @@ export default function App() {
           {/* Category list + banner */}
           <section className="max-w-7xl mx-auto sm:px-4 sm:pt-4">
             <div className="flex gap-4">
-              {categories.length > 0 && (
-                <aside className="hidden lg:block w-56 shrink-0 bg-white rounded-lg shadow-sm py-2 h-[340px] overflow-y-auto">
-                  <button
-                    onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
-                    className="w-full flex items-center justify-between px-4 py-2 text-sm text-slate-700 hover:bg-amber-50 hover:text-amber-700 cursor-pointer"
-                  >
-                    All Products <ChevronRight className="w-4 h-4 text-slate-300" />
-                  </button>
-                  {categories.map((cat) => (
-                    <button
-                      key={cat.id}
-                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
-                      className="w-full flex items-center justify-between px-4 py-2 text-sm text-slate-700 hover:bg-amber-50 hover:text-amber-700 text-left cursor-pointer"
-                    >
-                      <span className="truncate">{cat.name}</span> <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
-                    </button>
-                  ))}
-                </aside>
-              )}
-
-              <div className="flex-1 min-w-0 relative overflow-hidden sm:rounded-lg shadow-sm bg-slate-800 aspect-[2/1] sm:aspect-[5/2] lg:aspect-auto lg:h-[340px]">
+              <div className="flex-1 min-w-0 relative overflow-hidden sm:rounded-lg shadow-sm bg-slate-800 aspect-[2/1] sm:aspect-[5/2] lg:aspect-[16/5]">
                 <div className="flex h-full transition-transform duration-700" style={{ transform: `translateX(-${hi * 100}%)` }}>
                   {displaySlides.map((sl, i) => {
                     const hasText = !!((sl.title || '').trim() || (sl.text || '').trim());

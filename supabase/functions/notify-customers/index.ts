@@ -10,7 +10,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token, x-region, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
 const json = (body: unknown) =>
@@ -29,7 +30,12 @@ async function isAdmin(sb: any, req: Request) {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  // Answer the browser's permission check; allow whatever headers the website asks for
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', {
+      headers: { ...cors, 'Access-Control-Allow-Headers': req.headers.get('access-control-request-headers') || cors['Access-Control-Allow-Headers'] },
+    });
+  }
 
   try {
     const body = await req.json().catch(() => ({}));

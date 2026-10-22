@@ -13,7 +13,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token, x-region, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
 // Always answer with HTTP 200 so the website can read the message.
@@ -102,7 +103,12 @@ function invoiceHtml(order: any, items: any[], store: any, accounts: any[], link
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  // Answer the browser's permission check; allow whatever headers the website asks for
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', {
+      headers: { ...cors, 'Access-Control-Allow-Headers': req.headers.get('access-control-request-headers') || cors['Access-Control-Allow-Headers'] },
+    });
+  }
 
   try {
     const { order_id, test, resend_invoice, site_url } = await req.json().catch(() => ({}));

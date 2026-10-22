@@ -13,7 +13,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token, x-region, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -291,7 +292,7 @@ async function runTool(sb: any, name: string, input: any, ctx: { site: string; s
 
 // ======================= AI providers =======================
 // The first one that has a key is used. With no key at all, the free built-in bot answers.
-//   GEMINI_API_KEY    (free key: https://aistudio.google.com/apikey)       model: GEMINI_MODEL, default gemini-2.5-flash
+//   GEMINI_API_KEY    (free key: https://aistudio.google.com/apikey)       model: GEMINI_MODEL, default gemini-flash-latest
 //   GROQ_API_KEY      (free key: https://console.groq.com/keys)           model: GROQ_MODEL, default llama-3.3-70b-versatile
 //   ANTHROPIC_API_KEY (paid:     https://console.anthropic.com)          model: AI_MODEL, default claude-haiku-5-5
 //   AI_PROVIDER       optional: "gemini" | "groq" | "claude" | "builtin" to choose one
@@ -317,18 +318,25 @@ function geminiSchema(s: any): any {
 }
 
 async function runGemini(key: string, system: string, tools: any[], history: Hist, ctx: Ctx) {
-  const model = Deno.env.get('GEMINI_MODEL') || 'gemini-2.5-flash';
+  // Google retires model names from time to time; try the newest 'latest' alias first and move on if a name is gone (404)
+  const models = [Deno.env.get('GEMINI_MODEL'), 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest'].filter(Boolean) as string[];
+  let mi = 0;
   const decl = tools.map((t) => {
     const hasProps = t.input_schema && t.input_schema.properties && Object.keys(t.input_schema.properties).length > 0;
     return hasProps ? { name: t.name, description: t.description, parameters: geminiSchema(t.input_schema) } : { name: t.name, description: t.description };
   });
   const contents: any[] = history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   for (let step = 0; step < 6; step++) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+    const call = () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${models[mi]}:generateContent?key=${encodeURIComponent(key)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents, tools: [{ functionDeclarations: decl }] }),
     });
+    let r = await call();
+    while (mi < models.length - 1 && (r.status === 503 || r.status === 500 || ((r.status === 404 || r.status === 400) && /model|not found|no longer available/i.test(await r.clone().text())))) {
+      mi++;
+      r = await call();
+    }
     if (!r.ok) {
       const t = await r.text();
       return { error: `Gemini error (${r.status}). ${r.status === 429 ? 'Free daily limit reached - try again later.' : t.slice(0, 200)}` };
@@ -492,7 +500,12 @@ async function runBuiltin(mode: string, history: Hist, ctx: Ctx) {
 
 // ======================= request handler =======================
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  // Answer the browser's permission check; allow whatever headers the website asks for
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', {
+      headers: { ...cors, 'Access-Control-Allow-Headers': req.headers.get('access-control-request-headers') || cors['Access-Control-Allow-Headers'] },
+    });
+  }
   try {
     const body = await req.json().catch(() => ({}));
     const mode = body.mode === 'admin' ? 'admin' : 'customer';
