@@ -6,7 +6,7 @@ import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth
 import AiChatBubble, { ChatPanel } from './AiChat';
 import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
 import { InvoiceDocument, InvoiceItem, printInvoice } from './Invoice';
-import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
+import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, fontCss, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
 import PkAddressFields from './PkAddressFields';
 import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
 import { ShopIcon } from './icons';
@@ -171,7 +171,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v14.2 (22-Oct-2026)';
+const BUILD = 'v15 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -229,6 +229,18 @@ async function uploadSiteImage(dataUrl: string, prefix: 'slide' | 'variant'): Pr
     return dataUrl;
   }
 }
+
+// Colour rings around the category pictures (each category gets its own)
+const CAT_RINGS = [
+  'from-pink-500 to-orange-400',
+  'from-violet-500 to-fuchsia-400',
+  'from-sky-500 to-emerald-400',
+  'from-amber-500 to-rose-500',
+  'from-emerald-500 to-teal-300',
+  'from-rose-500 to-purple-500',
+  'from-indigo-500 to-sky-400',
+  'from-orange-500 to-yellow-400'
+];
 
 const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#f1f5f9"/><text x="150" y="155" font-family="Arial" font-size="18" fill="#94a3b8" text-anchor="middle">No image</text></svg>');
 
@@ -1792,6 +1804,19 @@ export default function App() {
       : { bar: 'bg-amber-600 text-white', name: 'text-white', sub: 'text-white/80', btn: 'bg-amber-800 hover:bg-amber-900', icon: 'text-white', hover: 'hover:bg-white/10', input: 'bg-white', badge: 'bg-white text-amber-700' };
   const pageBg = settings.page_bg === 'white' ? 'bg-white' : settings.page_bg === 'warm' ? 'bg-stone-100' : 'bg-slate-100';
 
+  // Search bar design (Settings > Website Look > Search bar)
+  const sShape = settings.search_shape;
+  const sInRound = sShape === 'pill' ? 'rounded-l-full pl-5' : sShape === 'square' ? 'rounded-none' : 'rounded-l-lg';
+  const sBtnRound = sShape === 'pill' ? 'rounded-r-full pr-5 pl-4' : sShape === 'square' ? 'rounded-none' : 'rounded-r-lg';
+  const sBtn = settings.search_button === 'accent' ? 'bg-amber-600 hover:bg-amber-700'
+    : settings.search_button === 'dark' ? 'bg-slate-900 hover:bg-black'
+    : settings.search_button === 'light' ? 'bg-white hover:bg-slate-100 border-l border-slate-200'
+    : H.btn;
+  const sIcon = settings.search_button === 'light' ? 'text-slate-700' : 'text-white';
+  const sBig = settings.search_size === 'large';
+  const sOutline = settings.header_style === 'light' ? 'border border-slate-300' : '';
+  const sPlaceholder = settings.search_placeholder.trim() || `Search in ${settings.store_name}`;
+
   const searchBox = (phone: boolean) => (
     <form
       onSubmit={(e) => { e.preventDefault(); setSearchOpen(false); (document.activeElement as HTMLElement)?.blur?.(); scrollToProducts(); }}
@@ -1800,16 +1825,16 @@ export default function App() {
     >
       <input
         type="search"
-        placeholder={`Search in ${settings.store_name}`}
+        placeholder={sPlaceholder}
         value={searchQuery}
         onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
         onFocus={() => setSearchOpen(true)}
         onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
         id={phone ? 'mobile-search-input' : undefined}
-        className={`flex-1 min-w-0 ${phone ? 'px-3 py-2' : 'px-4 py-2.5'} rounded-l-lg text-sm text-slate-800 ${H.input} focus:outline-none`}
+        className={`flex-1 min-w-0 ${phone ? (sBig ? 'px-3 py-3' : 'px-3 py-2') : (sBig ? 'px-4 py-3.5' : 'px-4 py-2.5')} ${sInRound} ${sBig ? 'text-base' : 'text-sm'} text-slate-800 ${H.input} ${sOutline} focus:outline-none`}
       />
-      <button type="submit" className={`${H.btn} ${phone ? 'px-3' : 'px-4'} rounded-r-lg cursor-pointer`} aria-label="Search">
-        <Search className={`${phone ? 'w-4 h-4' : 'w-5 h-5'} text-white`} />
+      <button type="submit" className={`${sBtn} ${phone ? 'px-3' : 'px-4'} ${sBtnRound} ${sOutline} cursor-pointer`} aria-label="Search">
+        <Search className={`${phone ? 'w-4 h-4' : 'w-5 h-5'} ${sIcon}`} />
       </button>
       {phone && (
         <button
@@ -1881,7 +1906,8 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen ${pageBg} font-sans text-slate-800`}>
+    <div className={`min-h-screen ${pageBg} font-sans site-font text-slate-800`}>
+      <style>{fontCss(settings)}</style>
       <style>{accentCss(settings.accent)}</style>
       {dbError && (
         <div className="bg-red-600 text-white text-xs font-bold px-4 py-2 text-center">
@@ -2070,25 +2096,60 @@ export default function App() {
             </div>
           </section>
 
-          {/* Category circles (phones and tablets) */}
-          {categories.length > 0 && (
-            <section className="lg:hidden bg-white sm:mx-4 sm:mt-3 sm:rounded-lg shadow-sm">
-              <div className="flex gap-4 overflow-x-auto px-3 py-3">
-                {categories.map((cat) => {
+          {/* Categories (centred, rounded cards) */}
+          {settings.show_categories && categories.length > 0 && (
+            <section className="max-w-7xl mx-auto px-3 sm:px-4 mt-5 sm:mt-7">
+              <h2 className="text-center text-lg sm:text-2xl font-extrabold text-slate-800 tracking-wide">{settings.categories_title || 'Shop by Category'}</h2>
+              <div className="mx-auto mt-1.5 mb-4 h-1 w-14 rounded-full bg-amber-500" />
+              <div className="flex flex-wrap justify-center gap-3 sm:gap-4">
+                {categories.map((cat, i) => {
                   const img = categoryImage(cat.name);
+                  const active = selectedCategory === cat.name;
                   return (
                     <button
                       key={cat.id}
-                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
-                      className="flex flex-col items-center gap-1 w-16 shrink-0 cursor-pointer"
+                      onClick={() => { setSelectedCategory(active ? 'All' : cat.name); scrollToProducts(); }}
+                      className={`group w-[30%] max-w-[9rem] sm:w-36 bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 px-2 py-3 sm:p-4 flex flex-col items-center gap-2 cursor-pointer ${active ? 'ring-2 ring-amber-500' : ''}`}
                     >
-                      <span className="w-14 h-14 rounded-full bg-amber-50 border border-amber-100 overflow-hidden flex items-center justify-center">
-                        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-6 h-6 text-amber-600" />}
+                      <span className={`w-16 h-16 sm:w-20 sm:h-20 rounded-full p-[3px] bg-gradient-to-br ${CAT_RINGS[i % CAT_RINGS.length]} shadow-md group-hover:rotate-6 transition-transform duration-300`}>
+                        <span className="w-full h-full rounded-full bg-white overflow-hidden flex items-center justify-center">
+                          {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-7 h-7 text-amber-600" />}
+                        </span>
                       </span>
-                      <span className="text-[10px] text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
+                      <span className="text-[11px] sm:text-sm font-semibold text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
                     </button>
                   );
                 })}
+              </div>
+            </section>
+          )}
+
+          {/* Our Brands (Settings > Website Look) */}
+          {settings.show_brands && settings.brands.length > 0 && (
+            <section className="max-w-7xl mx-auto px-3 sm:px-4 mt-7 sm:mt-9">
+              <h2 className="text-center text-lg sm:text-2xl font-extrabold text-slate-800 tracking-wide">{settings.brands_title || 'Our Brands'}</h2>
+              <div className="mx-auto mt-1.5 mb-4 h-1 w-14 rounded-full bg-amber-500" />
+              <div className="flex flex-wrap justify-center gap-3 sm:gap-5">
+                {settings.brands.map((b, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setSelectedCategory('All'); setSearchQuery((b.keyword || b.name).trim()); scrollToProducts(); }}
+                    className="group w-[46%] max-w-[13rem] sm:w-52 h-24 sm:h-28 rounded-2xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 hover:border-amber-400 transition duration-300 flex items-center justify-center p-3 cursor-pointer relative overflow-hidden"
+                    aria-label={b.name}
+                  >
+                    <span className="absolute inset-x-0 top-0 h-1 bg-amber-500 opacity-0 group-hover:opacity-100 transition" />
+                    {b.logo_url ? (
+                      <img src={b.logo_url} alt={b.name} className="max-h-full max-w-full object-contain" />
+                    ) : (
+                      <span className="text-center">
+                        <span className="block text-sm sm:text-lg font-black uppercase tracking-[0.15em] text-slate-800 leading-tight">{b.name.split(' ')[0]}</span>
+                        {b.name.split(' ').length > 1 && (
+                          <span className="block text-[9px] sm:text-[11px] font-bold uppercase tracking-[0.3em] text-amber-600 mt-1">{b.name.split(' ').slice(1).join(' ')}</span>
+                        )}
+                      </span>
+                    )}
+                  </button>
+                ))}
               </div>
             </section>
           )}
@@ -2148,30 +2209,6 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-              </div>
-            </section>
-          )}
-
-          {/* Category tiles */}
-          {settings.show_categories && categories.length > 0 && !searchQuery.trim() && (
-            <section className="hidden lg:block max-w-7xl mx-auto px-4 mt-6">
-              <h2 className="text-xl text-slate-800 mb-2">Categories</h2>
-              <div className="bg-white sm:rounded-lg shadow-sm grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 overflow-hidden">
-                {categories.map((cat) => {
-                  const img = categoryImage(cat.name);
-                  return (
-                    <button
-                      key={cat.id}
-                      onClick={() => { setSelectedCategory(cat.name); scrollToProducts(); }}
-                      className="flex flex-col items-center gap-2 p-3 sm:p-4 border-r border-b border-slate-100 hover:shadow-lg hover:z-10 bg-white transition cursor-pointer"
-                    >
-                      <span className="w-16 h-16 sm:w-20 sm:h-20 rounded overflow-hidden bg-slate-50 flex items-center justify-center">
-                        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <Package className="w-8 h-8 text-amber-600" />}
-                      </span>
-                      <span className="text-[11px] sm:text-xs text-slate-700 text-center leading-tight line-clamp-2">{cat.name}</span>
-                    </button>
-                  );
-                })}
               </div>
             </section>
           )}
@@ -4708,10 +4745,12 @@ export default function App() {
         );
       })()}
 
-      {/* Footer */}
-      <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
-        &copy; {new Date().getFullYear()} {settings.store_name} - Management System. All Rights Reserved.
-      </footer>
+      {/* Small footer for the other pages (the shop page has its own main footer) */}
+      {currentView !== 'store' && (
+        <footer className="bg-slate-900 text-slate-400 py-6 text-center border-t border-slate-800 text-sm mt-12">
+          &copy; {new Date().getFullYear()} {settings.store_name}. All Rights Reserved.
+        </footer>
+      )}
     </div>
   );
 }

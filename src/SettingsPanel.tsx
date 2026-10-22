@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { StoreSettings, ACCENTS, THEMES, MarqueeItem, deliveryChargeFor } from './storeSettings';
+import { StoreSettings, ACCENTS, THEMES, MarqueeItem, Brand, FONTS, FONT_SIZES, googleFontUrl, deliveryChargeFor } from './storeSettings';
 import { ICONS, ShopIcon } from './icons';
 import { PROVINCES } from './pakistan';
 import { InvoiceDocument } from './Invoice';
@@ -73,7 +73,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
     const { error } = await supabase.from('store_settings').upsert({ id: 1, ...f, updated_at: new Date().toISOString() });
     setBusy(false);
     if (error) {
-      alert('Database error (settings save):\n' + error.message);
+      alert('Database error (settings save):\n' + error.message + (/column/i.test(error.message) ? '\n\nRun the latest supabase_setup.sql in Supabase > SQL Editor, then save again.' : ''));
       return;
     }
     onSaved(f);
@@ -91,6 +91,58 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
     [next[i], next[j]] = [next[j], next[i]];
     set('marquee_items', next);
   };
+
+  // ---- Our Brands editor ----
+  const brands: Brand[] = f.brands || [];
+  const setBrand = (i: number, patch: Partial<Brand>) =>
+    set('brands', brands.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
+  const moveBrand = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= brands.length) return;
+    const next = [...brands];
+    [next[i], next[j]] = [next[j], next[i]];
+    set('brands', next);
+  };
+  const uploadBrandLogo = (i: number, file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = async () => {
+        const scale = Math.min(1, 400 / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setBusy(true);
+        try {
+          const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+          if (!blob) throw new Error('Could not process the image.');
+          const path = `logo-brand-${Date.now()}.png`;
+          const { error } = await supabase.storage.from('site-assets').upload(path, blob, { contentType: 'image/png', upsert: false });
+          if (error) throw error;
+          setBrand(i, { logo_url: supabase.storage.from('site-assets').getPublicUrl(path).data.publicUrl });
+        } catch (err: any) {
+          setBrand(i, { logo_url: canvas.toDataURL('image/png') });
+          console.warn('Brand logo upload failed, using embedded image', err);
+        } finally {
+          setBusy(false);
+        }
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // load every font once so the admin can see them before choosing
+  useEffect(() => {
+    if (tab !== 'profile' || document.getElementById('font-previews')) return;
+    const link = document.createElement('link');
+    link.id = 'font-previews';
+    link.rel = 'stylesheet';
+    link.href = googleFontUrl(FONTS.filter((x) => x.google).map((x) => x.google as string));
+    document.head.appendChild(link);
+  }, [tab]);
 
   const toggleAccount = (id: string) => {
     const cur = f.invoice_account_ids || [];
@@ -200,6 +252,43 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div>
             <label className={label}>TikTok link</label>
             <input className={input} value={f.tiktok} onChange={(e) => set('tiktok', e.target.value)} placeholder="https://tiktok.com/@yourpage" />
+          </div>
+
+          <div className="md:col-span-2 p-4 bg-slate-50 rounded-2xl border space-y-4">
+            <p className="text-sm font-extrabold text-slate-800">Font & text size (whole website)</p>
+            <div>
+              <label className={label}>Font</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {FONTS.map((x) => (
+                  <button
+                    key={x.key}
+                    type="button"
+                    onClick={() => set('font_family', x.key)}
+                    className={`text-left px-3 py-2.5 rounded-xl border bg-white cursor-pointer ${f.font_family === x.key ? 'border-slate-900 ring-2 ring-amber-400' : 'border-slate-200 hover:border-slate-400'}`}
+                  >
+                    <span className="block text-base text-slate-900" style={{ fontFamily: x.family }}>{f.store_name || 'Your Store'} - Rs. 1,250</span>
+                    <span className="block text-[11px] text-slate-500 mt-0.5">{x.label}{f.font_family === x.key ? '  ✓' : ''}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className={label}>Text size</label>
+              <div className="flex flex-wrap gap-2">
+                {FONT_SIZES.map((z) => (
+                  <button
+                    key={z.value}
+                    type="button"
+                    onClick={() => set('font_scale', z.value)}
+                    className={`px-3 py-2 rounded-xl border bg-white cursor-pointer font-bold ${f.font_scale === z.value ? 'border-slate-900 ring-2 ring-amber-400' : 'border-slate-200'}`}
+                    style={{ fontSize: `${(z.value / 100) * 13}px` }}
+                  >
+                    Aa {z.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Makes all text, buttons and boxes on the website bigger or smaller. Save to see it on the site.</p>
+            </div>
           </div>
         </div>
       )}
@@ -341,8 +430,99 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
             <p className="text-xs font-bold text-slate-700">Home page sections</p>
             {check('show_trust', 'Trust badges (Original, Fast Delivery, ...)')}
-            {check('show_categories', 'Shop by category tiles')}
+            {check('show_categories', 'Categories')}
+            {check('show_brands', 'Our Brands')}
             {check('show_whatsapp_strip', 'WhatsApp help strip')}
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-xs font-bold text-slate-700">Search bar</p>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div>
+                <label className={label}>Shape</label>
+                <select className={input} value={f.search_shape} onChange={(e) => set('search_shape', e.target.value as any)}>
+                  <option value="rounded">Rounded corners</option>
+                  <option value="pill">Fully round (pill)</option>
+                  <option value="square">Square</option>
+                </select>
+              </div>
+              <div>
+                <label className={label}>Search button colour</label>
+                <select className={input} value={f.search_button} onChange={(e) => set('search_button', e.target.value as any)}>
+                  <option value="auto">Automatic (matches header)</option>
+                  <option value="accent">Theme colour</option>
+                  <option value="dark">Black</option>
+                  <option value="light">White</option>
+                </select>
+              </div>
+              <div>
+                <label className={label}>Size</label>
+                <select className={input} value={f.search_size} onChange={(e) => set('search_size', e.target.value as any)}>
+                  <option value="normal">Normal</option>
+                  <option value="large">Large</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className={label}>Text inside the search bar</label>
+              <input className={input} value={f.search_placeholder} onChange={(e) => set('search_placeholder', e.target.value)} placeholder={`Search in ${f.store_name}`} />
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500 mb-1">Preview</p>
+              {(() => {
+                const r = f.search_shape;
+                const big = f.search_size === 'large';
+                const btn = f.search_button === 'dark' ? '#0f172a' : f.search_button === 'light' ? '#ffffff' : (ACCENTS.find(a => a.key === f.accent) || ACCENTS[0]).swatch;
+                return (
+                  <div className="flex max-w-md">
+                    <div className={`flex-1 bg-white border ${r === 'pill' ? 'rounded-l-full pl-5' : r === 'square' ? '' : 'rounded-l-lg'} px-3 ${big ? 'py-3 text-base' : 'py-2 text-sm'} text-slate-400`}>
+                      {f.search_placeholder.trim() || `Search in ${f.store_name}`}
+                    </div>
+                    <div className={`flex items-center justify-center border ${r === 'pill' ? 'rounded-r-full pr-5 pl-4' : r === 'square' ? 'px-4' : 'rounded-r-lg px-4'}`} style={{ background: btn, color: f.search_button === 'light' ? '#334155' : '#fff' }}>
+                      ⌕
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-xs font-bold text-slate-700">Categories & Our Brands (home page)</p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Categories heading</label>
+                <input className={input} value={f.categories_title} onChange={(e) => set('categories_title', e.target.value)} placeholder="Shop by Category" />
+              </div>
+              <div>
+                <label className={label}>Brands heading</label>
+                <input className={input} value={f.brands_title} onChange={(e) => set('brands_title', e.target.value)} placeholder="Our Brands" />
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              When a shopper taps a brand, the shop searches for its <b>search word</b> (for example "Freecia") and shows those products.
+              A logo is optional - without a logo the brand name is shown in a nice style.
+            </p>
+            <div className="space-y-2">
+              {brands.map((b, i) => (
+                <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white border rounded-xl p-2">
+                  <span className="w-14 h-10 shrink-0 rounded-lg border bg-slate-50 flex items-center justify-center overflow-hidden">
+                    {b.logo_url ? <img src={b.logo_url} alt="" className="max-w-full max-h-full object-contain" /> : <span className="text-[9px] text-slate-400">No logo</span>}
+                  </span>
+                  <input className={input + ' sm:flex-1'} value={b.name} onChange={(e) => setBrand(i, { name: e.target.value })} placeholder="Brand name" />
+                  <input className={input + ' sm:w-36'} value={b.keyword} onChange={(e) => setBrand(i, { keyword: e.target.value })} placeholder="Search word" />
+                  <label className="text-[11px] font-bold text-amber-700 cursor-pointer whitespace-nowrap">
+                    {b.logo_url ? 'Change logo' : 'Add logo'}
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; if (fl) uploadBrandLogo(i, fl); e.target.value = ''; }} />
+                  </label>
+                  {b.logo_url && <button type="button" onClick={() => setBrand(i, { logo_url: '' })} className="text-[11px] text-slate-500 cursor-pointer">No logo</button>}
+                  <button type="button" onClick={() => moveBrand(i, -1)} className="px-2 py-1 border rounded-lg text-xs cursor-pointer" aria-label="Move up">↑</button>
+                  <button type="button" onClick={() => moveBrand(i, 1)} className="px-2 py-1 border rounded-lg text-xs cursor-pointer" aria-label="Move down">↓</button>
+                  <button type="button" onClick={() => set('brands', brands.filter((_, idx) => idx !== i))} className="px-2 py-1 border border-red-200 text-red-600 rounded-lg text-xs cursor-pointer">Remove</button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => set('brands', [...brands, { name: '', logo_url: '', keyword: '' }])} className="text-xs font-bold text-amber-700 cursor-pointer">+ Add brand</button>
           </div>
 
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">

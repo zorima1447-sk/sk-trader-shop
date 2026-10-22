@@ -289,7 +289,17 @@ alter table public.store_settings
   add column if not exists gst_inclusive boolean,
   add column if not exists ntn text,
   add column if not exists strn text,
-  add column if not exists ai_chat_enabled boolean;
+  add column if not exists ai_chat_enabled boolean,
+  add column if not exists font_family text,
+  add column if not exists font_scale int,
+  add column if not exists search_shape text,
+  add column if not exists search_button text,
+  add column if not exists search_size text,
+  add column if not exists search_placeholder text,
+  add column if not exists categories_title text,
+  add column if not exists show_brands boolean,
+  add column if not exists brands_title text,
+  add column if not exists brands jsonb;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);

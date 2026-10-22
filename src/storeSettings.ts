@@ -8,6 +8,14 @@ export interface MarqueeItem {
   text: string;
 }
 
+// One brand card in the "Our Brands" section of the home page.
+// keyword = what is searched when a shopper taps the brand (empty = the brand name).
+export interface Brand {
+  name: string;
+  logo_url: string;
+  keyword: string;
+}
+
 export interface StoreSettings {
   store_name: string;
   header_subtitle: string;
@@ -53,6 +61,16 @@ export interface StoreSettings {
   email_from: string;
   customer_msg_mode: 'off' | 'sms' | 'whatsapp';
   notify_new_product: boolean;
+  font_family: string;         // key from FONTS below
+  font_scale: number;          // text size in %, 100 = normal
+  search_shape: 'square' | 'rounded' | 'pill';
+  search_button: 'auto' | 'accent' | 'dark' | 'light';
+  search_size: 'normal' | 'large';
+  search_placeholder: string;  // empty = "Search in <store name>"
+  categories_title: string;
+  show_brands: boolean;
+  brands_title: string;
+  brands: Brand[];
 }
 
 export const defaultSettings: StoreSettings = {
@@ -104,7 +122,21 @@ export const defaultSettings: StoreSettings = {
   email_invoice_enabled: true,
   email_from: '',
   customer_msg_mode: 'off',
-  notify_new_product: false
+  notify_new_product: false,
+  font_family: 'system',
+  font_scale: 100,
+  search_shape: 'rounded',
+  search_button: 'auto',
+  search_size: 'normal',
+  search_placeholder: '',
+  categories_title: 'Shop by Category',
+  show_brands: true,
+  brands_title: 'Our Brands',
+  brands: [
+    { name: 'Freecia Professional', logo_url: '', keyword: 'Freecia' },
+    { name: 'Signature Professional', logo_url: '', keyword: 'Signature' },
+    { name: 'Saffron', logo_url: '', keyword: 'Saffron' }
+  ]
 };
 
 export function mergeSettings(row: any): StoreSettings {
@@ -126,6 +158,15 @@ export function mergeSettings(row: any): StoreSettings {
   out.delivery_other = Math.max(0, Number(out.delivery_other) || 0);
   out.free_delivery_over = Math.max(0, Number(out.free_delivery_over) || 0);
   out.gst_rate = Math.max(0, Number(out.gst_rate) || 0);
+  if (!FONTS.some((x) => x.key === out.font_family)) out.font_family = 'system';
+  out.font_scale = Math.min(140, Math.max(80, Number(out.font_scale) || 100));
+  if (!['square', 'rounded', 'pill'].includes(out.search_shape)) out.search_shape = 'rounded';
+  if (!['auto', 'accent', 'dark', 'light'].includes(out.search_button)) out.search_button = 'auto';
+  if (!['normal', 'large'].includes(out.search_size)) out.search_size = 'normal';
+  if (!Array.isArray(out.brands)) out.brands = defaultSettings.brands;
+  out.brands = out.brands
+    .filter((b: any) => b && typeof b.name === 'string')
+    .map((b: any) => ({ name: b.name, logo_url: String(b.logo_url || ''), keyword: String(b.keyword || '') }));
   if (!out.delivery_rates || typeof out.delivery_rates !== 'object' || Array.isArray(out.delivery_rates)) out.delivery_rates = {};
   return out as StoreSettings;
 }
@@ -137,6 +178,47 @@ export async function fetchStoreSettings(sb: any): Promise<StoreSettings> {
     return { ...defaultSettings };
   }
   return mergeSettings(data);
+}
+
+// Fonts the admin can pick (Settings > Store Profile). Google Fonts are loaded only when chosen.
+export const FONTS: { key: string; label: string; family: string; google?: string }[] = [
+  { key: 'system', label: 'Default (phone / computer font)', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+  { key: 'poppins', label: 'Poppins', family: "'Poppins', sans-serif", google: 'Poppins' },
+  { key: 'montserrat', label: 'Montserrat', family: "'Montserrat', sans-serif", google: 'Montserrat' },
+  { key: 'roboto', label: 'Roboto', family: "'Roboto', sans-serif", google: 'Roboto' },
+  { key: 'open-sans', label: 'Open Sans', family: "'Open Sans', sans-serif", google: 'Open Sans' },
+  { key: 'lato', label: 'Lato', family: "'Lato', sans-serif", google: 'Lato' },
+  { key: 'nunito', label: 'Nunito', family: "'Nunito', sans-serif", google: 'Nunito' },
+  { key: 'raleway', label: 'Raleway', family: "'Raleway', sans-serif", google: 'Raleway' },
+  { key: 'quicksand', label: 'Quicksand', family: "'Quicksand', sans-serif", google: 'Quicksand' },
+  { key: 'josefin', label: 'Josefin Sans', family: "'Josefin Sans', sans-serif", google: 'Josefin Sans' },
+  { key: 'playfair', label: 'Playfair Display (elegant)', family: "'Playfair Display', serif", google: 'Playfair Display' },
+  { key: 'cormorant', label: 'Cormorant Garamond (luxury)', family: "'Cormorant Garamond', serif", google: 'Cormorant Garamond' }
+];
+
+export const FONT_SIZES: { value: number; label: string }[] = [
+  { value: 90, label: 'Small' },
+  { value: 100, label: 'Normal' },
+  { value: 110, label: 'Large' },
+  { value: 120, label: 'Extra large' },
+  { value: 130, label: 'Very large' }
+];
+
+export function googleFontUrl(names: string[]): string {
+  const fams = names.map((n) => 'family=' + n.replace(/ /g, '+') + ':wght@400;500;600;700;800').join('&');
+  return `https://fonts.googleapis.com/css2?${fams}&display=swap`;
+}
+
+// CSS for the chosen font and text size (put inside a <style> tag)
+export function fontCss(st: Pick<StoreSettings, 'font_family' | 'font_scale'>): string {
+  let css = '';
+  const f = FONTS.find((x) => x.key === st.font_family);
+  if (f && f.google) {
+    css += `@import url('${googleFontUrl([f.google])}');`;
+    css += `.site-font,.site-font *{font-family:${f.family}!important}`;
+  }
+  if (st.font_scale && st.font_scale !== 100) css += `html{font-size:${st.font_scale}%}`;
+  return css;
 }
 
 export const ACCENTS: { key: string; label: string; swatch: string }[] = [
