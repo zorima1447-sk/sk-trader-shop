@@ -39,3 +39,9 @@ html { scroll-behavior: smooth; }
 
 /* Short pages (login, account, track order): keep the footer at the bottom of the screen */
 .site-bottom-footer { position: sticky; top: 100vh; top: 100dvh; }
+
+/* Our Brands: logos keep sliding, stop when the mouse is on them */
+@keyframes brand-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.brand-track { animation: brand-scroll 25s linear infinite; }
+.brand-slider:hover .brand-track { animation-play-state: paused; }
+.brand-slider { -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }

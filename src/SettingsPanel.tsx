@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { StoreSettings, ACCENTS, THEMES, accentSwatch, FontDef, MarqueeItem, Brand, FONTS, FONT_SIZES, googleFontUrl, deliveryChargeFor } from './storeSettings';
 import { ICONS, ShopIcon } from './icons';
+import { BrandLogo } from './BrandLogo';
 import { PROVINCES } from './pakistan';
 import { InvoiceDocument } from './Invoice';
 
-export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery' | 'brands';
+export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery' | 'brands' | 'content';
 
 interface Props {
   tab?: SettingsTab; // chosen from the admin side menu
@@ -171,6 +172,20 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
     );
   };
 
+  // ---- Home Page Content: trust badges and footer links ----
+  const trust = f.trust_items || [];
+  const setTrust = (i: number, patch: any) => set('trust_items', trust.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
+  const moveIn = <T,>(arr: T[], i: number, dir: -1 | 1): T[] => {
+    const j = i + dir;
+    if (j < 0 || j >= arr.length) return arr;
+    const next = [...arr];
+    [next[i], next[j]] = [next[j], next[i]];
+    return next;
+  };
+  const links = f.footer_links || [];
+  const setLink = (i: number, patch: any) => set('footer_links', links.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const smallBtn = 'px-2.5 py-1.5 border rounded-lg text-xs cursor-pointer bg-white';
+
   // one "any colour" row: colour picker + code + reset
   const colorRow = (k: 'header_color' | 'page_bg_color' | 'strip_color' | 'strip_text_color' | 'topbar_color' | 'topbar_text_color' | 'footer_color', text: string, fallback: string) => (
     <div className="flex flex-wrap items-center gap-2 bg-white border rounded-xl p-2">
@@ -237,7 +252,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   return (
     <form onSubmit={save} className="bg-white rounded-3xl p-6 border shadow-sm">
       <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">
-        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges', brands: 'Our Brands' }[tab]}
+        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges', brands: 'Our Brands', content: 'Home Page Content' }[tab]}
       </h3>
 
       {!fixedTab && (
@@ -419,6 +434,134 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
         </div>
       )}
 
+      {tab === 'content' && (
+        <div className="space-y-5 max-w-3xl">
+          <p className="text-[11px] text-slate-500">Change, add or delete the texts and boxes of the home page. Press <b>Save Settings</b> at the bottom when you are done.</p>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-sm font-extrabold text-slate-800">Section headings</p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Categories heading</label>
+                <input className={input} value={f.categories_title} onChange={(e) => set('categories_title', e.target.value)} placeholder="Shop by Category" />
+              </div>
+              <div>
+                <label className={label}>All products heading</label>
+                <input className={input} value={f.products_title} onChange={(e) => set('products_title', e.target.value)} placeholder="Just For You" />
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-sm font-extrabold text-slate-800">Flash Sale (products with a discount)</p>
+            {check('show_flash', 'Show the Flash Sale row')}
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Heading</label>
+                <input className={input} value={f.flash_title} onChange={(e) => set('flash_title', e.target.value)} placeholder="Flash Sale" />
+              </div>
+              <div>
+                <label className={label}>Small label</label>
+                <input className={input} value={f.flash_badge} onChange={(e) => set('flash_badge', e.target.value)} placeholder="On Sale Now" />
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-sm font-extrabold text-slate-800">Trust badges (boxes near the bottom)</p>
+            {check('show_trust', 'Show the trust badges')}
+            {trust.map((t, i) => (
+              <div key={i} className="bg-white border rounded-xl p-2 space-y-2">
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                  <span className="w-9 h-9 shrink-0 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center"><ShopIcon name={t.icon} className="w-5 h-5" /></span>
+                  <select
+                    value={ICONS[t.icon] ? t.icon : (t.icon ? '__emoji' : '')}
+                    onChange={(e) => setTrust(i, { icon: e.target.value === '__emoji' ? '⭐' : e.target.value })}
+                    className="px-2 py-2 border rounded-lg text-xs bg-white w-36 shrink-0"
+                    aria-label="Icon"
+                  >
+                    <option value="">No icon</option>
+                    {Object.entries(ICONS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                    <option value="__emoji">Emoji (type below)</option>
+                  </select>
+                  {!ICONS[t.icon] && t.icon !== '' && (
+                    <input className={input + ' w-16'} value={t.icon} onChange={(e) => setTrust(i, { icon: e.target.value })} aria-label="Emoji" />
+                  )}
+                  <input className={input} value={t.title} onChange={(e) => setTrust(i, { title: e.target.value })} placeholder="Title" />
+                </div>
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                  <input className={input} value={t.text} onChange={(e) => setTrust(i, { text: e.target.value })} placeholder="Small text" />
+                  <button type="button" onClick={() => set('trust_items', moveIn(trust, i, -1))} className={smallBtn} aria-label="Move up">↑</button>
+                  <button type="button" onClick={() => set('trust_items', moveIn(trust, i, 1))} className={smallBtn} aria-label="Move down">↓</button>
+                  <button type="button" onClick={() => { if (window.confirm('Delete this box?')) set('trust_items', trust.filter((_, idx) => idx !== i)); }} className="px-2.5 py-1.5 border border-red-200 text-red-600 rounded-lg text-xs font-bold cursor-pointer bg-white">Delete</button>
+                </div>
+              </div>
+            ))}
+            <button type="button" onClick={() => set('trust_items', [...trust, { icon: 'star', title: '', text: '' }])} className="text-xs font-bold text-amber-700 cursor-pointer">+ Add box</button>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-sm font-extrabold text-slate-800">WhatsApp help strip</p>
+            {check('show_whatsapp_strip', 'Show the WhatsApp help strip')}
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Heading</label>
+                <input className={input} value={f.wa_title} onChange={(e) => set('wa_title', e.target.value)} />
+              </div>
+              <div>
+                <label className={label}>Button text</label>
+                <input className={input} value={f.wa_button} onChange={(e) => set('wa_button', e.target.value)} />
+              </div>
+              <div className="sm:col-span-2">
+                <label className={label}>Small text</label>
+                <input className={input} value={f.wa_text} onChange={(e) => set('wa_text', e.target.value)} />
+              </div>
+              <div className="sm:col-span-2">
+                <label className={label}>Message that opens in WhatsApp</label>
+                <input className={input} value={f.wa_message} onChange={(e) => set('wa_message', e.target.value)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+            <p className="text-sm font-extrabold text-slate-800">Footer</p>
+            <div>
+              <label className={label}>Line under the shop name</label>
+              <input className={input} value={f.tagline} onChange={(e) => set('tagline', e.target.value)} />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Links column heading</label>
+                <input className={input} value={f.quick_links_title} onChange={(e) => set('quick_links_title', e.target.value)} placeholder="Quick Links" />
+              </div>
+              <div>
+                <label className={label}>Payments column heading</label>
+                <input className={input} value={f.payments_title} onChange={(e) => set('payments_title', e.target.value)} placeholder="Payment Options" />
+              </div>
+            </div>
+            {check('footer_show_categories', 'Show the categories as footer links')}
+            {check('footer_show_payments', 'Show the payment options column')}
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-slate-700">Extra footer links (for example Facebook page, Return Policy, Contact)</p>
+              {links.map((l, i) => (
+                <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white border rounded-xl p-2">
+                  <input className={input + ' sm:w-48'} value={l.label} onChange={(e) => setLink(i, { label: e.target.value })} placeholder="Text, e.g. Return Policy" />
+                  <input className={input} value={l.url} onChange={(e) => setLink(i, { url: e.target.value })} placeholder="Link, e.g. https://... (optional)" />
+                  <button type="button" onClick={() => set('footer_links', moveIn(links, i, -1))} className={smallBtn} aria-label="Move up">↑</button>
+                  <button type="button" onClick={() => set('footer_links', moveIn(links, i, 1))} className={smallBtn} aria-label="Move down">↓</button>
+                  <button type="button" onClick={() => set('footer_links', links.filter((_, idx) => idx !== i))} className="px-2.5 py-1.5 border border-red-200 text-red-600 rounded-lg text-xs font-bold cursor-pointer bg-white">Delete</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => set('footer_links', [...links, { label: '', url: '' }])} className="text-xs font-bold text-amber-700 cursor-pointer">+ Add link</button>
+            </div>
+            <div>
+              <label className={label}>Text at the very bottom (optional)</label>
+              <textarea rows={2} className={input} value={f.footer_text} onChange={(e) => set('footer_text', e.target.value)} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === 'brands' && (
         <div className="space-y-4 max-w-3xl">
           <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
@@ -427,7 +570,27 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
               <label className={label}>Heading</label>
               <input className={input} value={f.brands_title} onChange={(e) => set('brands_title', e.target.value)} placeholder="Our Brands" />
             </div>
+            {check('brands_slide', 'Logos keep sliding (stop when the mouse is on them)')}
+            {f.brands_slide && (
+              <div>
+                <label className={label}>Sliding speed: {f.brands_speed < 18 ? 'fast' : f.brands_speed > 35 ? 'slow' : 'normal'}</label>
+                <input type="range" min={8} max={60} step={1} value={68 - f.brands_speed} onChange={(e) => set('brands_speed', 68 - Number(e.target.value))} className="w-full max-w-xs accent-amber-600 cursor-pointer" aria-label="Sliding speed" />
+                <div className="flex justify-between max-w-xs text-[10px] text-slate-400"><span>Slow</span><span>Fast</span></div>
+              </div>
+            )}
           </div>
+          {brands.some((b) => b.logo_url) && (
+            <div>
+              <p className="text-[11px] font-bold text-slate-500 mb-1">Preview (how the logos look on the website)</p>
+              <div className="bg-white border rounded-xl py-4 px-2 flex flex-wrap justify-center items-center gap-6">
+                {brands.filter((b) => b.logo_url).map((b, i) => (
+                  <span key={i} className="h-14 w-32 flex items-center justify-center">
+                    <BrandLogo src={b.logo_url} alt={b.name} removeBg={b.remove_bg} tone={b.tone} className="max-h-full max-w-full" />
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <p className="text-[11px] text-slate-500">
             Add, rename or delete brands here, then press <b>Save Settings</b> at the bottom. When a shopper taps a brand, the shop searches for its
             <b> search word</b> (for example "Freecia") and shows those products. A logo is optional - without a logo the brand name is shown in a nice style.
@@ -437,8 +600,8 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             {brands.map((b, i) => (
               <div key={i} className="bg-white border rounded-xl p-3 space-y-2">
                 <div className="flex items-center gap-3">
-                  <span className="w-20 h-14 shrink-0 rounded-lg border bg-slate-50 flex items-center justify-center overflow-hidden">
-                    {b.logo_url ? <img src={b.logo_url} alt="" className="max-w-full max-h-full object-contain" /> : <span className="text-[10px] text-slate-400">No logo</span>}
+                  <span className="w-24 h-16 shrink-0 rounded-lg border bg-white flex items-center justify-center overflow-hidden p-1">
+                    {b.logo_url ? <BrandLogo src={b.logo_url} alt="" removeBg={b.remove_bg} tone={b.tone} className="max-w-full max-h-full" /> : <span className="text-[10px] text-slate-400">No logo</span>}
                   </span>
                   <div className="flex-1 grid sm:grid-cols-2 gap-2">
                     <div>
@@ -457,6 +620,18 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
                     <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; if (fl) uploadBrandLogo(i, fl); e.target.value = ''; }} />
                   </label>
                   {b.logo_url && <button type="button" onClick={() => setBrand(i, { logo_url: '' })} className="px-3 py-1.5 border rounded-lg text-xs text-slate-600 cursor-pointer">Remove logo</button>}
+                  {b.logo_url && (
+                    <label className="flex items-center gap-1.5 px-2 py-1.5 border rounded-lg text-xs text-slate-700 cursor-pointer">
+                      <input type="checkbox" checked={b.remove_bg} onChange={(e) => setBrand(i, { remove_bg: e.target.checked })} /> Remove background
+                    </label>
+                  )}
+                  {b.logo_url && (
+                    <select value={b.tone} onChange={(e) => setBrand(i, { tone: e.target.value as any })} className="px-2 py-1.5 border rounded-lg text-xs bg-white cursor-pointer" aria-label="Logo colour">
+                      <option value="original">Logo colours: original</option>
+                      <option value="dark">Logo colours: all black</option>
+                      <option value="light">Logo colours: all white</option>
+                    </select>
+                  )}
                   <button type="button" onClick={() => moveBrand(i, -1)} className="px-3 py-1.5 border rounded-lg text-xs cursor-pointer" aria-label="Move up">↑ Up</button>
                   <button type="button" onClick={() => moveBrand(i, 1)} className="px-3 py-1.5 border rounded-lg text-xs cursor-pointer" aria-label="Move down">↓ Down</button>
                   <button
@@ -470,7 +645,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
               </div>
             ))}
           </div>
-          <button type="button" onClick={() => set('brands', [...brands, { name: '', logo_url: '', keyword: '' }])} className="px-4 py-2 rounded-xl border-2 border-dashed border-amber-400 text-amber-700 text-sm font-bold cursor-pointer w-full">+ Add brand</button>
+          <button type="button" onClick={() => set('brands', [...brands, { name: '', logo_url: '', keyword: '', remove_bg: true, tone: 'original' }])} className="px-4 py-2 rounded-xl border-2 border-dashed border-amber-400 text-amber-700 text-sm font-bold cursor-pointer w-full">+ Add brand</button>
         </div>
       )}
 

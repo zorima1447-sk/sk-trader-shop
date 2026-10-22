@@ -3,6 +3,7 @@ import { supabase, setAdminToken, getAdminToken } from './supabaseClient';
 import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFields';
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
 import { RichTextEditor, RichTextView, htmlToText } from './RichText';
+import { BrandLogo } from './BrandLogo';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import AiChatBubble, { ChatPanel } from './AiChat';
 import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
@@ -172,7 +173,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v16 (22-Oct-2026)';
+const BUILD = 'v17 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -1783,6 +1784,7 @@ export default function App() {
     { title: 'Settings', items: [
       { id: 'settings:profile', label: 'Store Profile', icon: Building },
       { id: 'settings:brands', label: 'Our Brands', icon: BadgeCheck },
+      { id: 'settings:content', label: 'Home Page Content', icon: FileText },
       { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
       { id: 'settings:delivery', label: 'Delivery Charges', icon: Truck },
       { id: 'settings:invoice', label: 'Invoice', icon: Printer },
@@ -1947,7 +1949,7 @@ export default function App() {
               </button>
               <span className="hidden md:contents">
               {settings.whatsapp && (
-                <a href={waLink(settings.whatsapp, 'Hello, I would like some information about your products.')} target="_blank" rel="noreferrer" className="hover:text-amber-600">
+                <a href={waLink(settings.whatsapp, settings.wa_message || 'Hello')} target="_blank" rel="noreferrer" className="hover:text-amber-600">
                   WhatsApp Help
                 </a>
               )}
@@ -2160,44 +2162,60 @@ export default function App() {
             </section>
           )}
 
-          {/* Our Brands (Settings > Website Look) */}
-          {settings.show_brands && settings.brands.length > 0 && (
-            <section className="max-w-7xl mx-auto px-3 sm:px-4 mt-7 sm:mt-9">
-              <h2 className="text-center text-lg sm:text-2xl font-extrabold text-slate-800 tracking-wide">{settings.brands_title || 'Our Brands'}</h2>
-              <div className="mx-auto mt-1.5 mb-4 h-1 w-14 rounded-full bg-amber-500" />
-              <div className="flex flex-wrap justify-center gap-3 sm:gap-5">
-                {settings.brands.map((b, i) => (
-                  <button
-                    key={i}
-                    onClick={() => { setSelectedCategory('All'); setSearchQuery((b.keyword || b.name).trim()); scrollToProducts(); }}
-                    className="group w-[46%] max-w-[13rem] sm:w-52 h-24 sm:h-28 rounded-2xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 hover:border-amber-400 transition duration-300 flex items-center justify-center p-3 cursor-pointer relative overflow-hidden"
-                    aria-label={b.name}
-                  >
-                    <span className="absolute inset-x-0 top-0 h-1 bg-amber-500 opacity-0 group-hover:opacity-100 transition" />
-                    {b.logo_url ? (
-                      <img src={b.logo_url} alt={b.name} className="max-h-full max-w-full object-contain" />
-                    ) : (
-                      <span className="text-center">
-                        <span className="block text-sm sm:text-lg font-black uppercase tracking-[0.15em] text-slate-800 leading-tight">{b.name.split(' ')[0]}</span>
-                        {b.name.split(' ').length > 1 && (
-                          <span className="block text-[9px] sm:text-[11px] font-bold uppercase tracking-[0.3em] text-amber-600 mt-1">{b.name.split(' ').slice(1).join(' ')}</span>
-                        )}
-                      </span>
+          {/* Our Brands: logos on a white band, sliding (Admin > Settings > Our Brands) */}
+          {settings.show_brands && settings.brands.length > 0 && (() => {
+            const list = settings.brands;
+            // repeat short lists so the sliding row is always full
+            const reps = settings.brands_slide ? Math.max(1, Math.ceil(8 / list.length)) : 1;
+            const row = Array.from({ length: reps }).flatMap(() => list);
+            const card = (b: typeof list[number], k: string) => (
+              <button
+                key={k}
+                onClick={() => { setSelectedCategory('All'); setSearchQuery((b.keyword || b.name).trim()); scrollToProducts(); }}
+                className="group shrink-0 mx-5 sm:mx-9 h-16 sm:h-24 w-28 sm:w-44 flex items-center justify-center cursor-pointer"
+                aria-label={b.name}
+                title={b.name}
+              >
+                {b.logo_url ? (
+                  <BrandLogo src={b.logo_url} alt={b.name} removeBg={b.remove_bg} tone={b.tone} className="max-h-full max-w-full group-hover:scale-110 transition-transform duration-300" />
+                ) : (
+                  <span className="text-center group-hover:scale-110 transition-transform duration-300">
+                    <span className="block text-sm sm:text-lg font-black uppercase tracking-[0.15em] text-slate-800 leading-tight">{b.name.split(' ')[0]}</span>
+                    {b.name.split(' ').length > 1 && (
+                      <span className="block text-[9px] sm:text-[11px] font-bold uppercase tracking-[0.3em] text-amber-600 mt-1">{b.name.split(' ').slice(1).join(' ')}</span>
                     )}
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
+                  </span>
+                )}
+              </button>
+            );
+            return (
+              <section className="bg-white mt-7 sm:mt-9 py-6 sm:py-8 border-y border-slate-100">
+                <h2 className="text-center text-lg sm:text-3xl font-semibold text-slate-800 tracking-wide">{settings.brands_title || 'Our Brands'}</h2>
+                <div className="mx-auto mt-1.5 mb-5 h-1 w-14 rounded-full bg-amber-500" />
+                {settings.brands_slide ? (
+                  <div className="brand-slider overflow-hidden">
+                    <div className="brand-track flex w-max items-center" style={{ animationDuration: `${settings.brands_speed}s` }}>
+                      {row.map((b, i) => card(b, 'a' + i))}
+                      {row.map((b, i) => card(b, 'b' + i))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="max-w-7xl mx-auto flex flex-wrap justify-center items-center gap-y-4">
+                    {list.map((b, i) => card(b, 'c' + i))}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
 
           {/* Flash sale: discounted products */}
-          {saleProducts.length > 0 && !searchQuery.trim() && (
+          {settings.show_flash && saleProducts.length > 0 && !searchQuery.trim() && (
             <section className="max-w-7xl mx-auto sm:px-4 mt-4 sm:mt-6">
-              <h2 className="px-3 sm:px-0 text-lg sm:text-xl text-slate-800 mb-2">Flash Sale</h2>
+              <h2 className="px-3 sm:px-0 text-lg sm:text-xl text-slate-800 mb-2">{settings.flash_title}</h2>
               <div className="bg-white sm:rounded-lg shadow-sm">
                 <div className="flex items-center justify-between gap-3 px-3 sm:px-4 py-3 border-b">
                   <span className="text-amber-600 font-bold text-sm flex items-center gap-1.5">
-                    <Flame className="w-4 h-4" /> On Sale Now
+                    <Flame className="w-4 h-4" /> {settings.flash_badge}
                   </span>
                   <button
                     onClick={() => { setSelectedCategory('All'); scrollToProducts(); }}
@@ -2235,7 +2253,7 @@ export default function App() {
             <h2 className="px-3 sm:px-0 text-lg sm:text-xl text-slate-800 mb-2">
               {searchQuery.trim()
                 ? `Results for "${searchQuery.trim()}"`
-                : selectedCategory === 'All' ? 'Just For You' : selectedCategory}
+                : selectedCategory === 'All' ? settings.products_title : selectedCategory}
             </h2>
 
             <div className="flex items-center justify-between gap-3 px-3 sm:px-0 mb-2">
@@ -2340,20 +2358,15 @@ export default function App() {
             )}
           </main>
 
-          {/* Trust badges */}
-          {settings.show_trust && (
+          {/* Trust badges (Admin > Settings > Home Page Content) */}
+          {settings.show_trust && settings.trust_items.length > 0 && (
             <section className="max-w-7xl mx-auto sm:px-4 pb-8">
-              <div className="bg-white sm:rounded-lg shadow-sm px-4 py-6 grid grid-cols-2 md:grid-cols-4 gap-5 text-center">
-                {[
-                  { icon: <BadgeCheck className="w-7 h-7 text-amber-600" />, t: '100% Original', d: 'Authentic salon-grade products.' },
-                  { icon: <Truck className="w-7 h-7 text-amber-600" />, t: 'Fast Delivery', d: 'Delivered across Pakistan.' },
-                  { icon: <ShieldCheck className="w-7 h-7 text-amber-600" />, t: 'Cash on Delivery', d: 'Pay when you receive your order.' },
-                  { icon: <MessageCircle className="w-7 h-7 text-amber-600" />, t: 'WhatsApp Support', d: 'Ask us anything, anytime.' }
-                ].map((b, i) => (
-                  <div key={i} className="flex flex-col items-center">
-                    <div className="bg-amber-50 p-3 rounded-full mb-2">{b.icon}</div>
-                    <h4 className="font-bold text-sm text-slate-900">{b.t}</h4>
-                    <p className="text-[11px] text-slate-500 mt-0.5">{b.d}</p>
+              <div className="bg-white sm:rounded-lg shadow-sm px-4 py-6 flex flex-wrap justify-center gap-y-5">
+                {settings.trust_items.map((b, i) => (
+                  <div key={i} className="w-1/2 md:w-1/4 px-2 flex flex-col items-center text-center">
+                    <div className="bg-amber-50 text-amber-600 p-3 rounded-full mb-2 text-2xl leading-none"><ShopIcon name={b.icon} className="w-7 h-7" /></div>
+                    <h4 className="font-bold text-sm text-slate-900">{b.title}</h4>
+                    {b.text && <p className="text-[11px] text-slate-500 mt-0.5">{b.text}</p>}
                   </div>
                 ))}
               </div>
@@ -2365,16 +2378,16 @@ export default function App() {
           <section className="bg-slate-900 text-white">
             <div className="max-w-7xl mx-auto px-4 py-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
               <div>
-                <h3 className="text-lg font-black text-amber-400">Need help choosing a product?</h3>
-                <p className="text-sm text-slate-300">Message us on WhatsApp and we will help you.</p>
+                <h3 className="text-lg font-black text-amber-400">{settings.wa_title}</h3>
+                {settings.wa_text && <p className="text-sm text-slate-300">{settings.wa_text}</p>}
               </div>
               <a
-                href={waLink(settings.whatsapp, 'Hello, I would like some information about your products.')}
+                href={waLink(settings.whatsapp, settings.wa_message || 'Hello')}
                 target="_blank"
                 rel="noreferrer"
                 className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm px-6 py-3 rounded-full flex items-center"
               >
-                <MessageCircle className="w-4 h-4 mr-2" /> Chat on WhatsApp
+                <MessageCircle className="w-4 h-4 mr-2" /> {settings.wa_button}
               </a>
             </div>
           </section>
@@ -2407,23 +2420,32 @@ export default function App() {
                 )}
               </div>
               <div>
-                <h4 className={`${footHead} font-black mb-2`}>Quick Links</h4>
+                <h4 className={`${footHead} font-black mb-2`}>{settings.quick_links_title}</h4>
                 <ul className="space-y-1 text-xs">
                   <li><button onClick={() => { setCurrentView('track'); window.scrollTo({ top: 0 }); }} className="hover:text-amber-400 cursor-pointer">Track your order</button></li>
                   <li><button onClick={() => { setSelectedCategory('All'); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">Best Sellers</button></li>
-                  {categories.map(c => (
+                  {settings.footer_show_categories && categories.map(c => (
                     <li key={c.id}><button onClick={() => { setSelectedCategory(c.name); scrollToProducts(); }} className="hover:text-amber-400 cursor-pointer">{c.name}</button></li>
+                  ))}
+                  {settings.footer_links.filter(l => l.label.trim()).map((l, i) => (
+                    <li key={'fl' + i}>
+                      {l.url.trim()
+                        ? <a href={/^(https?:|mailto:|tel:|\/|#)/i.test(l.url.trim()) ? l.url.trim() : 'https://' + l.url.trim()} target={/^https?:/i.test(l.url.trim()) || !/^(mailto:|tel:|\/|#)/i.test(l.url.trim()) ? '_blank' : undefined} rel="noreferrer" className="hover:text-amber-400">{l.label}</a>
+                        : <span>{l.label}</span>}
+                    </li>
                   ))}
                 </ul>
               </div>
+              {settings.footer_show_payments && (
               <div>
-                <h4 className={`${footHead} font-black mb-2`}>Payment Options</h4>
+                <h4 className={`${footHead} font-black mb-2`}>{settings.payments_title}</h4>
                 <div className="flex flex-wrap gap-2">
                   {['Cash on Delivery', ...Array.from(new Set(paymentAccounts.map(a => a.type)))].map(t => (
                     <span key={t} className="bg-slate-800 text-slate-300 text-[11px] font-bold px-2.5 py-1 rounded">{t}</span>
                   ))}
                 </div>
               </div>
+              )}
             </div>
             <div className="border-t border-slate-800 text-center text-[11px] py-4">
               {settings.footer_text && <p className="mb-1 whitespace-pre-line">{settings.footer_text}</p>}

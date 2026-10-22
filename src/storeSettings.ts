@@ -14,6 +14,21 @@ export interface Brand {
   name: string;
   logo_url: string;
   keyword: string;
+  remove_bg: boolean;              // take away the plain background around the logo
+  tone: 'original' | 'dark' | 'light'; // show the logo in its own colours, all dark or all white
+}
+
+// A box in the "trust badges" row (Settings > Home Page Content)
+export interface TrustItem {
+  icon: string;
+  title: string;
+  text: string;
+}
+
+// An extra link in the footer
+export interface FooterLink {
+  label: string;
+  url: string;
 }
 
 export interface StoreSettings {
@@ -79,6 +94,22 @@ export interface StoreSettings {
   show_brands: boolean;
   brands_title: string;
   brands: Brand[];
+  brands_slide: boolean;       // logos keep sliding
+  brands_speed: number;        // seconds for one round
+  show_flash: boolean;
+  flash_title: string;
+  flash_badge: string;
+  products_title: string;
+  trust_items: TrustItem[];
+  wa_title: string;
+  wa_text: string;
+  wa_button: string;
+  wa_message: string;
+  footer_links: FooterLink[];
+  footer_show_categories: boolean;
+  footer_show_payments: boolean;
+  quick_links_title: string;
+  payments_title: string;
 }
 
 export const defaultSettings: StoreSettings = {
@@ -149,10 +180,31 @@ export const defaultSettings: StoreSettings = {
   show_brands: true,
   brands_title: 'Our Brands',
   brands: [
-    { name: 'Freecia Professional', logo_url: '', keyword: 'Freecia' },
-    { name: 'Signature Professional', logo_url: '', keyword: 'Signature' },
-    { name: 'Saffron', logo_url: '', keyword: 'Saffron' }
-  ]
+    { name: 'Freecia Professional', logo_url: '', keyword: 'Freecia', remove_bg: true, tone: 'original' },
+    { name: 'Signature Professional', logo_url: '', keyword: 'Signature', remove_bg: true, tone: 'original' },
+    { name: 'Saffron', logo_url: '', keyword: 'Saffron', remove_bg: true, tone: 'original' }
+  ],
+  brands_slide: true,
+  brands_speed: 25,
+  show_flash: true,
+  flash_title: 'Flash Sale',
+  flash_badge: 'On Sale Now',
+  products_title: 'Just For You',
+  trust_items: [
+    { icon: 'badge', title: '100% Original', text: 'Authentic salon-grade products.' },
+    { icon: 'truck', title: 'Fast Delivery', text: 'Delivered across Pakistan.' },
+    { icon: 'shield', title: 'Cash on Delivery', text: 'Pay when you receive your order.' },
+    { icon: 'chat', title: 'WhatsApp Support', text: 'Ask us anything, anytime.' }
+  ],
+  wa_title: 'Need help choosing a product?',
+  wa_text: 'Message us on WhatsApp and we will help you.',
+  wa_button: 'Chat on WhatsApp',
+  wa_message: 'Hello, I would like some information about your products.',
+  footer_links: [],
+  footer_show_categories: true,
+  footer_show_payments: true,
+  quick_links_title: 'Quick Links',
+  payments_title: 'Payment Options'
 };
 
 export function mergeSettings(row: any): StoreSettings {
@@ -186,7 +238,20 @@ export function mergeSettings(row: any): StoreSettings {
   if (!Array.isArray(out.brands)) out.brands = defaultSettings.brands;
   out.brands = out.brands
     .filter((b: any) => b && typeof b.name === 'string')
-    .map((b: any) => ({ name: b.name, logo_url: String(b.logo_url || ''), keyword: String(b.keyword || '') }));
+    .map((b: any) => ({
+      name: b.name,
+      logo_url: String(b.logo_url || ''),
+      keyword: String(b.keyword || ''),
+      remove_bg: b.remove_bg !== false,
+      tone: ['original', 'dark', 'light'].includes(b.tone) ? b.tone : 'original'
+    }));
+  out.brands_speed = Math.min(120, Math.max(5, Number(out.brands_speed) || 25));
+  if (!Array.isArray(out.trust_items)) out.trust_items = defaultSettings.trust_items;
+  out.trust_items = out.trust_items.filter((t: any) => t && typeof t.title === 'string')
+    .map((t: any) => ({ icon: String(t.icon || ''), title: t.title, text: String(t.text || '') }));
+  if (!Array.isArray(out.footer_links)) out.footer_links = [];
+  out.footer_links = out.footer_links.filter((l: any) => l && typeof l.label === 'string')
+    .map((l: any) => ({ label: l.label, url: String(l.url || '') }));
   if (!out.delivery_rates || typeof out.delivery_rates !== 'object' || Array.isArray(out.delivery_rates)) out.delivery_rates = {};
   return out as StoreSettings;
 }

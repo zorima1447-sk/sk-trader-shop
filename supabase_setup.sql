@@ -307,7 +307,23 @@ alter table public.store_settings
   add column if not exists strip_text_color text,
   add column if not exists topbar_color text,
   add column if not exists topbar_text_color text,
-  add column if not exists footer_color text;
+  add column if not exists footer_color text,
+  add column if not exists brands_slide boolean,
+  add column if not exists brands_speed int,
+  add column if not exists show_flash boolean,
+  add column if not exists flash_title text,
+  add column if not exists flash_badge text,
+  add column if not exists products_title text,
+  add column if not exists trust_items jsonb,
+  add column if not exists wa_title text,
+  add column if not exists wa_text text,
+  add column if not exists wa_button text,
+  add column if not exists wa_message text,
+  add column if not exists footer_links jsonb,
+  add column if not exists footer_show_categories boolean,
+  add column if not exists footer_show_payments boolean,
+  add column if not exists quick_links_title text,
+  add column if not exists payments_title text;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
