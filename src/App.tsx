@@ -36,6 +36,7 @@ interface Product {
   sold_quantity?: number;
   created_at?: string;
   variants?: Variant[] | null;
+  variant_label?: string | null; // what the options are called: Size, Shade, Color, Pack ...
 }
 
 // One size / pack of a product, e.g. "250 ML" or "500 ML" (each with its own price and stock)
@@ -44,12 +45,14 @@ interface Variant {
   price: number;
   original_price?: number;
   stock: number;
+  color?: string; // optional swatch colour (e.g. hair colour shade), "#8b4513"
 }
 
 interface CartItem extends Product {
   quantity: number;
   cartKey: string;   // product id, or "product id|size" when a size was chosen
-  variant?: string;  // chosen size
+  variant?: string;  // chosen size / shade
+  variantLabel?: string; // "Size", "Shade", ...
 }
 
 const variantsOf = (p: { variants?: Variant[] | null }): Variant[] =>
@@ -167,7 +170,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v12 (22-Oct-2026)';
+const BUILD = 'v13 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -399,7 +402,9 @@ export default function App() {
   const [originalPrice, setOriginalPrice] = useState('');
   const [discountedPrice, setDiscountedPrice] = useState('');
   const [productStock, setProductStock] = useState('');
-  const [pVariants, setPVariants] = useState<{ name: string; price: string; original_price: string; stock: string }[]>([]);
+  const [pVariants, setPVariants] = useState<{ name: string; price: string; original_price: string; stock: string; color: string }[]>([]);
+  const [pVariantLabel, setPVariantLabel] = useState('Size');
+  const [bulkShades, setBulkShades] = useState<string | null>(null); // "add many" text box (one name per line)
   const [productCategory, setProductCategory] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -1231,7 +1236,8 @@ export default function App() {
         name: v.name.trim(),
         price: parseFloat(v.price) || 0,
         original_price: parseFloat(v.original_price) || parseFloat(v.price) || 0,
-        stock: parseInt(v.stock) || 0
+        stock: parseInt(v.stock) || 0,
+        ...(v.color ? { color: v.color } : {})
       }));
     if (cleanVariants.some(v => !(v.price > 0))) { alert('Please enter a selling price for every size.'); return; }
     if (!productName || (!discountedPrice && cleanVariants.length === 0)) {
@@ -1253,7 +1259,8 @@ export default function App() {
       category_name: productCategory || 'Hair Care',
       image_url: finalImageUrl,
       stock_quantity: cheapest ? cleanVariants.reduce((t, v) => t + v.stock, 0) : (parseInt(productStock) || 0),
-      variants: cleanVariants.length ? cleanVariants : null
+      variants: cleanVariants.length ? cleanVariants : null,
+      variant_label: cleanVariants.length ? (pVariantLabel.trim() || 'Size') : null
     };
 
     if (editingProductId) {
@@ -1286,7 +1293,9 @@ export default function App() {
     setProductCategory(p.category_name);
     setImageUrl(p.image_url);
     setImagePreview(p.image_url);
-    setPVariants(variantsOf(p).map(v => ({ name: v.name, price: String(v.price), original_price: String(v.original_price || ''), stock: String(v.stock ?? 0) })));
+    setPVariants(variantsOf(p).map(v => ({ name: v.name, price: String(v.price), original_price: String(v.original_price || ''), stock: String(v.stock ?? 0), color: v.color || '' })));
+    setPVariantLabel(p.variant_label || 'Size');
+    setBulkShades(null);
   };
 
   const handleDeleteProduct = async (id: string) => {
@@ -1310,6 +1319,8 @@ export default function App() {
     setImageFile(null);
     setImagePreview(null);
     setPVariants([]);
+    setPVariantLabel('Size');
+    setBulkShades(null);
   };
 
   const handleAddCategory = async (e: React.FormEvent) => {
@@ -1444,7 +1455,7 @@ export default function App() {
           item.cartKey === key ? { ...item, quantity: item.quantity + qty } : item
         );
       }
-      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined }];
+      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined, variantLabel: base.variant_label || 'Size' }];
     });
 
     setToastMessage(`${qty} x ${product.name}${variant ? ` (${variant.name})` : ''} added to cart!`);
@@ -2211,7 +2222,7 @@ export default function App() {
                           disabled={soldOut}
                           className="mt-auto pt-0 w-full border border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent disabled:cursor-not-allowed font-semibold text-[11px] sm:text-xs py-1.5 rounded transition flex items-center justify-center cursor-pointer mt-2"
                         >
-                          <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : variantsOf(product).length > 0 ? 'Choose Size' : 'Add to Cart'}
+                          <ShoppingCart className="w-3.5 h-3.5 mr-1" /> {soldOut ? 'Sold Out' : variantsOf(product).length > 0 ? `Choose ${product.variant_label || 'Size'}` : 'Add to Cart'}
                         </button>
                       </div>
                     </div>
@@ -2384,27 +2395,53 @@ export default function App() {
                         </p>
                       </div>
 
-                      {vs.length > 0 && (
-                        <div className="bg-white px-3 py-3 md:p-0">
-                          <p className="text-xs text-slate-500 mb-2">Size: <b className="text-slate-800">{chosenV ? chosenV.name : ''}</b></p>
-                          <div className="flex flex-wrap gap-2">
-                            {vs.map(v => {
-                              const out = Number(v.stock) <= 0;
-                              const on = chosenV && v.name === chosenV.name;
-                              return (
-                                <button
-                                  key={v.name}
-                                  type="button"
-                                  onClick={() => { setQvVariant(v.name); setQvQty(1); }}
-                                  className={`px-3 py-1.5 rounded border text-sm cursor-pointer ${on ? 'border-amber-600 text-amber-700 bg-amber-50 font-semibold' : 'border-slate-300 text-slate-700 hover:border-amber-400'} ${out ? 'opacity-50 line-through' : ''}`}
+                      {vs.length > 0 && (() => {
+                        const label = (quickView.variant_label || 'Size').trim();
+                        const anyColor = vs.some(v => v.color);
+                        return (
+                          <div className="bg-white px-3 py-3 md:p-0">
+                            <p className="text-sm text-slate-600 mb-2 flex items-center gap-2">
+                              {label}: <b className="text-slate-900">{chosenV ? chosenV.name : ''}</b>
+                              {chosenV && chosenV.color && <span className="w-4 h-4 rounded-full border" style={{ background: chosenV.color }} />}
+                            </p>
+                            {vs.length > 8 ? (
+                              // many options (e.g. hair colour shades): a dropdown
+                              <div className="flex items-center gap-2">
+                                {anyColor && <span className="w-9 h-9 rounded-full border shrink-0" style={{ background: (chosenV && chosenV.color) || '#fff' }} />}
+                                <select
+                                  value={chosenV ? chosenV.name : ''}
+                                  onChange={(e) => { setQvVariant(e.target.value); setQvQty(1); }}
+                                  className="flex-1 min-w-0 px-4 py-3 border-2 border-slate-800 rounded-lg text-sm bg-white cursor-pointer"
                                 >
-                                  {v.name}
-                                </button>
-                              );
-                            })}
+                                  {vs.map(v => (
+                                    <option key={v.name} value={v.name}>
+                                      {v.name}{Number(v.stock) <= 0 ? ' (sold out)' : ''}{vs.some(x => Number(x.price) !== Number(vs[0].price)) ? ` - Rs. ${Number(v.price).toLocaleString('en-PK')}` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {vs.map(v => {
+                                  const out = Number(v.stock) <= 0;
+                                  const on = chosenV && v.name === chosenV.name;
+                                  return (
+                                    <button
+                                      key={v.name}
+                                      type="button"
+                                      onClick={() => { setQvVariant(v.name); setQvQty(1); }}
+                                      className={`px-3 py-1.5 rounded border text-sm flex items-center gap-1.5 cursor-pointer ${on ? 'border-amber-600 text-amber-700 bg-amber-50 font-semibold' : 'border-slate-300 text-slate-700 hover:border-amber-400'} ${out ? 'opacity-50 line-through' : ''}`}
+                                    >
+                                      {v.color && <span className="w-4 h-4 rounded-full border" style={{ background: v.color }} />}
+                                      {v.name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {!soldOut && (
                         <div className="bg-white px-3 py-3 md:p-0 flex items-center gap-3">
@@ -2806,7 +2843,7 @@ export default function App() {
                     <div key={item.cartKey} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
                       <div>
                         <h4 className="font-bold text-slate-800 text-sm">{item.name}</h4>
-                        {item.variant && <p className="text-[11px] text-slate-500">Size: {item.variant}</p>}
+                        {item.variant && <p className="text-[11px] text-slate-500">{item.variantLabel || 'Size'}: {item.variant}</p>}
                         <div className="flex items-center space-x-2 mt-1.5">
                           <button
                             type="button"
@@ -3415,43 +3452,101 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Sizes / variants */}
+                  {/* Options: sizes, shades, colours ... */}
                   <div className="border rounded-xl p-3 bg-slate-50 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-bold text-slate-700">Sizes / packs (optional) - e.g. 250 ML, 500 ML, 1 Litre</p>
-                      <button
-                        type="button"
-                        onClick={() => setPVariants(v => [...v, { name: '', price: '', original_price: '', stock: '' }])}
-                        className="text-[11px] font-bold bg-slate-900 text-amber-400 px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
-                      >
-                        + Add size
-                      </button>
-                    </div>
-                    {pVariants.length === 0 && (
-                      <p className="text-[11px] text-slate-500">No sizes: the product is sold at one price. Add sizes if it comes in different packs; the customer then picks one.</p>
-                    )}
-                    {pVariants.length > 0 && (
-                      <div className="grid grid-cols-[1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 text-[10px] font-bold text-slate-500 px-0.5">
-                        <span>Size name</span><span>Sale price</span><span>Old price</span><span>Stock</span><span></span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-slate-700">Options (optional) - sizes like 250 ML / 500 ML, or hair colour shades</p>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPVariants(v => [...v, { name: '', price: v.length ? v[v.length - 1].price : discountedPrice, original_price: v.length ? v[v.length - 1].original_price : originalPrice, stock: '', color: '' }])}
+                          className="text-[11px] font-bold bg-slate-900 text-amber-400 px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                        >
+                          + Add one
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBulkShades(bulkShades === null ? '' : null)}
+                          className="text-[11px] font-bold border border-slate-400 text-slate-700 px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                        >
+                          + Add many
+                        </button>
                       </div>
-                    )}
-                    {pVariants.map((v, i) => {
-                      const upd = (k: 'name' | 'price' | 'original_price' | 'stock', val: string) =>
-                        setPVariants(list => list.map((x, idx) => idx === i ? { ...x, [k]: val } : x));
-                      return (
-                        <div key={i} className="grid grid-cols-[1.4fr_1fr_1fr_0.8fr_auto] gap-1.5">
-                          <input value={v.name} onChange={(e) => upd('name', e.target.value)} placeholder="500 ML" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
-                          <input value={v.price} onChange={(e) => upd('price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Rs." inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
-                          <input value={v.original_price} onChange={(e) => upd('original_price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="(optional)" inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
-                          <input value={v.stock} onChange={(e) => upd('stock', e.target.value.replace(/[^0-9]/g, ''))} placeholder="0" inputMode="numeric" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
-                          <button type="button" onClick={() => setPVariants(list => list.filter((_, idx) => idx !== i))} className="px-2 text-red-600 cursor-pointer" aria-label="Remove size">
-                            <Trash2 className="w-3.5 h-3.5" />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="text-[11px] font-semibold text-slate-600">Option name shown to customers:</label>
+                      <input value={pVariantLabel} onChange={(e) => setPVariantLabel(e.target.value)} className="px-2 py-1 border rounded-lg text-xs bg-white w-28" />
+                      {['Size', 'Shade', 'Color', 'Pack', 'Weight'].map(l => (
+                        <button key={l} type="button" onClick={() => setPVariantLabel(l)} className={`text-[10px] px-2 py-0.5 rounded-full border cursor-pointer ${pVariantLabel === l ? 'bg-slate-900 text-amber-400 border-slate-900' : 'bg-white text-slate-600'}`}>{l}</button>
+                      ))}
+                    </div>
+
+                    {bulkShades !== null && (
+                      <div className="bg-white border rounded-lg p-2 space-y-1.5">
+                        <p className="text-[11px] text-slate-600">One name per line (e.g. 0/00 Lift Cream, 1.0 Black, 4.0 Medium Brown). They get the sale price, old price and stock below the list; you can change each one afterwards.</p>
+                        <textarea rows={5} value={bulkShades} onChange={(e) => setBulkShades(e.target.value)} className="w-full px-2 py-1.5 border rounded text-xs font-mono" placeholder={'0/00 Lift Cream\n1.0 Black\n3.0 Dark Brown\n4.0 Medium Brown'} />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] text-slate-500">Price {discountedPrice || '-'} · Old {originalPrice || '-'} · Stock {productStock || '0'} (from the fields above)</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const names = (bulkShades || '').split('\n').map(x => x.trim()).filter(Boolean);
+                              if (!names.length) return;
+                              setPVariants(v => [
+                                ...v,
+                                ...names.filter(n => !v.some(x => x.name.toLowerCase() === n.toLowerCase()))
+                                  .map(n => ({ name: n, price: discountedPrice, original_price: originalPrice, stock: productStock || '0', color: '' }))
+                              ]);
+                              setBulkShades(null);
+                            }}
+                            className="ml-auto text-[11px] font-bold bg-amber-600 text-white px-3 py-1 rounded-lg cursor-pointer"
+                          >
+                            Add these
                           </button>
                         </div>
-                      );
-                    })}
+                      </div>
+                    )}
+
+                    {pVariants.length === 0 && bulkShades === null && (
+                      <p className="text-[11px] text-slate-500">No options: the product is sold at one price. Add options if it comes in different sizes or shades; the customer then picks one.</p>
+                    )}
                     {pVariants.length > 0 && (
-                      <p className="text-[11px] text-slate-500">With sizes, the price and stock above are not used: the shop shows the cheapest size and the total stock.</p>
+                      <div className="grid grid-cols-[auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 text-[10px] font-bold text-slate-500 px-0.5">
+                        <span>Colour</span><span>{pVariantLabel || 'Option'} name</span><span>Sale price</span><span>Old price</span><span>Stock</span><span></span>
+                      </div>
+                    )}
+                    <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                      {pVariants.map((v, i) => {
+                        const upd = (k: 'name' | 'price' | 'original_price' | 'stock' | 'color', val: string) =>
+                          setPVariants(list => list.map((x, idx) => idx === i ? { ...x, [k]: val } : x));
+                        return (
+                          <div key={i} className="grid grid-cols-[auto_1.4fr_1fr_1fr_0.8fr_auto] gap-1.5 items-center">
+                            <span className="relative w-7 h-7">
+                              <input
+                                type="color"
+                                value={v.color || '#ffffff'}
+                                onChange={(e) => upd('color', e.target.value)}
+                                title="Swatch colour (optional)"
+                                className="w-7 h-7 p-0 border rounded cursor-pointer"
+                              />
+                              {v.color && (
+                                <button type="button" onClick={() => upd('color', '')} className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-white border text-[9px] leading-none cursor-pointer" aria-label="Remove colour">×</button>
+                              )}
+                            </span>
+                            <input value={v.name} onChange={(e) => upd('name', e.target.value)} placeholder={pVariantLabel === 'Shade' ? '4.0 Medium Brown' : '500 ML'} className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                            <input value={v.price} onChange={(e) => upd('price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Rs." inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                            <input value={v.original_price} onChange={(e) => upd('original_price', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="(optional)" inputMode="decimal" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                            <input value={v.stock} onChange={(e) => upd('stock', e.target.value.replace(/[^0-9]/g, ''))} placeholder="0" inputMode="numeric" className="px-2 py-1.5 border rounded-lg text-xs bg-white min-w-0" />
+                            <button type="button" onClick={() => setPVariants(list => list.filter((_, idx) => idx !== i))} className="px-2 text-red-600 cursor-pointer" aria-label="Remove option">
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {pVariants.length > 0 && (
+                      <p className="text-[11px] text-slate-500">{pVariants.length} options. With options, the price and stock above are not used: the shop shows the cheapest option and the total stock. The colour box is optional (a small coloured dot next to the shade name).</p>
                     )}
                   </div>
 

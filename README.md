@@ -67,6 +67,13 @@ npm install
 npm run dev
 ```
 
+## v13: hair colour shades (product options)
+- Admin > Products > Options: choose what the options are called (Size, Shade, Color, Pack, Weight or your own word),
+  "+ Add many" pastes many shade names at once (one per line), each option can have a colour dot, price, old price, stock.
+- Product page: "Shade: 4.0 Medium Brown" with the colour dot; more than 8 options show as a dropdown, fewer as buttons.
+  Product cards say "Choose Shade"; cart and invoice show the chosen shade.
+- Run `supabase_setup.sql` again (new column products.variant_label).
+
 ## v12: order tracking
 - Admin > Orders > "Add courier / tracking": courier (own rider, TCS, Leopards, M&P, Trax, PostEx, BlueEx, Call Courier,
   bus cargo, Pakistan Post, Other), tracking / CN number, optional tracking link; can mark the order Shipped.

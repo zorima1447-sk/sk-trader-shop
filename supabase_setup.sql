@@ -32,7 +32,8 @@ alter table public.products
   add column if not exists category_name text default 'Hair Care',
   add column if not exists stock_quantity int default 50,
   add column if not exists sold_quantity int default 0,
-  add column if not exists variants jsonb;   -- sizes: [{"name":"500 ML","price":1850,"original_price":2100,"stock":20}, ...]
+  add column if not exists variants jsonb,
+  add column if not exists variant_label text;   -- what the options are called: Size, Shade, Color ...   -- sizes: [{"name":"500 ML","price":1850,"original_price":2100,"stock":20}, ...]
 
 update public.products set sold_quantity = 0 where sold_quantity is null;
 
