@@ -171,7 +171,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v14.1 (22-Oct-2026)';
+const BUILD = 'v14.2 (22-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -315,6 +315,8 @@ export default function App() {
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [quickView, setQuickView] = useState<Product | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Phone: the search bar stays hidden behind an icon until tapped
+  const [mobileSearch, setMobileSearch] = useState(false);
   const [shareItem, setShareItem] = useState<{ title: string; url: string } | null>(null);
   const [qvVariant, setQvVariant] = useState<string>('');
   const [optSearch, setOptSearch] = useState(''); // search box over many shades
@@ -1793,7 +1795,7 @@ export default function App() {
   const searchBox = (phone: boolean) => (
     <form
       onSubmit={(e) => { e.preventDefault(); setSearchOpen(false); (document.activeElement as HTMLElement)?.blur?.(); scrollToProducts(); }}
-      className={phone ? 'sm:hidden flex mt-2 relative' : 'hidden sm:flex flex-1 max-w-2xl relative'}
+      className={phone ? `sm:hidden ${mobileSearch || searchQuery ? 'flex' : 'hidden'} mt-2 relative` : 'hidden sm:flex flex-1 max-w-2xl relative'}
       role="search"
     >
       <input
@@ -1803,11 +1805,22 @@ export default function App() {
         onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
         onFocus={() => setSearchOpen(true)}
         onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+        id={phone ? 'mobile-search-input' : undefined}
         className={`flex-1 min-w-0 ${phone ? 'px-3 py-2' : 'px-4 py-2.5'} rounded-l-lg text-sm text-slate-800 ${H.input} focus:outline-none`}
       />
       <button type="submit" className={`${H.btn} ${phone ? 'px-3' : 'px-4'} rounded-r-lg cursor-pointer`} aria-label="Search">
         <Search className={`${phone ? 'w-4 h-4' : 'w-5 h-5'} text-white`} />
       </button>
+      {phone && (
+        <button
+          type="button"
+          onClick={() => { setSearchQuery(''); setSearchOpen(false); setMobileSearch(false); }}
+          className={`ml-1.5 px-2 rounded-lg ${H.hover} cursor-pointer`}
+          aria-label="Close search"
+        >
+          <X className={`w-5 h-5 ${H.icon}`} />
+        </button>
+      )}
       {searchOpen && q && (suggestions.length > 0 || categoryHits.length > 0) && (
         <div className="absolute top-full left-0 right-0 mt-1 bg-white text-slate-800 rounded-lg shadow-2xl border z-50 overflow-hidden">
           {categoryHits.length > 0 && (
@@ -1931,6 +1944,18 @@ export default function App() {
             {currentView === 'store' && searchBox(false)}
 
             <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
+              {/* Phone: search icon that opens the search bar */}
+              {currentView === 'store' && (
+                <button
+                  type="button"
+                  onClick={() => { const open = !(mobileSearch || searchQuery); setMobileSearch(open); if (open) setTimeout(() => document.getElementById('mobile-search-input')?.focus(), 50); else { setSearchQuery(''); setSearchOpen(false); } }}
+                  className={`sm:hidden p-2 rounded-lg ${H.hover} transition cursor-pointer`}
+                  aria-label="Search"
+                >
+                  <Search className={`w-5 h-5 ${H.icon}`} />
+                </button>
+              )}
+
               {/* Admin: a lock icon only */}
               <button
                 onClick={() => setCurrentView(isAdminLoggedIn ? (currentView === 'admin' ? 'store' : 'admin') : 'login')}
