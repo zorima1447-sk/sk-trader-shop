@@ -176,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.7 (24-Oct-2026)';
+const BUILD = 'v18.8 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
