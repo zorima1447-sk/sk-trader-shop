@@ -11,6 +11,30 @@
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided by Supabase automatically.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
+// Sender address for Resend. A free mailbox (gmail, yahoo...) or a badly typed address can not be
+// used as sender, so then Resend's own test sender is used with the shop name.
+function senderAddress(storeName: string, emailFrom: string): string {
+  const clean = (t: string) => String(t || '').replace(/[<>"(),;:\\@\[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const name = clean(storeName) || 'Online Store';
+  const raw = String(emailFrom || '').trim();
+  const m = raw.match(/^"?([^"<]*?)"?\s*<\s*([^\s<>@]+@([^\s<>@]+\.[a-z]{2,}))\s*>$/i)
+    || raw.match(/^()([^\s<>@]+@([^\s<>@]+\.[a-z]{2,}))$/i);
+  if (m) {
+    const domain = m[3].toLowerCase();
+    const free = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail)\./.test(domain);
+    if (!free) return `${clean(m[1] || '') || name} <${m[2]}>`;
+  }
+  return `${name} <onboarding@resend.dev>`;
+}
+
+// Short, clear explanation of a Resend error
+function resendNote(t: string): string {
+  if (/only send testing emails|verify a domain|domain is not verified/i.test(t)) {
+    return 'Resend can only send to YOUR OWN email until you verify a domain in Resend (Resend > Domains). Customer emails need a verified domain (for example sktrader.pk).';
+  }
+  return t.slice(0, 300);
+}
+
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token, x-region, x-supabase-api-version',
@@ -36,13 +60,13 @@ async function isAdmin(sb: any, req: Request) {
 async function sendEmail(to: string, subject: string, html: string, text: string, fromName: string, fromAddr: string) {
   const key = Deno.env.get('RESEND_API_KEY');
   if (!key) return 'RESEND_API_KEY secret is not set';
-  const from = fromAddr && fromAddr.trim() ? fromAddr.trim() : `${fromName} <onboarding@resend.dev>`;
+  const from = senderAddress(fromName, fromAddr);
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ from, to: [to], subject, html, text }),
   });
-  return r.ok ? 'sent' : `failed: ${await r.text()}`;
+  return r.ok ? 'sent' : `failed: ${resendNote(await r.text())}`;
 }
 
 async function sendTwilio(mode: string, toPhone: string, body: string) {

@@ -109,6 +109,7 @@ export interface StoreSettings {
   footer_show_categories: boolean;
   footer_show_payments: boolean;
   quick_links_title: string;
+  deals_title: string;
   payments_title: string;
 }
 
@@ -204,6 +205,7 @@ export const defaultSettings: StoreSettings = {
   footer_show_categories: true,
   footer_show_payments: true,
   quick_links_title: 'Quick Links',
+  deals_title: 'Special Deals',
   payments_title: 'Payment Options'
 };
 

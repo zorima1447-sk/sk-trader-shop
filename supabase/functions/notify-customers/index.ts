@@ -8,6 +8,30 @@
 // Set the sender address in Admin > Settings > Customer Messages (verify your domain in Resend to email real customers).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
+// Sender address for Resend. A free mailbox (gmail, yahoo...) or a badly typed address can not be
+// used as sender, so then Resend's own test sender is used with the shop name.
+function senderAddress(storeName: string, emailFrom: string): string {
+  const clean = (t: string) => String(t || '').replace(/[<>"(),;:\\@\[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const name = clean(storeName) || 'Online Store';
+  const raw = String(emailFrom || '').trim();
+  const m = raw.match(/^"?([^"<]*?)"?\s*<\s*([^\s<>@]+@([^\s<>@]+\.[a-z]{2,}))\s*>$/i)
+    || raw.match(/^()([^\s<>@]+@([^\s<>@]+\.[a-z]{2,}))$/i);
+  if (m) {
+    const domain = m[3].toLowerCase();
+    const free = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail)\./.test(domain);
+    if (!free) return `${clean(m[1] || '') || name} <${m[2]}>`;
+  }
+  return `${name} <onboarding@resend.dev>`;
+}
+
+// Short, clear explanation of a Resend error
+function resendNote(t: string): string {
+  if (/only send testing emails|verify a domain|domain is not verified/i.test(t)) {
+    return 'Resend can only send to YOUR OWN email until you verify a domain in Resend (Resend > Domains). Customer emails need a verified domain (for example sktrader.pk).';
+  }
+  return t.slice(0, 300);
+}
+
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token, x-region, x-supabase-api-version',
@@ -50,7 +74,7 @@ Deno.serve(async (req) => {
     const { data: storeRow } = await sb.from('store_settings').select('*').eq('id', 1).maybeSingle();
     const store = storeRow || { store_name: 'Online Store' };
     const storeName = store.store_name || 'Online Store';
-    const from = store.email_from && String(store.email_from).trim() ? String(store.email_from).trim() : `${storeName} <onboarding@resend.dev>`;
+    const from = senderAddress(storeName, store.email_from);
     const link = site_url || '';
 
     let mailSubject = '';
@@ -65,7 +89,7 @@ Deno.serve(async (req) => {
       const img = p.image_url && String(p.image_url).startsWith('http')
         ? `<img src="${esc(p.image_url)}" alt="" width="320" style="max-width:100%;border-radius:8px;display:block;margin:12px 0">` : '';
       inner = `<h2 style="margin:0 0 8px">${esc(p.name)}</h2>${img}
-        <p style="margin:0 0 8px;color:#444">${esc(String(p.description || '').slice(0, 300))}</p>
+        <p style="margin:0 0 8px;color:#444">${esc(String(p.description || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300))}</p>
         <p style="font-size:18px;margin:8px 0"><b>PKR ${price}</b>${orig > price ? ` <span style="color:#888;text-decoration:line-through">PKR ${orig}</span>` : ''}</p>
         <a href="${esc(link)}" style="display:inline-block;background:#111;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Shop now</a>`;
     } else if (type === 'custom') {
@@ -117,7 +141,7 @@ Deno.serve(async (req) => {
       if (r.ok) sent += chunk.length;
       else {
         failed += chunk.length;
-        note = (await r.text()).slice(0, 300);
+        note = resendNote(await r.text());
       }
     }
     return json({ sent, failed, note });

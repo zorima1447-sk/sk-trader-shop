@@ -146,6 +146,23 @@ alter table public.order_items
   add column if not exists variant text;
 
 create index if not exists order_items_order_id_idx on public.order_items(order_id);
+alter table public.order_items add column if not exists deal_items jsonb;  -- the products inside a deal line
+
+-- ---------- 5b. DEALS (several products sold together for one price) ----------
+create table if not exists public.deals (
+  id uuid default gen_random_uuid() primary key,
+  name text not null default 'Deal',
+  description text,
+  image_url text,
+  items jsonb not null default '[]'::jsonb,   -- [{"product_id": "...", "variant": "500 ML" or null, "qty": 1}]
+  deal_price numeric not null default 0,
+  is_active boolean not null default true,
+  sort_order int default 0,
+  created_at timestamptz default now() not null
+);
+alter table public.deals
+  add column if not exists starts_at timestamptz,   -- empty = starts at once
+  add column if not exists ends_at timestamptz;     -- empty = no end; after this time the deal is gone
 
 -- ---------- 6. PAYMENTS (every payment received) ----------
 create table if not exists public.payments (
@@ -323,7 +340,8 @@ alter table public.store_settings
   add column if not exists footer_show_categories boolean,
   add column if not exists footer_show_payments boolean,
   add column if not exists quick_links_title text,
-  add column if not exists payments_title text;
+  add column if not exists payments_title text,
+  add column if not exists deals_title text;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
@@ -587,6 +605,9 @@ declare
   g_rate numeric := null;
   g_amt numeric := 0;
   g_incl boolean := true;
+  dl public.deals;
+  dl_names text;
+  di jsonb;
 begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
@@ -599,6 +620,36 @@ begin
   for it in select * from jsonb_array_elements(p_items) loop
     qty := (it ->> 'quantity')::int;
     if qty is null or qty < 1 or qty > 1000 then raise exception 'Invalid quantity.'; end if;
+
+    -- a deal: the deal price is charged, the stock of every item inside goes down
+    if coalesce(it ->> 'deal_id', '') <> '' then
+      select * into dl from public.deals where id = (it ->> 'deal_id')::uuid and is_active;
+      if dl.id is null then raise exception 'A deal in your cart is no longer available.'; end if;
+      if (dl.starts_at is not null and dl.starts_at > now()) or (dl.ends_at is not null and dl.ends_at <= now()) then
+        raise exception 'The deal % has ended. Please remove it from your cart.', dl.name;
+      end if;
+      if jsonb_array_length(coalesce(dl.items, '[]'::jsonb)) = 0 then raise exception 'The deal % has no items.', dl.name; end if;
+      if exists (select 1 from jsonb_array_elements(dl.items) x(e)
+                 where not exists (select 1 from public.products p where p.id = (x.e ->> 'product_id')::uuid)) then
+        raise exception 'A product of the deal % is no longer available.', dl.name;
+      end if;
+      select string_agg(case when coalesce((x.e ->> 'qty')::int, 1) > 1 then (x.e ->> 'qty') || ' x ' else '' end
+                        || p.name || coalesce(' - ' || nullif(x.e ->> 'variant', ''), ''), ', ' order by x.ord)
+        into dl_names
+        from jsonb_array_elements(dl.items) with ordinality x(e, ord)
+        join public.products p on p.id = (x.e ->> 'product_id')::uuid;
+      lines := lines || jsonb_build_object(
+        'product_id', null,
+        'product_name', 'DEAL: ' || dl.name || ' (' || coalesce(dl_names, '') || ')',
+        'variant', null,
+        'quantity', qty,
+        'unit_price', dl.deal_price,
+        'deal_items', dl.items
+      );
+      total := total + dl.deal_price * qty;
+      continue;
+    end if;
+
     select * into pr from public.products where id = (it ->> 'product_id')::uuid;
     if pr.id is null then raise exception 'A product in your cart is no longer available.'; end if;
 
@@ -719,12 +770,21 @@ begin
     insert into public.payment_proofs (order_id, image) values (o.id, proof);
   end if;
 
-  insert into public.order_items (order_id, product_id, product_name, quantity, unit_price, variant)
-  select o.id, (l ->> 'product_id')::uuid, l ->> 'product_name', (l ->> 'quantity')::int, (l ->> 'unit_price')::numeric, l ->> 'variant'
+  insert into public.order_items (order_id, product_id, product_name, quantity, unit_price, variant, deal_items)
+  select o.id, (l ->> 'product_id')::uuid, l ->> 'product_name', (l ->> 'quantity')::int, (l ->> 'unit_price')::numeric, l ->> 'variant',
+         case when jsonb_typeof(l -> 'deal_items') = 'array' then l -> 'deal_items' end
   from jsonb_array_elements(lines) l;
 
   for it in select * from jsonb_array_elements(lines) loop
-    if coalesce(it ->> 'variant', '') <> '' then
+    if jsonb_typeof(it -> 'deal_items') = 'array' then
+      for di in select * from jsonb_array_elements(it -> 'deal_items') loop
+        if coalesce(di ->> 'variant', '') <> '' then
+          perform public.decrement_variant_stock((di ->> 'product_id')::uuid, di ->> 'variant', (it ->> 'quantity')::int * coalesce((di ->> 'qty')::int, 1));
+        else
+          perform public.decrement_stock((di ->> 'product_id')::uuid, (it ->> 'quantity')::int * coalesce((di ->> 'qty')::int, 1));
+        end if;
+      end loop;
+    elsif coalesce(it ->> 'variant', '') <> '' then
       perform public.decrement_variant_stock((it ->> 'product_id')::uuid, it ->> 'variant', (it ->> 'quantity')::int);
     else
       perform public.decrement_stock((it ->> 'product_id')::uuid, (it ->> 'quantity')::int);
@@ -792,7 +852,14 @@ declare it record;
 begin
   if not public.is_admin() then raise exception 'Admin login required.'; end if;
   if p_restock then
-    for it in select product_id, variant, quantity from public.order_items where order_id = p_id and product_id is not null loop
+    for it in
+      select product_id, variant, quantity from public.order_items where order_id = p_id and product_id is not null
+      union all
+      -- the products inside a deal line
+      select (x.e ->> 'product_id')::uuid, nullif(x.e ->> 'variant', ''), i.quantity * coalesce((x.e ->> 'qty')::int, 1)
+      from public.order_items i, jsonb_array_elements(i.deal_items) x(e)
+      where i.order_id = p_id and jsonb_typeof(i.deal_items) = 'array'
+    loop
       if coalesce(it.variant, '') <> '' then
         update public.products set
           variants = (select jsonb_agg(case when x.e ->> 'name' = it.variant
@@ -919,6 +986,7 @@ alter table public.hero_slides           enable row level security;
 alter table public.store_settings        enable row level security;
 alter table public.admin_sessions        enable row level security;
 alter table public.payment_proofs        enable row level security;
+alter table public.deals                 enable row level security;
 
 -- remove every old policy on these tables (including the old "Allow All")
 do $$
@@ -928,7 +996,7 @@ begin
     select tablename, policyname from pg_policies
     where schemaname = 'public'
       and tablename in ('categories','products','customers','orders','order_items','payments','reviews','profiles',
-                        'payment_accounts','notification_settings','hero_slides','store_settings','admin_sessions','payment_proofs')
+                        'payment_accounts','notification_settings','hero_slides','store_settings','admin_sessions','payment_proofs','deals')
   loop
     execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
   end loop;
@@ -943,6 +1011,13 @@ begin
     execute format('create policy "admin write" on public.%I for all using ((select public.is_admin())) with check ((select public.is_admin()))', t);
   end loop;
 end $$;
+
+-- deals: everyone sees the active ones, admins see and change all
+create policy "public read active" on public.deals for select
+  using (is_active or (select public.is_admin()));
+create policy "admin write" on public.deals for all
+  using ((select public.is_admin())) with check ((select public.is_admin()));
+grant select, insert, update, delete on public.deals to anon, authenticated;
 
 create policy "public read active" on public.payment_accounts for select
   using (is_active is not false or (select public.is_admin()));

@@ -4,6 +4,7 @@ import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFie
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
 import { RichTextEditor, RichTextView, htmlToText } from './RichText';
 import { BrandLogo } from './BrandLogo';
+import { Deal, DealsSection, DealsAdmin, fetchDeals as loadDeals, dealCurrentRate, dealStock, dealItemNames } from './Deals';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import AiChatBubble, { ChatPanel } from './AiChat';
 import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
@@ -15,7 +16,7 @@ import { ShopIcon } from './icons';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
-  FileText, Users, Eye, LogOut, LayoutDashboard, Search, Image as ImageIcon,
+  FileText, Users, Eye, EyeOff, LogOut, LayoutDashboard, Search, Image as ImageIcon,
   UserPlus, Shield, Wallet, Save, RefreshCw, X,
   Heart, ChevronLeft, ChevronRight, Truck, Flame, ShieldCheck, BadgeCheck, MessageCircle, Star, Minus, ArrowUp, ArrowDown, Printer, Mail
 } from 'lucide-react';
@@ -53,6 +54,7 @@ interface Variant {
 
 interface CartItem extends Product {
   quantity: number;
+  dealId?: string;   // set when this line is a deal (bundle)
   cartKey: string;   // product id, or "product id|size" when a size was chosen
   variant?: string;  // chosen size / shade
   variantLabel?: string; // "Size", "Shade", ...
@@ -173,7 +175,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v17 (22-Oct-2026)';
+const BUILD = 'v18 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -408,12 +410,16 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin Portal States
+  const [showAdminPass, setShowAdminPass] = useState(false);
+  const [showNewUserPass, setShowNewUserPass] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals'>('dashboard');
+  const [deals, setDeals] = useState<Deal[]>(BOOT_CACHE?.deals || []);
+  const refreshDeals = () => loadDeals(true).then(setDeals);
 
   // Product Form State (Add / Edit)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -491,6 +497,7 @@ export default function App() {
       fetchProducts(),
       fetchCategories(),
       fetchSlides(),
+      refreshDeals(),
       fetchStoreSettings(supabase).then(setSettings)
     ]).finally(() => {
       clearTimeout(giveUp);
@@ -576,8 +583,8 @@ export default function App() {
 
   // Remember the latest shop data for the next visit.
   useEffect(() => {
-    if (fresh) writeShopCache({ settings, slides, categories, products });
-  }, [fresh, settings, slides, categories, products]);
+    if (fresh) writeShopCache({ settings, slides, categories, products, deals: deals.filter(d => d.is_active) });
+  }, [fresh, settings, slides, categories, products, deals]);
 
   useEffect(() => {
     document.title = settings.store_name || 'Online Store';
@@ -1517,12 +1524,29 @@ export default function App() {
           item.cartKey === key ? { ...item, quantity: item.quantity + qty } : item
         );
       }
-      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined, variantLabel: base.variant_label || 'Size' }];
+      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined, variantLabel: base.variant_label || 'Size', dealId: (base as any).dealId }];
     });
 
     setToastMessage(`${qty} x ${product.name}${variant ? ` (${variant.name})` : ''} added to cart!`);
     setTimeout(() => setToastMessage(null), 2500);
     return true;
+  };
+
+  // A deal goes into the cart like one product: deal price, stock = how many deals the items allow
+  const dealAsProduct = (d: Deal): Product & { dealId: string } => ({
+    id: 'deal-' + d.id,
+    dealId: d.id,
+    name: `${d.name} (Deal)`,
+    description: dealItemNames(d, products).join(', '),
+    original_price: dealCurrentRate(d, products),
+    discounted_price: d.deal_price,
+    price: d.deal_price,
+    image_url: d.image_url || (products.find(p => p.id === d.items[0]?.product_id) || ({} as any)).image_url || PLACEHOLDER_IMG,
+    category_name: 'Deals',
+    stock_quantity: dealStock(d, products)
+  });
+  const addDealToCart = (d: Deal, buyNow = false) => {
+    if (addToCart(dealAsProduct(d), 1, undefined, buyNow) && buyNow) setIsCartOpen(true);
   };
 
   const changeCartQty = (id: string, delta: number) => {
@@ -1614,7 +1638,9 @@ export default function App() {
           payer_paid_at: paymentMethod === 'cod' || !payerPaidAt ? null : new Date(payerPaidAt).toISOString(),
           payment_proof: paymentMethod === 'cod' ? null : (paymentProof || null)
         },
-        p_items: cart.map(item => ({ product_id: item.id, quantity: item.quantity, variant: item.variant || null }))
+        p_items: cart.map(item => item.dealId
+          ? { deal_id: item.dealId, quantity: item.quantity }
+          : { product_id: item.id, quantity: item.quantity, variant: item.variant || null })
       });
 
       if (orderError || !placed || !placed.order) {
@@ -1785,6 +1811,7 @@ export default function App() {
       { id: 'settings:profile', label: 'Store Profile', icon: Building },
       { id: 'settings:brands', label: 'Our Brands', icon: BadgeCheck },
       { id: 'settings:content', label: 'Home Page Content', icon: FileText },
+      { id: 'deals', label: 'Deals', icon: Tag, open: () => refreshDeals() },
       { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
       { id: 'settings:delivery', label: 'Delivery Charges', icon: Truck },
       { id: 'settings:invoice', label: 'Invoice', icon: Printer },
@@ -2246,6 +2273,11 @@ export default function App() {
                 </div>
               </div>
             </section>
+          )}
+
+          {/* Deals (Admin > Settings > Deals) */}
+          {!searchQuery.trim() && (
+            <DealsSection deals={deals} products={products} title={settings.deals_title} onAdd={(d) => addDealToCart(d)} onBuy={(d) => addDealToCart(d, true)} />
           )}
 
           {/* All products ("Just For You") */}
@@ -3299,13 +3331,23 @@ export default function App() {
                 <div className="relative">
                   <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                   <input
-                    type="password"
+                    type={showAdminPass ? 'text' : 'password'}
                     required
                     placeholder="Password"
+                    autoComplete="current-password"
                     value={adminPassword}
                     onChange={(e) => setAdminPassword(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                    className="w-full pl-9 pr-11 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminPass(v => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                    aria-label={showAdminPass ? 'Hide password' : 'Show password'}
+                    title={showAdminPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showAdminPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -4103,16 +4145,26 @@ export default function App() {
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       {editingUserId ? 'New Password (leave empty to keep the current one)' : 'Password * (at least 6 characters)'}
                     </label>
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      required={!editingUserId}
-                      minLength={6}
-                      placeholder={editingUserId ? 'Leave empty to keep' : 'Enter New Password'}
-                      value={newUserPassword}
-                      onChange={(e) => setNewUserPassword(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showNewUserPass ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        required={!editingUserId}
+                        minLength={6}
+                        placeholder={editingUserId ? 'Leave empty to keep' : 'Enter New Password'}
+                        value={newUserPassword}
+                        onChange={(e) => setNewUserPassword(e.target.value)}
+                        className="w-full pl-3.5 pr-11 py-2.5 border rounded-xl text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewUserPass(v => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                        aria-label={showNewUserPass ? 'Hide password' : 'Show password'}
+                      >
+                        {showNewUserPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   <div>
@@ -4501,6 +4553,11 @@ export default function App() {
               </div>
               </div>
             </div>
+          )}
+
+          {/* DEALS */}
+          {adminTab === 'deals' && (
+            <DealsAdmin products={products} deals={deals} onChanged={refreshDeals} title={settings.deals_title} />
           )}
 
           {/* TAB 10: HOME SLIDES */}

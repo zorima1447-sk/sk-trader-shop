@@ -449,6 +449,10 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
                 <label className={label}>All products heading</label>
                 <input className={input} value={f.products_title} onChange={(e) => set('products_title', e.target.value)} placeholder="Just For You" />
               </div>
+              <div>
+                <label className={label}>Deals heading</label>
+                <input className={input} value={f.deals_title} onChange={(e) => set('deals_title', e.target.value)} placeholder="Special Deals" />
+              </div>
             </div>
           </div>
 
