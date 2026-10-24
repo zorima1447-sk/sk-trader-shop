@@ -364,7 +364,7 @@ begin
   create policy "site-assets read"   on storage.objects for select using (bucket_id = 'site-assets');
   -- Only new logo / banner images can be added; existing files cannot be replaced or deleted from the website.
   create policy "site-assets insert" on storage.objects for insert
-    with check (bucket_id = 'site-assets' and name ~ '^(logo|slide|variant)-[0-9a-z-]+\.(png|jpg)$');
+    with check (bucket_id = 'site-assets' and name ~ '^(logo|slide|variant|product)-[0-9a-z-]+\.(png|jpg)$');
 exception when others then
   raise notice 'Storage bucket setup skipped: %', sqlerrm;
 end $$;

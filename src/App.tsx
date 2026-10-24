@@ -176,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.5 (24-Oct-2026)';
+const BUILD = 'v18.6 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -221,7 +221,7 @@ function resizeImage(file: File, maxW: number): Promise<string> {
 
 // Uploads a data-URL image to Supabase Storage (bucket "site-assets") and returns its public link.
 // If the upload is not possible the image stays embedded (it still works, the page is just heavier).
-async function uploadSiteImage(dataUrl: string, prefix: 'slide' | 'variant'): Promise<string> {
+async function uploadSiteImage(dataUrl: string, prefix: 'slide' | 'variant' | 'product'): Promise<string> {
   if (!dataUrl.startsWith('data:')) return dataUrl;
   try {
     const blob = await (await fetch(dataUrl)).blob();
@@ -319,7 +319,7 @@ export default function App() {
   const [authUser, setAuthUser] = useState<any>(null);
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   // Item the visitor wanted to add before logging in; added automatically after login / sign-up
-  const [pendingCart, setPendingCart] = useState<{ product: Product; qty: number; variant?: Variant; buyNow?: boolean } | null>(null);
+  const [pendingCart, setPendingCart] = useState<{ product: Product; qty: number; variant?: Variant; buyNow?: boolean; more?: { variant: Variant; qty: number }[] } | null>(null);
   
   // Store States
   const [products, setProducts] = useState<Product[]>(BOOT_CACHE?.products || []);
@@ -348,6 +348,9 @@ export default function App() {
   const [rvEmail, setRvEmail] = useState('');
   const [rvPhone, setRvPhone] = useState('');
   const [qvQty, setQvQty] = useState(1);
+  // product page: pick several shades / sizes at once (name -> quantity)
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiPick, setMultiPick] = useState<Record<string, number>>({});
   const [rvRating, setRvRating] = useState(5);
   const [rvRemark, setRvRemark] = useState('');
   const [purchased, setPurchased] = useState<{ order_id: string; customer_name: string; items: { id: string; name: string }[] } | null>(null);
@@ -528,7 +531,10 @@ export default function App() {
     const pc = pendingCart;
     setPendingCart(null);
     setCurrentView('store');
-    if (addToCart(pc.product, pc.qty, pc.variant, false, true) && pc.buyNow) setIsCartOpen(true);
+    const ok = addToCart(pc.product, pc.qty, pc.variant, false, true);
+    // several shades / sizes chosen at once
+    (pc.more || []).forEach(m => addToCart(pc.product, m.qty, m.variant, false, true));
+    if (ok && pc.buyNow) setIsCartOpen(true);
   }, [authUser]);
 
   // Logged-in customer: fill the checkout form from his profile
@@ -1256,13 +1262,10 @@ export default function App() {
       const file = e.target.files[0];
       setImageFile(file);
 
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64Result = reader.result as string;
-        setImagePreview(base64Result);
-        setImageUrl(base64Result);
-      };
-      reader.readAsDataURL(file);
+      // shrink the picture first (big phone photos make the shop slow)
+      resizeImage(file, 900)
+        .then((small) => { setImagePreview(small); setImageUrl(small); })
+        .catch((err) => alert(err.message || String(err)));
     }
   };
 
@@ -1328,6 +1331,17 @@ export default function App() {
 
     setIsUploading(true);
     let finalImageUrl = imageUrl || imagePreview || 'https://images.unsplash.com/photo-1526947425960-945c6e72858f?w=500&auto=format&fit=crop&q=60';
+    // A picture chosen from the computer is saved in Supabase Storage (only its short link goes into the product).
+    // Keeping the picture itself inside the product made the shop load very slowly.
+    if (finalImageUrl.startsWith('data:')) {
+      const url = await uploadSiteImage(finalImageUrl, 'product');
+      if (url.startsWith('data:')) {
+        setIsUploading(false);
+        alert('The picture could not be uploaded to Supabase Storage. Please run the latest supabase_setup.sql and try again.');
+        return;
+      }
+      finalImageUrl = url;
+    }
 
     const prodData = {
       name: productName,
@@ -1766,6 +1780,8 @@ export default function App() {
   // ---- Product page: has its own link (?product=<id>) and closes with the phone's Back button ----
   const openProduct = (p: Product, replace = false) => {
     setOptSearch('');
+    setMultiMode(false);
+    setMultiPick({});
     setQuickView(p);
     setQvQty(1);
     const vs = variantsOf(p);
@@ -2316,7 +2332,7 @@ export default function App() {
                       className="w-32 sm:w-40 shrink-0 text-left group cursor-pointer rounded-2xl border border-slate-100 hover:border-amber-300 hover:shadow-lg p-2 transition"
                     >
                       <div className="aspect-square bg-white rounded-xl overflow-hidden mb-2 relative">
-                        <img src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
+                        <img loading="lazy" decoding="async" src={p.image_url || PLACEHOLDER_IMG} alt={p.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
                         {discountPct(p) > 0 && <span className="absolute top-1 left-1 bg-amber-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">-{discountPct(p)}%</span>}
                       </div>
                       <p className="text-xs text-slate-700 line-clamp-2 min-h-[2rem]">{p.name}</p>
@@ -2382,6 +2398,8 @@ export default function App() {
                           <img
                             src={product.image_url || PLACEHOLDER_IMG}
                             alt={product.name}
+                            loading="lazy"
+                            decoding="async"
                             className={`w-full h-full object-contain p-3 group-hover:scale-110 transition-transform duration-500 ${soldOut ? 'opacity-50' : ''}`}
                             onError={(e) => { (e.target as HTMLImageElement).src = PLACEHOLDER_IMG; }}
                           />
@@ -2550,8 +2568,37 @@ export default function App() {
             const soldOut = p.stock_quantity <= 0;
             const related = products.filter(x => x.id !== p.id && x.category_name === p.category_name).slice(0, 10);
             const productReviews = reviews.filter(rv => rv.product_id === p.id);
-            const buyNow = () => { if (addToCart(quickView, qvQty, chosenV, true)) { closeProduct(); setIsCartOpen(true); } };
-            const addOnly = () => { addToCart(quickView, qvQty, chosenV); };
+            // several shades / sizes ticked at once
+            const multi = multiMode && vs.length > 1;
+            const picks = vs.filter(v => (multiPick[v.name] || 0) > 0).map(v => ({ variant: v, qty: multiPick[v.name] }));
+            const pickPieces = picks.reduce((a, b) => a + b.qty, 0);
+            const pickTotal = picks.reduce((a, b) => a + Number(b.variant.price) * b.qty, 0);
+            const addMany = (buy: boolean) => {
+              if (picks.length === 0) return false;
+              if (!authUser) {
+                setPendingCart({ product: quickView, qty: picks[0].qty, variant: picks[0].variant, buyNow: buy, more: picks.slice(1) });
+                closeProduct();
+                setIsCartOpen(false);
+                setAuthMode('login');
+                setCurrentView('auth');
+                window.scrollTo({ top: 0 });
+                return false;
+              }
+              let any = false;
+              picks.forEach(pk => { if (addToCart(quickView, pk.qty, pk.variant, false, true)) any = true; });
+              if (any) {
+                setMultiPick({});
+                setToastMessage(`${pickPieces} item${pickPieces > 1 ? 's' : ''} (${picks.length} ${((quickView.variant_label || 'option').toLowerCase())}${picks.length > 1 ? 's' : ''}) added to cart!`);
+                setTimeout(() => setToastMessage(null), 2500);
+              }
+              return any;
+            };
+            const buyNow = () => {
+              if (multi) { if (addMany(true)) { closeProduct(); setIsCartOpen(true); } return; }
+              if (addToCart(quickView, qvQty, chosenV, true)) { closeProduct(); setIsCartOpen(true); }
+            };
+            const addOnly = () => { if (multi) { addMany(false); return; } addToCart(quickView, qvQty, chosenV); };
+            const btnOff = multi ? picks.length === 0 : soldOut;
             return (
               <div key={p.id} className="fixed inset-0 z-50 bg-black/60 md:flex md:items-start md:justify-center md:p-6 overflow-y-auto" onClick={closeProduct}>
                 <div className="bg-slate-100 md:bg-white w-full min-h-full md:min-h-0 md:max-w-5xl md:rounded-lg relative pb-20 md:pb-0" onClick={(e) => e.stopPropagation()}>
@@ -2620,6 +2667,71 @@ export default function App() {
                         const shown = optSearch.trim() ? vs.filter(v => v.name.toLowerCase().includes(optSearch.trim().toLowerCase())) : vs;
                         return (
                           <div className="bg-white px-3 py-3 md:p-0">
+                            {vs.length > 1 && (
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg mb-3 text-xs font-bold">
+                                <button type="button" onClick={() => setMultiMode(false)} className={`py-2 rounded-md cursor-pointer ${!multi ? 'bg-white shadow text-slate-900' : 'text-slate-500'}`}>
+                                  One {label.toLowerCase()}
+                                </button>
+                                <button type="button" onClick={() => setMultiMode(true)} className={`py-2 rounded-md cursor-pointer ${multi ? 'bg-white shadow text-slate-900' : 'text-slate-500'}`}>
+                                  ☑ Several {label.toLowerCase()}s
+                                </button>
+                              </div>
+                            )}
+                            {multi ? (
+                              <div>
+                                <p className="text-xs text-slate-500 mb-2">Tick every {label.toLowerCase()} you want and set how many of each.</p>
+                                {vs.length > 8 && (
+                                  <input
+                                    value={optSearch}
+                                    onChange={(e) => setOptSearch(e.target.value)}
+                                    placeholder={`Search ${label.toLowerCase()} (e.g. 6.7 or khaki)`}
+                                    className="w-full mb-2 px-3 py-2 border rounded-lg text-sm"
+                                  />
+                                )}
+                                <div className="max-h-96 overflow-y-auto border rounded-lg divide-y">
+                                  {shown.map(v => {
+                                    const q = multiPick[v.name] || 0;
+                                    const stock = Number(v.stock) || 0;
+                                    const out = stock <= 0;
+                                    return (
+                                      <label key={v.name} className={`flex items-center gap-2.5 px-2.5 py-2 ${out ? 'opacity-50' : 'cursor-pointer'} ${q > 0 ? 'bg-amber-50' : 'bg-white'}`}>
+                                        <input
+                                          type="checkbox"
+                                          checked={q > 0}
+                                          disabled={out}
+                                          onChange={(e) => setMultiPick(m => { const n = { ...m }; if (e.target.checked) n[v.name] = 1; else delete n[v.name]; return n; })}
+                                          className="w-5 h-5 accent-amber-600 shrink-0 cursor-pointer"
+                                        />
+                                        {v.image
+                                          ? <img src={v.image} alt="" loading="lazy" className="w-9 h-9 rounded object-cover border shrink-0" />
+                                          : v.color ? <span className="w-9 h-9 rounded-full border shrink-0" style={{ background: v.color }} /> : null}
+                                        <span className="flex-1 min-w-0">
+                                          <span className={`block text-sm leading-tight ${q > 0 ? 'font-bold text-slate-900' : 'text-slate-800'}`}>{v.name}</span>
+                                          <span className="block text-[11px] text-slate-500">
+                                            Rs. {Number(v.price).toLocaleString('en-PK')}
+                                            {out ? ' · sold out' : stock <= 5 ? ` · only ${stock} left` : ''}
+                                          </span>
+                                        </span>
+                                        {q > 0 && (
+                                          <span className="flex items-center border rounded-lg overflow-hidden bg-white shrink-0" onClick={(e) => e.preventDefault()}>
+                                            <button type="button" onClick={() => setMultiPick(m => { const n = { ...m }; if ((n[v.name] || 0) <= 1) delete n[v.name]; else n[v.name] = n[v.name] - 1; return n; })} className="px-2 py-1.5 cursor-pointer" aria-label="Less"><Minus className="w-3.5 h-3.5" /></button>
+                                            <span className="px-2 text-sm font-bold">{q}</span>
+                                            <button type="button" onClick={() => setMultiPick(m => ({ ...m, [v.name]: Math.min(stock, (m[v.name] || 0) + 1) }))} className="px-2 py-1.5 cursor-pointer" aria-label="More"><Plus className="w-3.5 h-3.5" /></button>
+                                          </span>
+                                        )}
+                                      </label>
+                                    );
+                                  })}
+                                  {shown.length === 0 && <p className="text-xs text-slate-500 p-3">No {label.toLowerCase()} matches.</p>}
+                                </div>
+                                <div className="mt-2 flex items-center justify-between text-sm">
+                                  <span className="text-slate-600">{picks.length} selected · {pickPieces} pcs</span>
+                                  <span className="font-black text-amber-600">{money(pickTotal)}</span>
+                                </div>
+                                {picks.length > 0 && <button type="button" onClick={() => setMultiPick({})} className="text-[11px] text-slate-500 underline cursor-pointer">Clear all</button>}
+                              </div>
+                            ) : (
+                            <>
                             <p className="text-sm text-slate-600 mb-2 flex items-center gap-2">
                               {label}: <b className="text-slate-900">{chosenV ? chosenV.name : ''}</b>
                               {chosenV && chosenV.color && <span className="w-4 h-4 rounded-full border" style={{ background: chosenV.color }} />}
@@ -2694,11 +2806,13 @@ export default function App() {
                                 })}
                               </div>
                             )}
+                            </>
+                            )}
                           </div>
                         );
                       })()}
 
-                      {!soldOut && (
+                      {!soldOut && !multi && (
                         <div className="bg-white px-3 py-3 md:p-0 flex items-center gap-3">
                           <span className="text-xs text-slate-500">Quantity</span>
                           <div className="flex items-center border rounded-lg overflow-hidden">
@@ -2715,8 +2829,8 @@ export default function App() {
 
                       {/* Buttons (computer); phones get the bar at the bottom */}
                       <div className="hidden md:grid grid-cols-2 gap-3">
-                        <button onClick={buyNow} disabled={soldOut} className="bg-amber-800 hover:bg-amber-900 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">Buy Now</button>
-                        <button onClick={addOnly} disabled={soldOut} className="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">Add to Cart</button>
+                        <button onClick={buyNow} disabled={btnOff} className="bg-amber-800 hover:bg-amber-900 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">Buy Now</button>
+                        <button onClick={addOnly} disabled={btnOff} className="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg cursor-pointer disabled:cursor-not-allowed">{multi ? (picks.length ? `Add ${pickPieces} to Cart` : 'Tick to add') : 'Add to Cart'}</button>
                       </div>
                     </div>
                   </div>
@@ -2772,7 +2886,7 @@ export default function App() {
                         {related.map(x => (
                           <button key={x.id} onClick={() => openProduct(x, true)} className="group w-28 sm:w-36 shrink-0 text-left cursor-pointer">
                             <div className="aspect-square bg-white border border-slate-100 rounded-xl overflow-hidden mb-1.5">
-                              <img src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
+                              <img loading="lazy" decoding="async" src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
                             </div>
                             <p className="text-[11px] text-slate-700 line-clamp-2 min-h-[1.75rem]">{x.name}</p>
                             <p className="text-amber-600 font-bold text-sm">{money(x.discounted_price || x.price)}</p>
@@ -2792,8 +2906,8 @@ export default function App() {
                     >
                       <MessageCircle className="w-5 h-5 text-emerald-600" /> Chat
                     </a>
-                    <button onClick={buyNow} disabled={soldOut} className="bg-amber-800 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">Buy Now</button>
-                    <button onClick={addOnly} disabled={soldOut} className="bg-amber-600 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">{soldOut ? 'Sold Out' : 'Add to Cart'}</button>
+                    <button onClick={buyNow} disabled={btnOff} className="bg-amber-800 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">Buy Now</button>
+                    <button onClick={addOnly} disabled={btnOff} className="bg-amber-600 disabled:bg-slate-300 text-white font-bold text-sm py-3 rounded-lg cursor-pointer">{multi ? (picks.length ? `Add ${pickPieces} to Cart` : 'Tick to add') : soldOut ? 'Sold Out' : 'Add to Cart'}</button>
                   </div>
                 </div>
               </div>

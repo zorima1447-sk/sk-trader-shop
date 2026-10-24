@@ -456,6 +456,16 @@ export function readShopCache(): any | null {
 }
 
 export function writeShopCache(data: any) {
+  // never keep embedded (data:) pictures in the browser cache - they made the cache many MB big and the shop slow
+  const noData = (u: any) => (String(u || '').startsWith('data:') ? '' : u);
+  data = {
+    ...data,
+    products: (data.products || []).map((p: any) => ({
+      ...p,
+      image_url: noData(p.image_url),
+      variants: Array.isArray(p.variants) ? p.variants.map((v: any) => (v && v.image ? { ...v, image: noData(v.image) } : v)) : p.variants
+    }))
+  };
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(data));
   } catch {
