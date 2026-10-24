@@ -176,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.4 (24-Oct-2026)';
+const BUILD = 'v18.5 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -411,6 +411,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin Portal States
+  const [adminProdQuery, setAdminProdQuery] = useState('');
   const [showAdminPass, setShowAdminPass] = useState(false);
   const [showNewUserPass, setShowNewUserPass] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
@@ -3907,11 +3908,34 @@ export default function App() {
               </div>
 
               <div className="bg-white rounded-3xl p-6 border shadow-sm h-fit">
-                <h3 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b">
+                <h3 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b">
                   Manage Active Products ({products.length})
                 </h3>
+                {(() => {
+                  const aq = adminProdQuery.trim();
+                  const list = aq
+                    ? products
+                        .map(p => ({ p, sc: searchScore({ ...p, description: `${p.description || ''} ${variantsOf(p).map(v => v.name).join(' ')}` }, aq) }))
+                        .filter(x => x.sc > 0 || (x.p.category_name || '').toLowerCase().includes(aq.toLowerCase()))
+                        .sort((a, b) => b.sc - a.sc)
+                        .map(x => x.p)
+                    : products;
+                  return (
+                    <>
+                <div className="relative mb-3">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="search"
+                    value={adminProdQuery}
+                    onChange={(e) => setAdminProdQuery(e.target.value)}
+                    placeholder="Search product name, shade, category..."
+                    className="w-full pl-9 pr-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                {aq && <p className="text-[11px] text-slate-500 mb-2">{list.length} found for "{aq}"</p>}
                 <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                  {products.map((p) => (
+                  {aq && list.length === 0 && <p className="text-xs text-slate-400 text-center py-6">No product found.</p>}
+                  {list.map((p) => (
                     <div key={p.id} className="flex items-center justify-between bg-slate-50 p-3 rounded-2xl border text-xs">
                       <div className="flex items-center space-x-3">
                         <img src={p.image_url} alt={p.name} className="w-10 h-10 object-cover rounded-lg border" />
@@ -3942,6 +3966,9 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
