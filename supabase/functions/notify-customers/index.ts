@@ -63,7 +63,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { type, product_id, subject, message, site_url } = body;
+    const { type, product_id, deal_id, subject, message, site_url } = body;
 
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     if (!(await isAdmin(sb, req))) return json({ error: 'Admin login required.' });
@@ -92,6 +92,44 @@ Deno.serve(async (req) => {
         <p style="margin:0 0 8px;color:#444">${esc(String(p.description || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300))}</p>
         <p style="font-size:18px;margin:8px 0"><b>PKR ${price}</b>${orig > price ? ` <span style="color:#888;text-decoration:line-through">PKR ${orig}</span>` : ''}</p>
         <a href="${esc(link)}" style="display:inline-block;background:#111;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Shop now</a>`;
+    } else if (type === 'deal') {
+      const { data: d } = await sb.from('deals').select('*').eq('id', deal_id).maybeSingle();
+      if (!d) return json({ error: 'Deal not found.' });
+      const items: any[] = Array.isArray(d.items) ? d.items : [];
+      const ids = items.map((i) => i.product_id).filter(Boolean);
+      const { data: prods } = ids.length
+        ? await sb.from('products').select('id,name,price,discounted_price,image_url,variants,variant_label').in('id', ids)
+        : { data: [] as any[] };
+      const byId = new Map((prods || []).map((p: any) => [p.id, p]));
+      let cur = 0;
+      const rows = items.map((it) => {
+        const p: any = byId.get(it.product_id);
+        if (!p) return '';
+        const qty = Math.max(1, Number(it.qty) || 1);
+        const vs: any[] = Array.isArray(p.variants) ? p.variants : [];
+        const v = it.variant ? vs.find((x) => x && x.name === it.variant) : null;
+        const unit = v ? Number(v.price) || 0 : Number(p.discounted_price || p.price) || 0;
+        cur += unit * qty;
+        const extra = it.choose ? ` <span style="color:#b45309">(choose your ${esc(String(p.variant_label || 'option').toLowerCase())})</span>` : (it.variant ? ` - ${esc(it.variant)}` : '');
+        return `<li style="margin:2px 0">${qty > 1 ? qty + ' x ' : ''}${esc(p.name)}${extra}</li>`;
+      }).join('');
+      const price = Number(d.deal_price) || 0;
+      const save = cur > price && cur > 0 ? Math.round(((cur - price) / cur) * 100) : 0;
+      const firstImg = (byId.get(items[0]?.product_id) as any)?.image_url || '';
+      const pic = [d.image_url, firstImg].find((u: any) => u && String(u).startsWith('http')) || '';
+      const ends = d.ends_at
+        ? new Date(d.ends_at).toLocaleString('en-GB', { timeZone: 'Asia/Karachi', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '';
+      mailSubject = `New deal at ${storeName}: ${d.name} - only PKR ${price}${save ? ` (save ${save}%)` : ''}`;
+      inner = `<p style="display:inline-block;background:#dc2626;color:#fff;font-weight:bold;font-size:12px;padding:3px 10px;border-radius:20px;margin:0 0 8px">SPECIAL DEAL${save ? ` - SAVE ${save}%` : ''}</p>
+        <h2 style="margin:0 0 8px">${esc(d.name)}</h2>
+        ${pic ? `<img src="${esc(pic)}" alt="" width="360" style="max-width:100%;border-radius:10px;display:block;margin:12px 0">` : ''}
+        ${d.description ? `<p style="margin:0 0 8px;color:#444">${esc(d.description)}</p>` : ''}
+        <p style="margin:8px 0 4px;font-weight:bold">This deal includes:</p>
+        <ul style="margin:0 0 10px;padding-left:18px;color:#333">${rows}</ul>
+        <p style="font-size:20px;margin:8px 0"><b>PKR ${price}</b>${cur > price ? ` <span style="color:#888;text-decoration:line-through;font-size:14px">PKR ${cur}</span>` : ''}</p>
+        ${ends ? `<p style="margin:0 0 12px;color:#b91c1c;font-weight:bold">Hurry! Deal ends on ${esc(ends)}</p>` : ''}
+        <a href="${esc(link)}/#shop-deals" style="display:inline-block;background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold">Get this deal</a>`;
     } else if (type === 'custom') {
       if (!subject || !message) return json({ error: 'Subject and message are required.' });
       mailSubject = String(subject);

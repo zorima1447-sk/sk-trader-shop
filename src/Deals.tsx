@@ -263,6 +263,7 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [browse, setBrowse] = useState(false);
+  const [mailIt, setMailIt] = useState(true); // email the deal to the customers when it is saved
 
   const cur = dealCurrentRate(form, products);
   const pct = dealSavePct(cur, form.deal_price);
@@ -272,11 +273,12 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
     return products.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 40);
   }, [find, products, browse]);
 
-  const startNew = () => { setEditId(null); setForm(emptyDeal()); setFind(''); setOpen(true); };
+  const startNew = () => { setEditId(null); setForm(emptyDeal()); setFind(''); setMailIt(true); setOpen(true); };
   const startEdit = (d: Deal) => {
     setEditId(d.id);
     setForm({ name: d.name, description: d.description || '', image_url: d.image_url || '', items: d.items.map((i) => ({ ...i })), deal_price: d.deal_price, is_active: d.is_active, starts_at: d.starts_at || null, ends_at: d.ends_at || null, sort_order: d.sort_order || 0 });
     setFind('');
+    setMailIt(false);
     setOpen(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -314,9 +316,11 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
       ends_at: form.ends_at || null,
       sort_order: Number(form.sort_order) || 0
     };
-    const { error } = editId
-      ? await supabase.from('deals').update(row).eq('id', editId)
-      : await supabase.from('deals').insert([row]);
+    const res = editId
+      ? await supabase.from('deals').update(row).eq('id', editId).select('id').maybeSingle()
+      : await supabase.from('deals').insert([row]).select('id').maybeSingle();
+    const error = res.error;
+    const savedId = (res.data && (res.data as any).id) || editId;
     setBusy(false);
     if (error) {
       alert('Could not save the deal:\n' + error.message + (/deals/i.test(error.message) ? '\n\nRun the latest supabase_setup.sql in Supabase > SQL Editor.' : ''));
@@ -326,7 +330,27 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
     setEditId(null);
     setForm(emptyDeal());
     onChanged();
-    alert('Deal saved!');
+    if (mailIt && savedId && row.is_active) {
+      const msg = await emailDeal(savedId);
+      alert('Deal saved!\n\n' + msg);
+    } else {
+      alert('Deal saved!');
+    }
+  };
+
+  // send the deal (picture + items + price) to every customer who agreed to receive offers
+  const emailDeal = async (id: string): Promise<string> => {
+    const { data, error } = await supabase.functions.invoke('notify-customers', { body: { type: 'deal', deal_id: id, site_url: window.location.origin } });
+    if (error) return 'Customer emails could not be sent: ' + error.message;
+    if (data && data.error) return 'Customer emails failed: ' + data.error;
+    return `Customer emails: ${data.sent} sent, ${data.failed} failed.${data.note ? ' ' + data.note : ''}`;
+  };
+  const sendAgain = async (d: Deal) => {
+    if (!window.confirm(`Email the deal "${d.name}" to all customers who agreed to receive offers?`)) return;
+    setBusy(true);
+    const msg = await emailDeal(d.id);
+    setBusy(false);
+    alert(msg);
   };
 
   const remove = async (d: Deal) => {
@@ -485,6 +509,11 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
             </div>
           </div>
 
+          <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
+            <input type="checkbox" checked={mailIt} onChange={(e) => setMailIt(e.target.checked)} />
+            Email this deal to customers (with picture and details) when I save
+          </label>
+
           <div className="flex flex-wrap gap-2">
             <button disabled={busy} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm px-5 py-2.5 rounded-xl disabled:opacity-50 cursor-pointer">{busy ? 'Please wait...' : editId ? 'Save changes' : 'Save deal'}</button>
             <button type="button" onClick={() => { setOpen(false); setEditId(null); }} className="border font-bold text-sm px-5 py-2.5 rounded-xl cursor-pointer">Cancel</button>
@@ -521,6 +550,7 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
                     <span className="ml-2 text-slate-500">Stock: {dealStock(d, products)}</span>
                   </p>
                 </div>
+                <button type="button" onClick={() => sendAgain(d)} disabled={busy} className="px-3 py-1.5 border rounded-lg text-xs font-bold cursor-pointer disabled:opacity-50" title="Email this deal to customers">✉ Email</button>
                 <button type="button" onClick={() => toggle(d)} className="px-3 py-1.5 border rounded-lg text-xs font-bold cursor-pointer">{d.is_active ? 'Hide' : 'Show'}</button>
                 <button type="button" onClick={() => startEdit(d)} className="px-3 py-1.5 border rounded-lg text-xs font-bold text-amber-700 cursor-pointer">Edit</button>
                 <button type="button" onClick={() => remove(d)} className="px-3 py-1.5 border border-red-200 text-red-600 rounded-lg text-xs font-bold cursor-pointer">Delete</button>
