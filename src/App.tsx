@@ -176,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.6 (24-Oct-2026)';
+const BUILD = 'v18.7 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -524,6 +524,12 @@ export default function App() {
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  // Browser tab: shop logo as the little icon (follows Store Profile > Logo)
+  useEffect(() => {
+    if (!settings.logo_url || settings.logo_url.startsWith('data:')) return;
+    document.querySelectorAll("link[rel~='icon'], link[rel='apple-touch-icon']").forEach(l => l.setAttribute('href', settings.logo_url));
+  }, [settings.logo_url]);
 
   // After login / sign-up: add the item the customer wanted, then go back to the shop
   useEffect(() => {
