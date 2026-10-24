@@ -608,6 +608,11 @@ declare
   dl public.deals;
   dl_names text;
   di jsonb;
+  eff jsonb;
+  ditem jsonb;
+  chosen text;
+  xr record;
+  cpr public.products;
 begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
@@ -633,10 +638,27 @@ begin
                  where not exists (select 1 from public.products p where p.id = (x.e ->> 'product_id')::uuid)) then
         raise exception 'A product of the deal % is no longer available.', dl.name;
       end if;
+      -- items where the customer picks the colour / size: take his choice (checked against the product)
+      eff := '[]'::jsonb;
+      for xr in select x.e, x.ord from jsonb_array_elements(dl.items) with ordinality x(e, ord) loop
+        ditem := xr.e;
+        if coalesce((xr.e ->> 'choose')::boolean, false) then
+          chosen := nullif(trim(coalesce(it -> 'choices' ->> ((xr.ord - 1)::text), '')), '');
+          select * into cpr from public.products where id = (xr.e ->> 'product_id')::uuid;
+          if chosen is null then
+            raise exception 'Please choose the % for % in the deal %.', coalesce(nullif(cpr.variant_label, ''), 'option'), cpr.name, dl.name;
+          end if;
+          if not exists (select 1 from jsonb_array_elements(coalesce(cpr.variants, '[]'::jsonb)) v(e) where v.e ->> 'name' = chosen) then
+            raise exception '% of % is no longer available.', chosen, cpr.name;
+          end if;
+          ditem := jsonb_set(xr.e - 'choose', '{variant}', to_jsonb(chosen));
+        end if;
+        eff := eff || jsonb_build_array(ditem);
+      end loop;
       select string_agg(case when coalesce((x.e ->> 'qty')::int, 1) > 1 then (x.e ->> 'qty') || ' x ' else '' end
                         || p.name || coalesce(' - ' || nullif(x.e ->> 'variant', ''), ''), ', ' order by x.ord)
         into dl_names
-        from jsonb_array_elements(dl.items) with ordinality x(e, ord)
+        from jsonb_array_elements(eff) with ordinality x(e, ord)
         join public.products p on p.id = (x.e ->> 'product_id')::uuid;
       lines := lines || jsonb_build_object(
         'product_id', null,
@@ -644,7 +666,7 @@ begin
         'variant', null,
         'quantity', qty,
         'unit_price', dl.deal_price,
-        'deal_items', dl.items
+        'deal_items', eff
       );
       total := total + dl.deal_price * qty;
       continue;

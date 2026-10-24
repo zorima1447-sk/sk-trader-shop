@@ -4,7 +4,7 @@ import { GeoFields, GeoValue, emptyGeo, resolveGeo, localNumber } from './GeoFie
 import SettingsPanel, { SettingsTab } from './SettingsPanel';
 import { RichTextEditor, RichTextView, htmlToText } from './RichText';
 import { BrandLogo } from './BrandLogo';
-import { Deal, DealsSection, DealsAdmin, fetchDeals as loadDeals, dealCurrentRate, dealStock, dealItemNames } from './Deals';
+import { Deal, DealChoices, DealsSection, DealsAdmin, DealChooser, dealHasChoices, dealLive, fetchDeals as loadDeals, dealCurrentRate, dealStock, dealItemNames } from './Deals';
 import { AuthPage, AccountPage, AuthMode, addressFromMeta } from './CustomerAuth';
 import AiChatBubble, { ChatPanel } from './AiChat';
 import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
@@ -55,6 +55,7 @@ interface Variant {
 interface CartItem extends Product {
   quantity: number;
   dealId?: string;   // set when this line is a deal (bundle)
+  dealChoices?: DealChoices; // the shades / sizes the customer picked inside the deal
   cartKey: string;   // product id, or "product id|size" when a size was chosen
   variant?: string;  // chosen size / shade
   variantLabel?: string; // "Size", "Shade", ...
@@ -175,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18 (24-Oct-2026)';
+const BUILD = 'v18.1 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -1524,7 +1525,7 @@ export default function App() {
           item.cartKey === key ? { ...item, quantity: item.quantity + qty } : item
         );
       }
-      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined, variantLabel: base.variant_label || 'Size', dealId: (base as any).dealId }];
+      return [...prevCart, { ...product, quantity: qty, cartKey: key, variant: variant ? variant.name : undefined, variantLabel: base.variant_label || 'Size', dealId: (base as any).dealId, dealChoices: (base as any).dealChoices }];
     });
 
     setToastMessage(`${qty} x ${product.name}${variant ? ` (${variant.name})` : ''} added to cart!`);
@@ -1533,20 +1534,25 @@ export default function App() {
   };
 
   // A deal goes into the cart like one product: deal price, stock = how many deals the items allow
-  const dealAsProduct = (d: Deal): Product & { dealId: string } => ({
-    id: 'deal-' + d.id,
+  const dealAsProduct = (d: Deal, choices?: DealChoices): Product & { dealId: string; dealChoices?: DealChoices } => ({
+    // every different set of picked shades / sizes is its own cart line
+    id: 'deal-' + d.id + (choices && Object.keys(choices).length ? '-' + Object.keys(choices).sort().map(k => `${k}:${choices[k]}`).join('|') : ''),
     dealId: d.id,
+    dealChoices: choices,
     name: `${d.name} (Deal)`,
-    description: dealItemNames(d, products).join(', '),
-    original_price: dealCurrentRate(d, products),
+    description: dealItemNames(d, products, choices).join(', '),
+    original_price: dealCurrentRate(d, products, choices),
     discounted_price: d.deal_price,
     price: d.deal_price,
     image_url: d.image_url || (products.find(p => p.id === d.items[0]?.product_id) || ({} as any)).image_url || PLACEHOLDER_IMG,
     category_name: 'Deals',
     stock_quantity: dealStock(d, products)
   });
-  const addDealToCart = (d: Deal, buyNow = false) => {
-    if (addToCart(dealAsProduct(d), 1, undefined, buyNow) && buyNow) setIsCartOpen(true);
+  // a deal where the customer picks shades / sizes first opens the picker
+  const [dealPick, setDealPick] = useState<{ deal: Deal; buyNow: boolean } | null>(null);
+  const addDealToCart = (d: Deal, buyNow = false, choices?: DealChoices) => {
+    if (!choices && dealHasChoices(d)) { setDealPick({ deal: d, buyNow }); return; }
+    if (addToCart(dealAsProduct(d, choices), 1, undefined, buyNow) && buyNow) setIsCartOpen(true);
   };
 
   const changeCartQty = (id: string, delta: number) => {
@@ -1639,7 +1645,7 @@ export default function App() {
           payment_proof: paymentMethod === 'cod' ? null : (paymentProof || null)
         },
         p_items: cart.map(item => item.dealId
-          ? { deal_id: item.dealId, quantity: item.quantity }
+          ? { deal_id: item.dealId, quantity: item.quantity, choices: item.dealChoices || {} }
           : { product_id: item.id, quantity: item.quantity, variant: item.variant || null })
       });
 
@@ -2167,6 +2173,18 @@ export default function App() {
               <h2 className="text-center text-lg sm:text-2xl font-extrabold text-slate-800 tracking-wide">{settings.categories_title || 'Shop by Category'}</h2>
               <div className="mx-auto mt-1.5 mb-4 h-1 w-14 rounded-full bg-amber-500" />
               <div className="flex flex-wrap justify-center gap-3 sm:gap-4">
+                {deals.some(d => dealLive(d) && d.items.length > 0) && (
+                  <button
+                    onClick={() => document.getElementById('shop-deals')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    className="group w-[30%] max-w-[9rem] sm:w-36 bg-gradient-to-br from-amber-500 to-rose-500 text-white rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 px-2 py-3 sm:p-4 flex flex-col items-center gap-2 cursor-pointer relative overflow-hidden"
+                  >
+                    <span className="absolute top-1.5 right-1.5 bg-white text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full animate-pulse">HOT</span>
+                    <span className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-white/20 ring-2 ring-white/70 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                      <Tag className="w-8 h-8 sm:w-9 sm:h-9 text-white" />
+                    </span>
+                    <span className="text-[11px] sm:text-sm font-bold text-center leading-tight">{settings.deals_title || 'Special Deals'}</span>
+                  </button>
+                )}
                 {categories.map((cat, i) => {
                   const img = categoryImage(cat.name);
                   const active = selectedCategory === cat.name;
@@ -2278,6 +2296,15 @@ export default function App() {
           {/* Deals (Admin > Settings > Deals) */}
           {!searchQuery.trim() && (
             <DealsSection deals={deals} products={products} title={settings.deals_title} onAdd={(d) => addDealToCart(d)} onBuy={(d) => addDealToCart(d, true)} />
+          )}
+          {dealPick && (
+            <DealChooser
+              deal={dealPick.deal}
+              products={products}
+              buyNow={dealPick.buyNow}
+              onClose={() => setDealPick(null)}
+              onDone={(choices) => { const p = dealPick; setDealPick(null); addDealToCart(p.deal, p.buyNow, choices); }}
+            />
           )}
 
           {/* All products ("Just For You") */}

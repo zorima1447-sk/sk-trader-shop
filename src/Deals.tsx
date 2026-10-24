@@ -13,7 +13,11 @@ export interface DealItem {
   product_id: string;
   variant?: string | null; // size / shade, when the product has them
   qty: number;
+  choose?: boolean;        // the customer picks the size / shade / colour himself
 }
+
+// the customer's picks: item position in the deal -> chosen size / shade
+export type DealChoices = Record<string, string>;
 
 export interface Deal {
   id: string;
@@ -37,7 +41,8 @@ export interface DealProduct {
   discounted_price: number;
   image_url: string;
   stock_quantity: number;
-  variants?: { name: string; price: number; stock: number; image?: string }[] | null;
+  variants?: { name: string; price: number; stock: number; image?: string; color?: string }[] | null;
+  variant_label?: string;
 }
 
 const money = (n: number) => 'Rs. ' + Math.round(Number(n) || 0).toLocaleString('en-PK');
@@ -53,10 +58,24 @@ export function itemUnitPrice(p: DealProduct | undefined, variant?: string | nul
   return Number(p.discounted_price || p.price) || 0;
 }
 
-// "current rate" = what the items would cost one by one
-export function dealCurrentRate(d: Pick<Deal, 'items'>, products: DealProduct[]): number {
-  return (d.items || []).reduce((s, it) => s + itemUnitPrice(products.find((p) => p.id === it.product_id), it.variant) * (Number(it.qty) || 1), 0);
+const liveVariants = (p?: DealProduct) => (p && Array.isArray(p.variants) ? p.variants.filter((v) => v && v.name) : []);
+
+// price of one deal item: the customer's pick, otherwise the cheapest option he can pick
+function dealItemPrice(it: DealItem, p: DealProduct | undefined, pick?: string): number {
+  if (it.choose) {
+    if (pick) return itemUnitPrice(p, pick);
+    const vs = liveVariants(p);
+    return vs.length ? Math.min(...vs.map((v) => Number(v.price) || 0)) : itemUnitPrice(p);
+  }
+  return itemUnitPrice(p, it.variant);
 }
+
+// "current rate" = what the items would cost one by one
+export function dealCurrentRate(d: Pick<Deal, 'items'>, products: DealProduct[], choices?: DealChoices): number {
+  return (d.items || []).reduce((s, it, k) => s + dealItemPrice(it, products.find((p) => p.id === it.product_id), choices && choices[String(k)]) * (Number(it.qty) || 1), 0);
+}
+
+export const dealHasChoices = (d: Pick<Deal, 'items'>) => (d.items || []).some((i) => i.choose);
 
 // how many deals can still be sold (limited by the item with the least stock)
 export function dealStock(d: Pick<Deal, 'items'>, products: DealProduct[]): number {
@@ -65,17 +84,29 @@ export function dealStock(d: Pick<Deal, 'items'>, products: DealProduct[]): numb
   for (const it of d.items) {
     const p = products.find((x) => x.id === it.product_id);
     if (!p) return 0;
+    const q = Math.max(1, Number(it.qty) || 1);
+    if (it.choose) {
+      // the customer can pick any option that is in stock
+      const vs = liveVariants(p);
+      const total = vs.length ? vs.reduce((s, v) => s + Math.floor((Number(v.stock) || 0) / q), 0) : Math.floor((Number(p.stock_quantity) || 0) / q);
+      n = Math.min(n, total);
+      continue;
+    }
     const v = variantOf(p, it.variant);
     const stock = v ? Number(v.stock) || 0 : Number(p.stock_quantity) || 0;
-    n = Math.min(n, Math.floor(stock / Math.max(1, Number(it.qty) || 1)));
+    n = Math.min(n, Math.floor(stock / q));
   }
   return n === Infinity ? 0 : n;
 }
 
-export function dealItemNames(d: Pick<Deal, 'items'>, products: DealProduct[]): string[] {
-  return (d.items || []).map((it) => {
+export function dealItemNames(d: Pick<Deal, 'items'>, products: DealProduct[], choices?: DealChoices): string[] {
+  return (d.items || []).map((it, k) => {
     const p = products.find((x) => x.id === it.product_id);
-    const name = p ? p.name + (it.variant ? ` - ${it.variant}` : '') : 'Removed product';
+    const pick = choices && choices[String(k)];
+    const label = (p && p.variant_label) || 'option';
+    const name = !p ? 'Removed product'
+      : it.choose ? p.name + (pick ? ` - ${pick}` : ` (choose ${label.toLowerCase()})`)
+      : p.name + (it.variant ? ` - ${it.variant}` : '');
     return (Number(it.qty) > 1 ? `${it.qty} x ` : '') + name;
   });
 }
@@ -134,7 +165,7 @@ export function DealsSection({ deals, products, title, onAdd, onBuy }: {
   const list = deals.filter((d) => dealLive(d, now) && d.items.length > 0);
   if (list.length === 0) return null;
   return (
-    <section className="max-w-7xl mx-auto px-3 sm:px-4 mt-6 sm:mt-8">
+    <section id="shop-deals" className="max-w-7xl mx-auto px-3 sm:px-4 mt-6 sm:mt-8 scroll-mt-24">
       <h2 className="text-center text-lg sm:text-2xl font-extrabold text-slate-800 tracking-wide">{title || 'Special Deals'}</h2>
       <div className="mx-auto mt-1.5 mb-4 h-1 w-14 rounded-full bg-amber-500" />
       <div className="flex flex-wrap justify-center gap-3 sm:gap-5">
@@ -274,7 +305,9 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
       name: form.name.trim(),
       description: (form.description || '').trim() || null,
       image_url: form.image_url || null,
-      items: form.items.map((i) => ({ product_id: i.product_id, variant: i.variant || null, qty: Math.max(1, Number(i.qty) || 1) })),
+      items: form.items.map((i) => (i.choose
+        ? { product_id: i.product_id, variant: null, qty: Math.max(1, Number(i.qty) || 1), choose: true }
+        : { product_id: i.product_id, variant: i.variant || null, qty: Math.max(1, Number(i.qty) || 1) })),
       deal_price: Number(form.deal_price),
       is_active: form.is_active,
       starts_at: form.starts_at || null,
@@ -404,16 +437,22 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
               )}
             </div>
             {form.items.length === 0 && <p className="text-xs text-slate-400">No items yet. Search above and tap a product to add it.</p>}
+            {form.items.length > 0 && <p className="text-[11px] text-slate-500">For a product with colours / sizes, pick <b>★ Customer chooses</b> so the shopper selects the shade, size or developer (10 / 20 / 30 vol) himself when he buys the deal.</p>}
             {form.items.map((it, k) => {
               const p = products.find((x) => x.id === it.product_id);
               const vs = p && Array.isArray(p.variants) ? p.variants.filter((v) => v && v.name) : [];
-              const unit = itemUnitPrice(p, it.variant);
+              const unit = dealItemPrice(it, p);
               return (
                 <div key={k} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white border rounded-xl p-2">
                   <img src={(p && (variantOf(p, it.variant)?.image || p.image_url)) || ''} alt="" className="w-10 h-10 object-contain rounded border bg-white shrink-0" />
                   <span className="flex-1 min-w-[8rem] text-sm font-semibold text-slate-800 truncate">{p ? p.name : 'Removed product'}</span>
                   {vs.length > 0 && (
-                    <select value={it.variant || ''} onChange={(e) => setItem(k, { variant: e.target.value })} className="px-2 py-1.5 border rounded-lg text-xs bg-white max-w-[10rem]">
+                    <select
+                      value={it.choose ? '__choose' : (it.variant || '')}
+                      onChange={(e) => setItem(k, e.target.value === '__choose' ? { choose: true, variant: null } : { choose: false, variant: e.target.value })}
+                      className={`px-2 py-1.5 border rounded-lg text-xs max-w-[12rem] ${it.choose ? 'bg-amber-50 border-amber-400 font-bold text-amber-800' : 'bg-white'}`}
+                    >
+                      <option value="__choose">★ Customer chooses ({(p && p.variant_label) || 'option'})</option>
                       {vs.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
                     </select>
                   )}
@@ -421,7 +460,7 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
                     Qty
                     <input type="number" min={1} value={it.qty} onChange={(e) => setItem(k, { qty: Math.max(1, Number(e.target.value) || 1) })} className="w-16 px-2 py-1.5 border rounded-lg text-xs" />
                   </span>
-                  <span className="text-xs text-slate-600 w-24 text-right">{money(unit * it.qty)}</span>
+                  <span className="text-xs text-slate-600 w-24 text-right">{it.choose ? 'from ' : ''}{money(unit * it.qty)}</span>
                   <button type="button" onClick={() => removeItem(k)} className="px-2.5 py-1.5 border border-red-200 text-red-600 rounded-lg text-xs font-bold cursor-pointer">Remove</button>
                 </div>
               );
@@ -431,7 +470,7 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
           <div className="grid sm:grid-cols-3 gap-3 items-end">
             <div>
               <label className={label}>Current rate (items one by one)</label>
-              <div className="px-3 py-2 border rounded-xl text-sm bg-slate-100 font-bold text-slate-700">{money(cur)}</div>
+              <div className="px-3 py-2 border rounded-xl text-sm bg-slate-100 font-bold text-slate-700">{dealHasChoices(form) ? 'from ' : ''}{money(cur)}</div>
             </div>
             <div>
               <label className={label}>Deal rate (Rs.) *</label>
@@ -488,6 +527,113 @@ export function DealsAdmin({ products, deals, onChanged, title, onTitle }: {
               </div>
             );
           })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ------------------- shopper picks colours / sizes for a deal -------------------
+export function DealChooser({ deal, products, buyNow, onDone, onClose }: {
+  deal: Deal;
+  products: DealProduct[];
+  buyNow: boolean;
+  onDone: (choices: DealChoices) => void;
+  onClose: () => void;
+}) {
+  const [picks, setPicks] = useState<DealChoices>({});
+  const [finds, setFinds] = useState<Record<string, string>>({});
+  const cur = dealCurrentRate(deal, products, picks);
+  const need = deal.items.map((it, k) => (it.choose ? String(k) : '')).filter(Boolean);
+  const missing = need.filter((k) => !picks[k]);
+  const pic = deal.image_url || (products.find((p) => p.id === deal.items[0]?.product_id) || ({} as any)).image_url || '';
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-lg max-h-[92vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 p-4 border-b">
+          {pic && <img src={pic} alt="" className="w-14 h-14 object-contain rounded-lg border bg-white shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-black text-amber-600">DEAL</p>
+            <h3 className="font-bold text-slate-900 leading-tight truncate">{deal.name}</h3>
+            <p className="text-sm">
+              <span className="font-black text-amber-600">{money(deal.deal_price)}</span>
+              {cur > deal.deal_price && <span className="ml-1.5 text-xs text-slate-400 line-through">{money(cur)}</span>}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-2xl leading-none text-slate-400 px-2 cursor-pointer" aria-label="Close">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+          {deal.items.map((it, k) => {
+            const p = products.find((x) => x.id === it.product_id);
+            if (!p) return null;
+            const key = String(k);
+            if (!it.choose) {
+              return (
+                <div key={k} className="flex items-center gap-3">
+                  <img src={(variantOf(p, it.variant)?.image || p.image_url) || ''} alt="" className="w-10 h-10 object-contain rounded border bg-white shrink-0" />
+                  <p className="text-sm text-slate-700 flex-1">{it.qty > 1 ? `${it.qty} x ` : ''}{p.name}{it.variant ? ` - ${it.variant}` : ''}</p>
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">Included</span>
+                </div>
+              );
+            }
+            const label = p.variant_label || 'Option';
+            const all = liveVariants(p);
+            const q = (finds[key] || '').trim().toLowerCase();
+            const shown = q ? all.filter((v) => v.name.toLowerCase().includes(q)) : all;
+            return (
+              <div key={k}>
+                <p className="text-sm font-bold text-slate-900">
+                  {it.qty > 1 ? `${it.qty} x ` : ''}{p.name}
+                  <span className="ml-1 text-xs font-semibold text-amber-700">- choose {label.toLowerCase()}</span>
+                </p>
+                <p className="text-xs mt-0.5 mb-2 text-slate-500">
+                  {picks[key] ? <>Selected: <b className="text-slate-800">{picks[key]}</b></> : <span className="text-red-600 font-semibold">Please select the {label.toLowerCase()}</span>}
+                </p>
+                {all.length > 8 && (
+                  <input
+                    value={finds[key] || ''}
+                    onChange={(e) => setFinds((f) => ({ ...f, [key]: e.target.value }))}
+                    placeholder={`Search ${label.toLowerCase()}...`}
+                    className="w-full mb-2 px-3 py-2 border rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                  />
+                )}
+                <div className="flex flex-wrap gap-2 max-h-56 overflow-y-auto">
+                  {shown.map((v) => {
+                    const out = (Number(v.stock) || 0) < Math.max(1, Number(it.qty) || 1);
+                    const on = picks[key] === v.name;
+                    return (
+                      <button
+                        key={v.name}
+                        type="button"
+                        disabled={out}
+                        onClick={() => setPicks((pk) => ({ ...pk, [key]: v.name }))}
+                        className={`flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-xl border text-xs text-left cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:line-through ${on ? 'border-amber-600 ring-2 ring-amber-400 bg-amber-50 font-bold' : 'border-slate-200 bg-white hover:border-slate-400'}`}
+                      >
+                        {v.image
+                          ? <img src={v.image} alt="" className="w-8 h-8 rounded-lg object-cover border bg-white" />
+                          : v.color ? <span className="w-6 h-6 rounded-full border" style={{ background: v.color }} /> : null}
+                        <span>{v.name}</span>
+                      </button>
+                    );
+                  })}
+                  {shown.length === 0 && <p className="text-xs text-slate-400">Nothing found.</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-4 border-t">
+          <button
+            type="button"
+            disabled={missing.length > 0}
+            onClick={() => onDone(picks)}
+            className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 rounded-full cursor-pointer"
+          >
+            {missing.length > 0 ? `Select ${missing.length} more option${missing.length > 1 ? 's' : ''}` : buyNow ? 'Buy Now' : 'Add to Cart'}
+          </button>
         </div>
       </div>
     </div>
