@@ -110,6 +110,8 @@ export interface StoreSettings {
   footer_show_payments: boolean;
   quick_links_title: string;
   deals_title: string;
+  deals_icon: string;         // icon name / emoji on the Deals card next to the categories
+  deals_icon_image: string;   // or a picture
   payments_title: string;
 }
 
@@ -206,6 +208,8 @@ export const defaultSettings: StoreSettings = {
   footer_show_payments: true,
   quick_links_title: 'Quick Links',
   deals_title: 'Special Deals',
+  deals_icon: 'tag',
+  deals_icon_image: '',
   payments_title: 'Payment Options'
 };
 

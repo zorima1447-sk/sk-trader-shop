@@ -176,7 +176,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.1 (24-Oct-2026)';
+const BUILD = 'v18.3 (24-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -451,7 +451,9 @@ export default function App() {
     email_enabled: false,
     email_to: '',
     whatsapp_enabled: false,
-    whatsapp_phone: ''
+    whatsapp_phone: '',
+    ntfy_enabled: false,
+    ntfy_topic: ''
   });
   const [notifBusy, setNotifBusy] = useState(false);
 
@@ -698,6 +700,10 @@ export default function App() {
     email = '',
     phone = ''
   ) {
+    if (!/^[0-9a-f-]{36}$/i.test(String(product_id))) {
+      alert('Please rate the products inside the deal one by one.');
+      return false;
+    }
     if (order_id && reviews.some(r => r.order_id === order_id && r.product_id === product_id)) {
       alert('A review for this product has already been submitted for this order.');
       return false;
@@ -1075,7 +1081,9 @@ export default function App() {
         email_enabled: !!data.email_enabled,
         email_to: data.email_to || '',
         whatsapp_enabled: !!data.whatsapp_enabled,
-        whatsapp_phone: data.whatsapp_phone || ''
+        whatsapp_phone: data.whatsapp_phone || '',
+        ntfy_enabled: !!data.ntfy_enabled,
+        ntfy_topic: data.ntfy_topic || ''
       });
     }
   }
@@ -1683,7 +1691,21 @@ export default function App() {
       setPurchased({
         order_id: order.id,
         customer_name: customerName.trim(),
-        items: cart.map(i => ({ id: i.id, name: i.name }))
+        // one line per real product (a deal is split into the products inside it; the same product only once)
+        items: (() => {
+          const seen = new Map<string, string>();
+          (placed.items || []).forEach((l: any) => {
+            const ids: string[] = Array.isArray(l.deal_items)
+              ? l.deal_items.map((x: any) => String(x.product_id))
+              : (l.product_id ? [String(l.product_id)] : []);
+            ids.forEach((pid) => {
+              if (seen.has(pid)) return;
+              const pr = products.find(p => p.id === pid);
+              seen.set(pid, pr ? pr.name : String(l.product_name || 'Product'));
+            });
+          });
+          return Array.from(seen, ([id, name]) => ({ id, name }));
+        })()
       });
       setRateDrafts({});
       setConfirmedInvoice(order.invoice_no || String(order.id).slice(0, 8).toUpperCase());
@@ -2179,8 +2201,10 @@ export default function App() {
                     className="group w-[30%] max-w-[9rem] sm:w-36 bg-gradient-to-br from-amber-500 to-rose-500 text-white rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 px-2 py-3 sm:p-4 flex flex-col items-center gap-2 cursor-pointer relative overflow-hidden"
                   >
                     <span className="absolute top-1.5 right-1.5 bg-white text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full animate-pulse">HOT</span>
-                    <span className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-white/20 ring-2 ring-white/70 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                      <Tag className="w-8 h-8 sm:w-9 sm:h-9 text-white" />
+                    <span className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-white/20 ring-2 ring-white/70 flex items-center justify-center overflow-hidden group-hover:scale-110 transition-transform duration-300">
+                      {settings.deals_icon_image
+                        ? <img src={settings.deals_icon_image} alt="" className="w-full h-full object-cover rounded-full" />
+                        : <span className="text-3xl sm:text-4xl leading-none text-white"><ShopIcon name={settings.deals_icon || 'tag'} className="w-8 h-8 sm:w-9 sm:h-9 text-white" /></span>}
                     </span>
                     <span className="text-[11px] sm:text-sm font-bold text-center leading-tight">{settings.deals_title || 'Special Deals'}</span>
                   </button>
@@ -2253,6 +2277,20 @@ export default function App() {
             );
           })()}
 
+          {/* Deals (Admin > Settings > Deals) */}
+          {!searchQuery.trim() && (
+            <DealsSection deals={deals} products={products} title={settings.deals_title} onAdd={(d) => addDealToCart(d)} onBuy={(d) => addDealToCart(d, true)} />
+          )}
+          {dealPick && (
+            <DealChooser
+              deal={dealPick.deal}
+              products={products}
+              buyNow={dealPick.buyNow}
+              onClose={() => setDealPick(null)}
+              onDone={(choices) => { const p = dealPick; setDealPick(null); addDealToCart(p.deal, p.buyNow, choices); }}
+            />
+          )}
+
           {/* Flash sale: discounted products */}
           {settings.show_flash && saleProducts.length > 0 && !searchQuery.trim() && (
             <section className="max-w-7xl mx-auto sm:px-4 mt-4 sm:mt-6">
@@ -2291,20 +2329,6 @@ export default function App() {
                 </div>
               </div>
             </section>
-          )}
-
-          {/* Deals (Admin > Settings > Deals) */}
-          {!searchQuery.trim() && (
-            <DealsSection deals={deals} products={products} title={settings.deals_title} onAdd={(d) => addDealToCart(d)} onBuy={(d) => addDealToCart(d, true)} />
-          )}
-          {dealPick && (
-            <DealChooser
-              deal={dealPick.deal}
-              products={products}
-              buyNow={dealPick.buyNow}
-              onClose={() => setDealPick(null)}
-              onDone={(choices) => { const p = dealPick; setDealPick(null); addDealToCart(p.deal, p.buyNow, choices); }}
-            />
           )}
 
           {/* All products ("Just For You") */}
@@ -4765,6 +4789,36 @@ export default function App() {
                     onChange={(e) => setNotif({ ...notif, whatsapp_phone: e.target.value })}
                     className="w-full px-3.5 py-2.5 border rounded-xl text-sm"
                   />
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border space-y-3">
+                  <label className="flex items-center space-x-2 text-sm font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" checked={notif.ntfy_enabled} onChange={(e) => setNotif({ ...notif, ntfy_enabled: e.target.checked })} />
+                    <span>Phone app alert ON (ntfy - free, no VPN)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Secret channel name, e.g. sktrader-orders-8k2p"
+                      value={notif.ntfy_topic}
+                      onChange={(e) => setNotif({ ...notif, ntfy_topic: e.target.value.replace(/[^A-Za-z0-9_-]/g, '') })}
+                      className="flex-1 min-w-0 px-3.5 py-2.5 border rounded-xl text-sm font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setNotif({ ...notif, ntfy_topic: 'sktrader-' + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6) })}
+                      className="shrink-0 px-3 border rounded-xl text-xs font-bold bg-white cursor-pointer"
+                    >
+                      Make name
+                    </button>
+                  </div>
+                  <ol className="text-[11px] text-slate-500 list-decimal pl-4 space-y-0.5">
+                    <li>Install the free <b>ntfy</b> app on your phone (Play Store / App Store).</li>
+                    <li>Press "Make name", then <b>Save Alert Settings</b>.</li>
+                    <li>In the ntfy app press <b>+</b> (Subscribe to topic) and type exactly this name.</li>
+                    <li>Press <b>Send Test Alert</b> - your phone rings with a notification.</li>
+                  </ol>
+                  <p className="text-[10px] text-slate-400">Keep the name secret: anyone who knows it can read the alerts.</p>
                 </div>
 
                 <div className="flex space-x-3">

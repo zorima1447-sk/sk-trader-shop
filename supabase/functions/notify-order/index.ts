@@ -159,6 +159,19 @@ Deno.serve(async (req) => {
           result.whatsapp = r.ok ? 'sent' : `failed: ${await r.text()}`;
         }
       } else result.whatsapp = 'off';
+      // free phone notification through the ntfy app (no account, no VPN)
+      if (s && s.ntfy_enabled && s.ntfy_topic) {
+        try {
+          const r = await fetch(`https://ntfy.sh/${encodeURIComponent(String(s.ntfy_topic).trim())}`, {
+            method: 'POST',
+            headers: { Title: subject.replace(/[^\x20-\x7E]/g, ''), Priority: 'high', Tags: 'shopping_cart' },
+            body: text,
+          });
+          result.phone_app = r.ok ? 'sent' : `failed: ${(await r.text()).slice(0, 200)}`;
+        } catch (e) {
+          result.phone_app = `failed: ${String(e)}`;
+        }
+      } else result.phone_app = 'off';
       return result;
     };
 
@@ -166,7 +179,9 @@ Deno.serve(async (req) => {
     if (test) {
       if (!(await isAdmin(sb, req))) return json({ error: 'Admin login required.' });
       if (!s) return json({ error: 'notification_settings row not found. Run supabase_setup.sql.' });
-      return json(await ownerAlert('Test alert - ' + storeName, 'Test alert: email / WhatsApp alerts are working.'));
+      const tr = await ownerAlert('Test alert - ' + storeName, 'Test alert: email / WhatsApp alerts are working.');
+      console.log('notify-order test', JSON.stringify(tr));
+      return json(tr);
     }
 
     if (!order_id) return json({ error: 'order_id required' });
@@ -224,6 +239,7 @@ Deno.serve(async (req) => {
       out.invoice_email = 'already sent';
     }
 
+    console.log('notify-order result', order.invoice_no || order_id, JSON.stringify(out));
     return json(out);
   } catch (e) {
     return json({ error: String(e) });

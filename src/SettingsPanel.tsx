@@ -135,6 +135,37 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
     reader.readAsDataURL(file);
   };
 
+  // small square picture (Deals icon) -> Supabase Storage
+  const uploadIcon = (file: File, done: (url: string) => void) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = async () => {
+        const side = Math.min(img.width, img.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = 240;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 240, 240);
+        setBusy(true);
+        try {
+          const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+          if (!blob) throw new Error('Could not process the image.');
+          const path = `logo-deal-icon-${Date.now()}.png`;
+          const { error } = await supabase.storage.from('site-assets').upload(path, blob, { contentType: 'image/png', upsert: false });
+          if (error) throw error;
+          done(supabase.storage.from('site-assets').getPublicUrl(path).data.publicUrl);
+        } catch {
+          done(canvas.toDataURL('image/png'));
+        } finally {
+          setBusy(false);
+        }
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
   // load every font once so the admin can see them before choosing
   useEffect(() => {
     if (tab !== 'profile' || document.getElementById('font-previews')) return;
@@ -452,6 +483,33 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
               <div>
                 <label className={label}>Deals heading</label>
                 <input className={input} value={f.deals_title} onChange={(e) => set('deals_title', e.target.value)} placeholder="Special Deals" />
+              </div>
+              <div className="sm:col-span-2">
+                <label className={label}>Deals icon (the coloured card before the categories)</label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="w-12 h-12 shrink-0 rounded-full bg-gradient-to-br from-amber-500 to-rose-500 text-white flex items-center justify-center overflow-hidden text-2xl">
+                    {f.deals_icon_image
+                      ? <img src={f.deals_icon_image} alt="" className="w-full h-full object-cover" />
+                      : <ShopIcon name={f.deals_icon || 'tag'} className="w-6 h-6" />}
+                  </span>
+                  <select
+                    value={ICONS[f.deals_icon] ? f.deals_icon : (f.deals_icon ? '__emoji' : 'tag')}
+                    onChange={(e) => set('deals_icon', e.target.value === '__emoji' ? '🔥' : e.target.value)}
+                    className="px-2 py-2 border rounded-lg text-xs bg-white"
+                    aria-label="Deals icon"
+                  >
+                    {Object.entries(ICONS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                    <option value="__emoji">Emoji (type it)</option>
+                  </select>
+                  {!ICONS[f.deals_icon] && f.deals_icon && (
+                    <input className={input + ' w-16'} value={f.deals_icon} onChange={(e) => set('deals_icon', e.target.value)} aria-label="Emoji" />
+                  )}
+                  <label className="px-3 py-2 border rounded-lg text-xs font-bold text-amber-700 bg-white cursor-pointer">
+                    {f.deals_icon_image ? 'Change picture' : 'Use a picture'}
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; e.target.value = ''; if (fl) uploadIcon(fl, (u) => set('deals_icon_image', u)); }} />
+                  </label>
+                  {f.deals_icon_image && <button type="button" onClick={() => set('deals_icon_image', '')} className="text-[11px] text-red-600 font-bold cursor-pointer">Remove picture</button>}
+                </div>
               </div>
             </div>
           </div>

@@ -239,6 +239,9 @@ create table if not exists public.notification_settings (
   whatsapp_phone text,
   updated_at timestamptz default now()
 );
+alter table public.notification_settings
+  add column if not exists ntfy_enabled boolean default false,
+  add column if not exists ntfy_topic text;
 insert into public.notification_settings (id)
 select 1 where not exists (select 1 from public.notification_settings where id = 1);
 
@@ -341,7 +344,9 @@ alter table public.store_settings
   add column if not exists footer_show_payments boolean,
   add column if not exists quick_links_title text,
   add column if not exists payments_title text,
-  add column if not exists deals_title text;
+  add column if not exists deals_title text,
+  add column if not exists deals_icon text,
+  add column if not exists deals_icon_image text;
 
 insert into public.store_settings (id)
 select 1 where not exists (select 1 from public.store_settings where id = 1);
