@@ -13,6 +13,8 @@ import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, fontCss,
 import PkAddressFields from './PkAddressFields';
 import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
 import { ShopIcon } from './icons';
+import { track, trackSearch } from './analytics';
+import VisitorsReport from './VisitorsReport';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
@@ -176,7 +178,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v18.8 (24-Oct-2026)';
+const BUILD = 'v19.0 (25-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -422,7 +424,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals' | 'visitors'>('dashboard');
   const [deals, setDeals] = useState<Deal[]>(BOOT_CACHE?.deals || []);
   const refreshDeals = () => loadDeals(true).then(setDeals);
 
@@ -513,7 +515,26 @@ export default function App() {
     });
     fetchPaymentAccounts();
     fetchReviews();
+    track('visit');
   }, []);
+
+  // Visitors Report: what people search for
+  useEffect(() => { trackSearch(searchQuery); }, [searchQuery]);
+
+  // SEO: the open product's name and price in the browser tab / Google (home title otherwise)
+  useEffect(() => {
+    const name = settings.store_name || 'SK TRADER';
+    const home = `${name} - Premium Hair & Beauty Care | Karachi, Pakistan`;
+    const canon = document.querySelector('link[rel="canonical"]');
+    if (quickView) {
+      const pr = Number(quickView.discounted_price || quickView.price || 0);
+      document.title = `${quickView.name}${pr ? ` - Rs ${pr.toLocaleString('en-PK')}` : ''} | ${name}`;
+      canon?.setAttribute('href', `https://www.sktraderpk.com/?product=${quickView.id}`);
+    } else {
+      document.title = home;
+      canon?.setAttribute('href', 'https://www.sktraderpk.com/');
+    }
+  }, [quickView, settings.store_name]);
 
   // Customer login state (also handles the "set a new password" link from the email)
   useEffect(() => {
@@ -601,10 +622,6 @@ export default function App() {
   useEffect(() => {
     if (fresh) writeShopCache({ settings, slides, categories, products, deals: deals.filter(d => d.is_active) });
   }, [fresh, settings, slides, categories, products, deals]);
-
-  useEffect(() => {
-    document.title = settings.store_name || 'Online Store';
-  }, [settings.store_name]);
 
   useEffect(() => {
     setNotifyCustomers(settings.notify_new_product);
@@ -1547,6 +1564,7 @@ export default function App() {
       setTimeout(() => setToastMessage(null), 2500);
       return false;
     }
+    track('add_to_cart', { product_id: base.id });
     setCart((prevCart) => {
       const existing = prevCart.find((item) => item.cartKey === key);
       if (existing) {
@@ -1684,6 +1702,7 @@ export default function App() {
       }
 
       const order = placed.order;
+      track('order');
       const placedItems: InvoiceItem[] = (placed.items || []).map((i: any) => ({
         product_name: i.product_name, quantity: Number(i.quantity), unit_price: Number(i.unit_price)
       }));
@@ -1789,6 +1808,7 @@ export default function App() {
     setMultiMode(false);
     setMultiPick({});
     setQuickView(p);
+    track('product_view', { product_id: p.id });
     setQvQty(1);
     const vs = variantsOf(p);
     setQvVariant((vs.find(v => Number(v.stock) > 0) || vs[0] || { name: '' }).name);
@@ -1842,6 +1862,7 @@ export default function App() {
   const ADMIN_MENU: { title: string; items: { id: string; label: string; icon: any; open?: () => void; badge?: () => number }[] }[] = [
     { title: 'Overview', items: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, open: () => fetchOrders() },
+      { id: 'visitors', label: 'Visitors Report', icon: Eye },
       { id: 'ai', label: 'AI Assistant', icon: MessageCircle }
     ] },
     { title: 'Orders', items: [
@@ -4752,6 +4773,9 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* VISITORS REPORT */}
+          {adminTab === 'visitors' && <VisitorsReport />}
 
           {/* DEALS */}
           {adminTab === 'deals' && (

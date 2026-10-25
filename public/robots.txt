@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/track
+
+Sitemap: https://www.sktraderpk.com/sitemap.xml
