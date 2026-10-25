@@ -179,7 +179,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v20.0 (25-Oct-2026)';
+const BUILD = 'v21.0 (25-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -933,7 +933,22 @@ export default function App() {
     const { data, error } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
     if (error) { reportError('customers fetch', error); return; }
     setCustomers(data || []);
+    fetchAccounts();
   }
+
+  // Customer login accounts (Register / Login on the website)
+  const [accounts, setAccounts] = useState<any[] | null>(null);
+  const [accQuery, setAccQuery] = useState('');
+  async function fetchAccounts() {
+    const { data, error } = await supabase.rpc('admin_customer_accounts');
+    setAccounts(error ? null : (data || []));
+  }
+  const handleDeleteLogin = async (a: any) => {
+    if (!window.confirm(`Delete the login account of "${a.name || a.email}"?\n\nHe will not be able to log in any more, but he can register again with the same mobile number and email. His past orders stay.`)) return;
+    const { error } = await supabase.rpc('admin_delete_account', { p_user_id: a.id });
+    if (reportError('account delete', error)) return;
+    setAccounts(prev => (prev || []).filter(x => x.id !== a.id));
+  };
 
   const resetCustomerForm = () => {
     setEditingCustomerId(null);
@@ -996,10 +1011,15 @@ export default function App() {
   };
 
   const handleDeleteCustomer = async (c: Customer) => {
-    if (!window.confirm(`Delete customer "${c.name}"? Their past orders will stay.`)) return;
-    const { error } = await supabase.from('customers').delete().eq('id', c.id);
+    if (!window.confirm(`Delete customer "${c.name}"?\n\nHis login account (same mobile number / email) is deleted too, so he can register again. His past orders stay.`)) return;
+    let { error } = await supabase.rpc('admin_delete_customer', { p_id: c.id });
+    if (error && /admin_delete_customer|schema cache|function/i.test(error.message)) {
+      // database not updated yet (supabase_v21.sql): delete only the customer record as before
+      ({ error } = await supabase.from('customers').delete().eq('id', c.id));
+    }
     if (reportError('customer delete', error)) return;
     setCustomers(prev => prev.filter(x => x.id !== c.id));
+    fetchAccounts();
   };
 
   // ---- Hero slides ----
@@ -4828,6 +4848,50 @@ export default function App() {
                   );
                 })()}
               </div>
+              </div>
+
+              {/* Login accounts: everybody who registered on the website (also those who never ordered) */}
+              <div className="bg-white rounded-3xl p-6 border shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b mb-3">
+                  <h3 className="text-lg font-extrabold text-slate-900 flex items-center">
+                    <Lock className="w-5 h-5 text-amber-500 mr-2" /> Login accounts {accounts ? `(${accounts.length})` : ''}
+                  </h3>
+                  <input value={accQuery} onChange={(e) => setAccQuery(e.target.value)} placeholder="Search name, mobile, email"
+                    className="px-3 py-2 border rounded-xl text-sm w-full sm:w-64 focus:outline-none focus:border-amber-500" />
+                </div>
+                <p className="text-xs text-slate-500 mb-3">
+                  Customers who registered on the website. Delete an account if a customer wants to register again with the same mobile number or email
+                  (for example "This mobile number is already registered"). Past orders stay.
+                </p>
+                {accounts === null ? (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">Run <b>supabase_v21.sql</b> once in Supabase &gt; SQL Editor to see the login accounts here.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead><tr className="text-left text-xs uppercase text-slate-500 border-b">
+                        <th className="py-2 pr-2">Name</th><th className="py-2 px-2">Mobile</th><th className="py-2 px-2">Email</th>
+                        <th className="py-2 px-2">City</th><th className="py-2 px-2">Registered</th><th className="py-2 pl-2" />
+                      </tr></thead>
+                      <tbody>
+                        {accounts.filter(a => { const q = accQuery.trim().toLowerCase(); return !q || [a.name, a.phone, a.email].some((v: any) => String(v || '').toLowerCase().includes(q.replace(/^0/, ''))); }).map(a => (
+                          <tr key={a.id} className="border-b last:border-0">
+                            <td className="py-2 pr-2 font-semibold text-slate-800">{a.name || '–'}</td>
+                            <td className="py-2 px-2">{a.phone ? '+' + a.phone : '–'}</td>
+                            <td className="py-2 px-2 text-slate-600">{a.email}</td>
+                            <td className="py-2 px-2 text-slate-600">{[a.city, a.country !== 'Pakistan' ? a.country : ''].filter(Boolean).join(', ') || '–'}</td>
+                            <td className="py-2 px-2 text-slate-500 whitespace-nowrap">{new Date(a.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                            <td className="py-2 pl-2 text-right">
+                              <button type="button" onClick={() => handleDeleteLogin(a)} className="p-2 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer" title="Delete login account">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {accounts.length === 0 && <tr><td colSpan={6} className="py-4 text-center text-slate-400">No login accounts.</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           )}
