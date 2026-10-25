@@ -11,7 +11,8 @@ import { COURIERS, TrackOrderPage, trackingLink } from './Tracking';
 import { InvoiceDocument, InvoiceItem, printInvoice } from './Invoice';
 import { StoreSettings, defaultSettings, fetchStoreSettings, accentCss, fontCss, isLightColor, mergeSettings, readShopCache, writeShopCache, deliveryChargeFor, gstFor } from './storeSettings';
 import PkAddressFields from './PkAddressFields';
-import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText } from './pakistan';
+import { PkAddress, emptyPkAddress, checkPkAddress, fullPkAddress, cityFromText, isPk, fullPhoneDigits } from './pakistan';
+import { price, approx, setActiveCurrency, shopCurrencies, savedCurrency, saveCurrency, currencyForCountry } from './currency';
 import { ShopIcon } from './icons';
 import { track, trackSearch } from './analytics';
 import VisitorsReport from './VisitorsReport';
@@ -178,7 +179,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v19.0 (25-Oct-2026)';
+const BUILD = 'v20.0 (25-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -370,6 +371,22 @@ export default function App() {
   const [paymentProof, setPaymentProof] = useState('');
   const [proofView, setProofView] = useState<string | null>(null);
   const [settings, setSettings] = useState<StoreSettings>(BOOT_CACHE?.settings ? mergeSettings(BOOT_CACHE.settings) : defaultSettings);
+  // Currency the customer sees (Rs. = '')
+  const [curCode, setCurCode] = useState<string>(() => savedCurrency());
+  const [liveRates, setLiveRates] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    if (!settings.currencies_enabled || liveRates) return;
+    fetch('/api/rates').then(r => r.ok ? r.json() : null).then((j) => {
+      if (!j) return;
+      setLiveRates(j.rates || {});
+      // first visit from abroad: show his own currency (he can change it)
+      if (!savedCurrency() && j.country && j.country !== 'PK') {
+        const c = currencyForCountry(j.country);
+        if (c && settings.currencies.some(x => x.code === c)) setCurCode(c);
+      }
+    }).catch(() => setLiveRates({}));
+  }, [settings.currencies_enabled]);
+  const chooseCurrency = (code: string) => { setCurCode(code); saveCurrency(code || 'PKR'); };
   const [booted, setBooted] = useState<boolean>(!!BOOT_CACHE?.settings); // true = something real to show
   const [fresh, setFresh] = useState(false); // true = data from the database has arrived
   const [notifyCustomers, setNotifyCustomers] = useState(false);
@@ -573,8 +590,13 @@ export default function App() {
     const saved = addressFromMeta(m);
     setShipAddr(prev => {
       // keep what the customer already typed; fill only the empty parts
+      if ((prev.country || 'PK') !== (saved.country || 'PK') && (prev.city || prev.mobile)) return prev;
       if (prev.province && saved.province && prev.province !== saved.province) return { ...prev, mobile: prev.mobile || saved.mobile };
+      const sameCountry = (prev.country || 'PK') === (saved.country || 'PK');
       return {
+        country: sameCountry ? prev.country || 'PK' : saved.country,
+        country_name: sameCountry ? prev.country_name || 'Pakistan' : saved.country_name,
+        phone_code: sameCountry ? prev.phone_code || '92' : saved.phone_code,
         mobile: prev.mobile || saved.mobile,
         province: prev.province || saved.province,
         city: prev.city || saved.city,
@@ -586,7 +608,13 @@ export default function App() {
   }, [authUser, isCartOpen]);
 
   // Cash on Delivery only inside Karachi (Settings > Delivery Charges)
-  const codAllowed = !settings.cod_karachi_only || !shipAddr.city || shipAddr.city.trim().toLowerCase() === 'karachi';
+  const abroad = !isPk(shipAddr);
+  const codAllowed = !abroad && (!settings.cod_karachi_only || !shipAddr.city || shipAddr.city.trim().toLowerCase() === 'karachi');
+
+  // Prices in another currency (Settings > Currencies). Orders stay in Rupees.
+  const currencies = shopCurrencies(settings, liveRates);
+  const activeCur = currencies.find(c => c.code === curCode) || null;
+  setActiveCurrency(currentView === 'admin' ? null : activeCur);
   useEffect(() => {
     if (!codAllowed && paymentMethod === 'cod') {
       const acc = paymentAccounts.find(a => a.is_active !== false);
@@ -1620,7 +1648,9 @@ export default function App() {
   };
 
   const subtotalAmount = cart.reduce((sum, item) => sum + (item.discounted_price || item.price) * item.quantity, 0);
-  const deliveryCharge = cart.length ? deliveryChargeFor(settings, shipAddr.province, shipAddr.city, subtotalAmount) : 0;
+  const deliveryRaw = cart.length ? deliveryChargeFor(settings, shipAddr.province, shipAddr.city, subtotalAmount, shipAddr.country || 'PK') : 0;
+  const noDelivery = deliveryRaw < 0; // we don't deliver to the chosen country
+  const deliveryCharge = Math.max(0, deliveryRaw);
   const gst = gstFor(settings, subtotalAmount);
   const totalAmount = Math.round((subtotalAmount + deliveryCharge + (gst.inclusive ? 0 : gst.amount)) * 100) / 100;
 
@@ -1629,6 +1659,7 @@ export default function App() {
     if (!customerName.trim()) { alert('Please enter your full name.'); return; }
     const addrProblem = checkPkAddress(shipAddr);
     if (addrProblem) { alert(addrProblem); return; }
+    if (noDelivery) { alert(`Sorry, we do not deliver to ${shipAddr.country_name || 'this country'} yet. Please contact us on WhatsApp.`); return; }
 
     if (!/^\S+@\S+\.\S+$/.test(customerEmail.trim())) {
       alert('Please enter a valid email address.');
@@ -1636,7 +1667,7 @@ export default function App() {
     }
 
     if (paymentMethod === 'cod' && !codAllowed) {
-      alert(`Cash on Delivery is only for Karachi. For ${shipAddr.city}, please choose Online Payment.`);
+      alert(abroad ? 'Cash on Delivery is only inside Pakistan. Please choose Online Payment.' : `Cash on Delivery is only for Karachi. For ${shipAddr.city}, please choose Online Payment.`);
       return;
     }
     const payAccount = paymentAccounts.find(a => a.id === payAccountId);
@@ -1650,7 +1681,9 @@ export default function App() {
     setIsSubmitting(true);
 
     try {
-      const fullPhone = `+92${shipAddr.mobile}`;
+      const fullPhone = '+' + fullPhoneDigits(shipAddr);
+      const cIso = shipAddr.country || 'PK';
+      const cName = isPk(shipAddr) ? 'Pakistan' : (shipAddr.country_name || cIso);
       const fullAddress = fullPkAddress(shipAddr);
 
       // The order is saved by place_order() in the database: it saves the customer, takes the prices
@@ -1659,11 +1692,11 @@ export default function App() {
         p_customer: {
           name: customerName.trim(),
           email: customerEmail.trim() || null,
-          phone_iso: 'PK',
-          phone_code: '+92',
+          phone_iso: cIso,
+          phone_code: '+' + (isPk(shipAddr) ? '92' : shipAddr.phone_code),
           phone: shipAddr.mobile,
-          country_iso: 'PK',
-          country: 'Pakistan',
+          country_iso: cIso,
+          country: cName,
           province_iso: '',
           province: shipAddr.province,
           city: shipAddr.city,
@@ -1677,6 +1710,8 @@ export default function App() {
           customer_phone: fullPhone,
           customer_email: customerEmail.trim() || null,
           shipping_address: fullAddress,
+          country_iso: cIso,
+          country: cName,
           province: shipAddr.province,
           city: shipAddr.city,
           area: shipAddr.area.trim(),
@@ -1755,7 +1790,8 @@ export default function App() {
       if (authUser) {
         supabase.auth.updateUser({
           data: {
-            name: customerName.trim(), phone: '92' + shipAddr.mobile, province: shipAddr.province, city: shipAddr.city,
+            name: customerName.trim(), phone: fullPhoneDigits(shipAddr), country: shipAddr.country || 'PK', country_name: shipAddr.country_name || 'Pakistan',
+            phone_code: shipAddr.phone_code || '92', province: shipAddr.province, city: shipAddr.city,
             area: shipAddr.area.trim(), address: shipAddr.address.trim(), zip: shipAddr.zip.trim()
           }
         }).then(() => { /* ignore */ });
@@ -1886,6 +1922,7 @@ export default function App() {
       { id: 'deals', label: 'Deals', icon: Tag, open: () => refreshDeals() },
       { id: 'accounts', label: 'Payment Accounts', icon: CreditCard },
       { id: 'settings:delivery', label: 'Delivery Charges', icon: Truck },
+      { id: 'settings:currency', label: 'Currencies', icon: DollarSign },
       { id: 'settings:invoice', label: 'Invoice', icon: Printer },
       { id: 'settings:messages', label: 'Customer Messages', icon: Mail },
       { id: 'notifications', label: 'Order Alerts', icon: MessageCircle },
@@ -1982,7 +2019,7 @@ export default function App() {
             >
               <img src={p.image_url || PLACEHOLDER_IMG} alt="" className="w-10 h-10 object-cover rounded bg-slate-100 shrink-0" />
               <span className="flex-1 min-w-0 text-sm truncate">{p.name}</span>
-              <span className="text-xs font-bold text-amber-600 shrink-0">{money(p.discounted_price || p.price)}</span>
+              <span className="text-xs font-bold text-amber-600 shrink-0">{price(p.discounted_price || p.price)}</span>
             </button>
           ))}
           <button
@@ -2094,6 +2131,20 @@ export default function App() {
                 >
                   <Search className={`w-5 h-5 ${H.icon}`} />
                 </button>
+              )}
+
+              {/* Currency: prices in the customer's own money (Settings > Currencies) */}
+              {currentView !== 'admin' && currencies.length > 0 && (
+                <select
+                  value={activeCur ? activeCur.code : 'PKR'}
+                  onChange={(e) => chooseCurrency(e.target.value)}
+                  className={`text-xs sm:text-sm font-bold bg-transparent ${H.name} border border-current/30 rounded-lg px-1.5 py-1.5 cursor-pointer focus:outline-none max-w-[5.5rem]`}
+                  aria-label="Currency"
+                  title="Show prices in"
+                >
+                  <option value="PKR" className="text-slate-900">Rs. PKR</option>
+                  {currencies.map(c => <option key={c.code} value={c.code} className="text-slate-900">{c.symbol === c.code ? c.code : `${c.symbol} ${c.code}`}</option>)}
+                </select>
               )}
 
               {/* Admin: a lock icon only */}
@@ -2363,9 +2414,9 @@ export default function App() {
                         {discountPct(p) > 0 && <span className="absolute top-1 left-1 bg-amber-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">-{discountPct(p)}%</span>}
                       </div>
                       <p className="text-xs text-slate-700 line-clamp-2 min-h-[2rem]">{p.name}</p>
-                      <p className="text-amber-600 font-bold text-sm sm:text-base mt-1">{money(p.discounted_price || p.price)}</p>
+                      <p className="text-amber-600 font-bold text-sm sm:text-base mt-1">{price(p.discounted_price || p.price)}</p>
                       <p className="text-[11px]">
-                        <span className="text-slate-400 line-through mr-1">{money(p.original_price)}</span>
+                        <span className="text-slate-400 line-through mr-1">{price(p.original_price)}</span>
                         <span className="text-slate-700">-{discountPct(p)}%</span>
                       </p>
                     </button>
@@ -2451,12 +2502,12 @@ export default function App() {
                         </button>
                         <p className="text-amber-600 font-bold text-base sm:text-lg mt-1 leading-tight">
                           {variantsOf(product).length > 0 && <span className="text-[10px] font-normal text-slate-500 mr-1">from</span>}
-                          {money(product.discounted_price || product.price)}
+                          {price(product.discounted_price || product.price)}
                         </p>
                         <p className="text-[11px] min-h-[1rem]">
                           {pct > 0 && (
                             <>
-                              <span className="text-slate-400 line-through mr-1">{money(product.original_price)}</span>
+                              <span className="text-slate-400 line-through mr-1">{price(product.original_price)}</span>
                               <span className="text-slate-700">-{pct}%</span>
                             </>
                           )}
@@ -2659,10 +2710,10 @@ export default function App() {
 
                     <div className="space-y-2 md:space-y-4">
                       <div className="bg-white px-3 py-3 md:p-0">
-                        <p className="text-amber-600 font-bold text-2xl md:text-3xl">{money(p.discounted_price || p.price)}</p>
+                        <p className="text-amber-600 font-bold text-2xl md:text-3xl">{price(p.discounted_price || p.price)}</p>
                         {pct > 0 && (
                           <p className="text-sm mt-0.5">
-                            <span className="text-slate-400 line-through mr-2">{money(p.original_price)}</span>
+                            <span className="text-slate-400 line-through mr-2">{price(p.original_price)}</span>
                             <span className="text-slate-700">-{pct}%</span>
                           </p>
                         )}
@@ -2735,7 +2786,7 @@ export default function App() {
                                         <span className="flex-1 min-w-0">
                                           <span className={`block text-sm leading-tight ${q > 0 ? 'font-bold text-slate-900' : 'text-slate-800'}`}>{v.name}</span>
                                           <span className="block text-[11px] text-slate-500">
-                                            Rs. {Number(v.price).toLocaleString('en-PK')}
+                                            {price(v.price)}
                                             {out ? ' · sold out' : stock <= 5 ? ` · only ${stock} left` : ''}
                                           </span>
                                         </span>
@@ -2753,7 +2804,7 @@ export default function App() {
                                 </div>
                                 <div className="mt-2 flex items-center justify-between text-sm">
                                   <span className="text-slate-600">{picks.length} selected · {pickPieces} pcs</span>
-                                  <span className="font-black text-amber-600">{money(pickTotal)}</span>
+                                  <span className="font-black text-amber-600">{price(pickTotal)}</span>
                                 </div>
                                 {picks.length > 0 && <button type="button" onClick={() => setMultiPick({})} className="text-[11px] text-slate-500 underline cursor-pointer">Clear all</button>}
                               </div>
@@ -2916,7 +2967,7 @@ export default function App() {
                               <img loading="lazy" decoding="async" src={x.image_url || PLACEHOLDER_IMG} alt={x.name} className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-300" />
                             </div>
                             <p className="text-[11px] text-slate-700 line-clamp-2 min-h-[1.75rem]">{x.name}</p>
-                            <p className="text-amber-600 font-bold text-sm">{money(x.discounted_price || x.price)}</p>
+                            <p className="text-amber-600 font-bold text-sm">{price(x.discounted_price || x.price)}</p>
                           </button>
                         ))}
                       </div>
@@ -3278,25 +3329,28 @@ export default function App() {
                   <div className="pt-3 border-t space-y-1 text-sm">
                     <div className="flex justify-between text-slate-600">
                       <span>Subtotal ({cart.reduce((a, b) => a + b.quantity, 0)} items)</span>
-                      <span>{money(subtotalAmount)}</span>
+                      <span>{price(subtotalAmount)}</span>
                     </div>
                     <div className="flex justify-between text-slate-600">
-                      <span>Delivery {shipAddr.city ? `(${shipAddr.city})` : ''}</span>
-                      <span>{!shipAddr.city ? 'Select your city below' : deliveryCharge > 0 ? money(deliveryCharge) : 'FREE'}</span>
+                      <span>Delivery {abroad ? `(${shipAddr.country_name})` : shipAddr.city ? `(${shipAddr.city})` : ''}</span>
+                      <span>{abroad && noDelivery ? 'Not available' : !shipAddr.city && !abroad ? 'Select your city below' : deliveryCharge > 0 ? price(deliveryCharge) : 'FREE'}</span>
                     </div>
                     {gst.amount > 0 && (
                       <div className="flex justify-between text-slate-600">
                         <span>GST {gst.rate}%{gst.inclusive ? ' (included in prices)' : ''}</span>
-                        <span>{money(gst.amount)}</span>
+                        <span>{price(gst.amount)}</span>
                       </div>
                     )}
-                    {settings.free_delivery_over > 0 && deliveryCharge > 0 && (
-                      <p className="text-[11px] text-emerald-700">Add {money(settings.free_delivery_over - subtotalAmount)} more for FREE delivery.</p>
+                    {settings.free_delivery_over > 0 && deliveryCharge > 0 && !abroad && (
+                      <p className="text-[11px] text-emerald-700">Add {price(settings.free_delivery_over - subtotalAmount)} more for FREE delivery.</p>
                     )}
                     <div className="flex justify-between text-xl font-black text-slate-900 pt-1">
                       <span>Total:</span>
-                      <span className="text-amber-600">{money(totalAmount)}</span>
+                      <span className="text-amber-600">{price(totalAmount)}</span>
                     </div>
+                    {activeCur && (
+                      <p className="text-[11px] text-slate-500 text-right">You pay in Pakistani Rupees: <b>{money(totalAmount)}</b>. {activeCur.code} amounts are approximate.</p>
+                    )}
                   </div>
                 </div>
 
@@ -3343,9 +3397,13 @@ export default function App() {
                   <PkAddressFields
                     value={shipAddr}
                     onChange={setShipAddr}
-                    note={shipAddr.city ? (
+                    note={abroad && noDelivery ? (
+                      <p className="text-xs font-semibold rounded-lg px-3 py-2 bg-red-50 text-red-700">
+                        Sorry, we do not deliver to {shipAddr.country_name} yet. Please contact us on WhatsApp.
+                      </p>
+                    ) : shipAddr.city || abroad ? (
                       <p className={`text-xs font-semibold rounded-lg px-3 py-2 ${deliveryCharge > 0 ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`}>
-                        Delivery to {shipAddr.city}: {deliveryCharge > 0 ? money(deliveryCharge) : 'FREE'}
+                        Delivery to {abroad ? shipAddr.country_name : shipAddr.city}: {deliveryCharge > 0 ? price(deliveryCharge) : 'FREE'}
                       </p>
                     ) : null}
                   />
@@ -3371,7 +3429,7 @@ export default function App() {
                             className={`p-3 rounded-xl border-2 text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${paymentMethod === 'cod' && codAllowed ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
                           >
                             <Wallet className="w-5 h-5" /> Cash on Delivery
-                            <span className="text-[10px] font-medium text-slate-500">{codAllowed ? (settings.cod_karachi_only ? 'Karachi only' : 'Pay when you receive') : 'Only for Karachi'}</span>
+                            <span className="text-[10px] font-medium text-slate-500">{codAllowed ? (settings.cod_karachi_only ? 'Karachi only' : 'Pay when you receive') : abroad ? 'Only inside Pakistan' : 'Only for Karachi'}</span>
                           </button>
                           <button
                             type="button"

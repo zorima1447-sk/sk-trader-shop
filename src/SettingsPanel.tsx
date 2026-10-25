@@ -4,9 +4,10 @@ import { StoreSettings, ACCENTS, THEMES, accentSwatch, FontDef, MarqueeItem, Bra
 import { ICONS, ShopIcon } from './icons';
 import { BrandLogo } from './BrandLogo';
 import { PROVINCES } from './pakistan';
+import { useCountries } from './PkAddressFields';
 import { InvoiceDocument } from './Invoice';
 
-export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery' | 'brands' | 'content';
+export type SettingsTab = 'profile' | 'look' | 'invoice' | 'messages' | 'delivery' | 'brands' | 'content' | 'currency';
 
 interface Props {
   tab?: SettingsTab; // chosen from the admin side menu
@@ -26,6 +27,14 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   const [ownTab, setTab] = useState<SubTab>('profile');
   const tab = fixedTab || ownTab;
   const [busy, setBusy] = useState(false);
+  const countries = useCountries();
+  const [addCountry, setAddCountry] = useState('');
+  const [newCur, setNewCur] = useState('');
+  const [rates, setRates] = useState<{ rates: Record<string, number>; updated: string } | null>(null);
+  useEffect(() => {
+    if (tab !== 'currency' || rates) return;
+    fetch('/api/rates').then(r => r.ok ? r.json() : null).then(j => setRates(j ? { rates: j.rates || {}, updated: j.updated || '' } : { rates: {}, updated: '' })).catch(() => setRates({ rates: {}, updated: '' }));
+  }, [tab]);
 
   useEffect(() => { setF(settings); }, [settings]);
 
@@ -283,7 +292,7 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   return (
     <form onSubmit={save} className="bg-white rounded-3xl p-6 border shadow-sm">
       <h3 className="text-lg font-extrabold text-slate-900 mb-4 pb-2 border-b">
-        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges', brands: 'Our Brands', content: 'Home Page Content' }[tab]}
+        {{ profile: 'Store Profile', look: 'Website Look & Theme', invoice: 'Invoice', messages: 'Customer Messages', delivery: 'Delivery Charges', brands: 'Our Brands', content: 'Home Page Content', currency: 'Currencies' }[tab]}
       </h3>
 
       {!fixedTab && (
@@ -455,6 +464,48 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div className="p-4 bg-slate-50 rounded-2xl border">
             {check('cod_karachi_only', 'Cash on Delivery only for Karachi (other cities must pay online)')}
           </div>
+
+          <div className="border rounded-xl overflow-hidden">
+            <div className="bg-slate-900 text-white px-3 py-2 text-sm font-bold">Delivery to other countries</div>
+            <div className="p-3 space-y-3">
+              <p className="text-[11px] text-slate-500">
+                Customers can choose any country when they register or order. Add the countries you deliver to with their charge (Rs.).
+                Cash on Delivery is never offered abroad: they must pay online. "Free delivery over" is only for Pakistan.
+              </p>
+              {Object.keys(f.delivery_countries || {}).length === 0 && <p className="text-xs text-slate-400">No country added yet.</p>}
+              {Object.entries(f.delivery_countries || {}).sort((a, b) => a[0].localeCompare(b[0])).map(([iso, val]) => {
+                const c = countries.find(x => x.iso === iso);
+                return (
+                  <div key={iso} className="grid grid-cols-[1fr_9rem_2.5rem] items-center gap-2">
+                    <span className="text-sm text-slate-800">{c ? `${c.flag} ${c.name}` : iso}</span>
+                    <input className={input} inputMode="numeric" value={String(val)}
+                      onChange={(e) => set('delivery_countries', { ...f.delivery_countries, [iso]: Number(e.target.value.replace(/[^0-9]/g, '')) || 0 })} />
+                    <button type="button" className="text-red-600 text-lg font-bold cursor-pointer" title="Remove"
+                      onClick={() => { const n = { ...f.delivery_countries }; delete n[iso]; set('delivery_countries', n); }}>×</button>
+                  </div>
+                );
+              })}
+              <div className="flex gap-2">
+                <select className={input} value={addCountry} onChange={(e) => setAddCountry(e.target.value)}>
+                  <option value="">Add a country…</option>
+                  {countries.filter(c => c.iso !== 'PK' && !(c.iso in (f.delivery_countries || {}))).map(c => <option key={c.iso} value={c.iso}>{c.flag} {c.name}</option>)}
+                </select>
+                <button type="button" disabled={!addCountry}
+                  onClick={() => { set('delivery_countries', { ...(f.delivery_countries || {}), [addCountry]: f.delivery_abroad_other || 0 }); setAddCountry(''); }}
+                  className="px-4 rounded-xl bg-amber-600 text-white text-sm font-bold disabled:opacity-40 cursor-pointer">Add</button>
+              </div>
+              <div className="pt-2 border-t space-y-2">
+                {check('ship_abroad', 'Also deliver to all other countries (not in the list above)')}
+                {f.ship_abroad && (
+                  <div>
+                    <label className={label}>Charge for all other countries (Rs.)</label>
+                    <input className={input + ' max-w-xs'} inputMode="numeric" value={String(f.delivery_abroad_other)} onChange={(e) => set('delivery_abroad_other', Number(e.target.value.replace(/[^0-9]/g, '')) || 0)} />
+                  </div>
+                )}
+                {!f.ship_abroad && <p className="text-[11px] text-slate-400">Off: a customer from a country that is not in the list sees "Sorry, we do not deliver to … yet".</p>}
+              </div>
+            </div>
+          </div>
           <div className="bg-slate-50 border rounded-xl p-3 text-xs text-slate-600 space-y-1">
             <p><b>Example:</b> order of Rs. 3,000</p>
             {[['Sindh', 'Karachi'], ['Sindh', 'Hyderabad'], ['Punjab', 'Lahore'], ['Khyber Pakhtunkhwa', 'Peshawar']].map(([pv, ct]) => {
@@ -462,6 +513,53 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
               return <p key={ct}>{ct}: delivery {dc > 0 ? `Rs. ${dc}` : 'FREE'}</p>;
             })}
           </div>
+        </div>
+      )}
+
+      {tab === 'currency' && (
+        <div className="space-y-4 max-w-2xl">
+          <p className="text-xs text-slate-500">
+            Foreign customers can see the prices in their own money (a small menu in the top bar). The order, invoice and payment always stay in
+            <b> Pakistani Rupees</b>; the other currency is only shown so they understand the price. Visitors from abroad see their currency automatically.
+          </p>
+          <div className="p-4 bg-slate-50 rounded-2xl border space-y-2">
+            {check('currencies_enabled', 'Show the currency menu on the website')}
+            {check('currency_auto', "Use today's exchange rates automatically (updated every few hours)")}
+          </div>
+          <div>
+            <label className={label}>Add to the rates (%) - e.g. 3 to cover card / bank conversion charges</label>
+            <input className={input + ' max-w-xs'} inputMode="decimal" value={String(f.currency_markup)} onChange={(e) => set('currency_markup', Number(e.target.value.replace(/[^0-9.]/g, '')) || 0)} />
+          </div>
+          <div className="border rounded-xl overflow-hidden">
+            <div className="grid grid-cols-[5rem_6rem_1fr_1fr_2.5rem] gap-2 bg-slate-50 border-b px-3 py-2 text-[11px] font-bold text-slate-500">
+              <span>Currency</span><span>Symbol</span><span>Your rate (Rs. for 1)</span><span>Today's rate</span><span />
+            </div>
+            {f.currencies.map((c, i) => {
+              const live = rates?.rates?.[c.code];
+              const upd = (patch: any) => set('currencies', f.currencies.map((x, j) => j === i ? { ...x, ...patch } : x));
+              return (
+                <div key={c.code} className="grid grid-cols-[5rem_6rem_1fr_1fr_2.5rem] gap-2 items-center px-3 py-2 border-b last:border-b-0">
+                  <span className="font-bold text-slate-800">{c.code}</span>
+                  <input className={input} value={c.symbol} onChange={(e) => upd({ symbol: e.target.value.slice(0, 4) })} />
+                  <input className={input} inputMode="decimal" value={String(c.rate)} onChange={(e) => upd({ rate: Number(e.target.value.replace(/[^0-9.]/g, '')) || 0 })} />
+                  <span className="text-sm text-slate-600 flex items-center gap-2">
+                    {live ? <>Rs. {live.toLocaleString('en-PK', { maximumFractionDigits: 2 })}
+                      <button type="button" className="text-[11px] font-bold text-amber-700 underline cursor-pointer" onClick={() => upd({ rate: Math.round(live * 100) / 100 })}>use</button></> : (rates ? '–' : '…')}
+                  </span>
+                  <button type="button" className="text-red-600 text-lg font-bold cursor-pointer" title="Remove" onClick={() => set('currencies', f.currencies.filter((_, j) => j !== i))}>×</button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex gap-2 max-w-md">
+            <input className={input} placeholder="Add currency code, e.g. QAR, CAD, MYR" value={newCur} maxLength={3} onChange={(e) => setNewCur(e.target.value.toUpperCase().replace(/[^A-Z]/g, ''))} />
+            <button type="button" disabled={newCur.length !== 3 || newCur === 'PKR' || f.currencies.some(c => c.code === newCur)}
+              onClick={() => { const r = rates?.rates?.[newCur]; set('currencies', [...f.currencies, { code: newCur, symbol: newCur, rate: r ? Math.round(r * 100) / 100 : 0 }]); setNewCur(''); }}
+              className="px-4 rounded-xl bg-amber-600 text-white text-sm font-bold disabled:opacity-40 cursor-pointer">Add</button>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            "Your rate" is used when automatic rates are off or cannot be loaded.{rates?.updated ? ` Today's rates from: ${rates.updated}.` : ''}
+          </p>
         </div>
       )}
 

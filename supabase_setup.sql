@@ -130,6 +130,9 @@ alter table public.orders
   alter column invoice_no set default ('ZP-' || nextval('public.invoice_seq'));
 
 update public.orders set paid_amount = 0 where paid_amount is null;
+alter table public.orders
+  add column if not exists country_iso text default 'PK',
+  add column if not exists country text default 'Pakistan';
 
 -- ---------- 5. ORDER ITEMS ----------
 create table if not exists public.order_items (
@@ -302,6 +305,13 @@ alter table public.store_settings
   add column if not exists delivery_other numeric,
   add column if not exists free_delivery_over numeric,
   add column if not exists delivery_rates jsonb,    -- {"Punjab": 250, "Sindh": 200, ...}
+  add column if not exists delivery_countries jsonb, -- {"AE": 4500, "GB": 6000, ...} charge per country (Rs.)
+  add column if not exists ship_abroad boolean,      -- deliver to countries that are not in the list above
+  add column if not exists delivery_abroad_other numeric,
+  add column if not exists currencies_enabled boolean,
+  add column if not exists currencies jsonb,         -- [{"code":"USD","symbol":"$","rate":280}] rate = Rs. for 1 unit
+  add column if not exists currency_auto boolean,    -- take today's rates automatically
+  add column if not exists currency_markup numeric,  -- % added to the rates (card / bank charges)
   add column if not exists cod_karachi_only boolean,
   add column if not exists invoice_prefix text,
   add column if not exists gst_enabled boolean,
@@ -606,6 +616,8 @@ declare
   st public.store_settings;
   o_prov text;
   o_city text;
+  o_ciso text;
+  o_cname text;
   dc numeric := 0;
   g_rate numeric := null;
   g_amt numeric := 0;
@@ -740,7 +752,23 @@ begin
   o_city := nullif(trim(coalesce(p_order ->> 'city', p_customer ->> 'city', '')), '');
   if o_city is null then raise exception 'Please select your city.'; end if;
   select * into st from public.store_settings where id = 1;
-  if coalesce(st.free_delivery_over, 0) > 0 and total >= st.free_delivery_over then
+  -- Country: Pakistan unless the customer chose another country
+  o_ciso := upper(left(coalesce(nullif(trim(coalesce(p_order ->> 'country_iso', p_customer ->> 'country_iso', '')), ''), 'PK'), 2));
+  o_cname := left(coalesce(nullif(trim(coalesce(p_order ->> 'country', p_customer ->> 'country', '')), ''), case when o_ciso = 'PK' then 'Pakistan' else o_ciso end), 80);
+  if o_ciso <> 'PK' then
+    -- Delivery abroad: the country's own charge (Admin > Delivery Charges), else the charge for other countries
+    if st.delivery_countries is not null and st.delivery_countries ? o_ciso
+       and (st.delivery_countries ->> o_ciso) ~ '^[0-9]+(\.[0-9]+)?$' then
+      dc := (st.delivery_countries ->> o_ciso)::numeric;
+    elsif coalesce(st.ship_abroad, false) then
+      dc := coalesce(st.delivery_abroad_other, 0);
+    else
+      raise exception 'Sorry, we do not deliver to % yet.', o_cname;
+    end if;
+    if coalesce(nullif(p_order ->> 'payment_method', ''), 'cod') = 'cod' then
+      raise exception 'Cash on Delivery is only inside Pakistan. Please choose Online Payment.';
+    end if;
+  elsif coalesce(st.free_delivery_over, 0) > 0 and total >= st.free_delivery_over then
     dc := 0;
   elsif lower(o_city) = 'karachi' then
     dc := coalesce(st.delivery_karachi, 0);
@@ -760,7 +788,7 @@ begin
   end if;
 
   online := coalesce(nullif(p_order ->> 'payment_method', ''), 'cod') <> 'cod';
-  if not online and coalesce(st.cod_karachi_only, true) and lower(o_city) <> 'karachi' then
+  if not online and o_ciso = 'PK' and coalesce(st.cod_karachi_only, true) and lower(o_city) <> 'karachi' then
     raise exception 'Cash on Delivery is only for Karachi. Please choose Online Payment.';
   end if;
   proof := case when online and left(coalesce(p_order ->> 'payment_proof', ''), 11) = 'data:image/'
@@ -771,7 +799,8 @@ begin
                              total_amount, payment_method, payment_status, paid_amount, transaction_id, status,
                              payment_account_id, payment_account_label, payer_name, payer_account, payer_amount,
                              payer_paid_at, has_payment_proof, customer_user_id,
-                             subtotal, delivery_charge, province, city, area, zip, gst_rate, gst_amount, gst_inclusive)
+                             subtotal, delivery_charge, province, city, area, zip, gst_rate, gst_amount, gst_inclusive,
+                             country_iso, country)
   values (upper(coalesce(nullif(trim(st.invoice_prefix), ''), 'SK')) || '-' || to_char(now() at time zone 'Asia/Karachi', 'YYMMDD')
             || '-' || nextval('public.invoice_seq'),
           cust_id, trim(p_order ->> 'customer_name'), p_order ->> 'customer_phone',
@@ -790,7 +819,7 @@ begin
           proof is not null, auth.uid(),
           total, dc, o_prov, o_city, left(nullif(trim(coalesce(p_order ->> 'area', '')), ''), 120),
           left(nullif(trim(coalesce(p_order ->> 'zip', '')), ''), 10),
-          g_rate, g_amt, g_incl)
+          g_rate, g_amt, g_incl, o_ciso, o_cname)
   returning * into o;
 
   if proof is not null then

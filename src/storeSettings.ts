@@ -58,7 +58,14 @@ export interface StoreSettings {
   delivery_karachi: number;    // delivery charge inside Karachi (0 = free)
   delivery_other: number;      // delivery charge when a province has no own charge
   delivery_rates: Record<string, number>; // delivery charge per province, e.g. { "Punjab": 250 }
-  free_delivery_over: number;  // order amount from which delivery is free (0 = never)
+  free_delivery_over: number;  // order amount from which delivery is free (0 = never) - Pakistan only
+  delivery_countries: Record<string, number>; // delivery charge per country (ISO code), e.g. { "AE": 4500 }
+  ship_abroad: boolean;        // also deliver to countries that are not in delivery_countries
+  delivery_abroad_other: number; // charge for those other countries
+  currencies_enabled: boolean; // customers can see prices in another currency
+  currencies: Currency[];      // the currencies offered (besides Rs.)
+  currency_auto: boolean;      // use today's exchange rates automatically
+  currency_markup: number;     // % added to the rate (bank / card charges)
   cod_karachi_only: boolean;   // Cash on Delivery only for Karachi; other cities must pay online
   invoice_prefix: string;      // order numbers look like SK-261022-1005
   gst_enabled: boolean;        // charge / show sales tax (GST) on invoices
@@ -148,6 +155,19 @@ export const defaultSettings: StoreSettings = {
   delivery_other: 250,
   delivery_rates: {},
   free_delivery_over: 0,
+  delivery_countries: {},
+  ship_abroad: false,
+  delivery_abroad_other: 0,
+  currencies_enabled: false,
+  currencies: [
+    { code: 'USD', symbol: '$', rate: 280 },
+    { code: 'AED', symbol: 'AED', rate: 76 },
+    { code: 'SAR', symbol: 'SAR', rate: 75 },
+    { code: 'GBP', symbol: '£', rate: 375 },
+    { code: 'EUR', symbol: '€', rate: 325 }
+  ],
+  currency_auto: true,
+  currency_markup: 0,
   cod_karachi_only: true,
   invoice_prefix: 'SK',
   gst_enabled: false,
@@ -259,6 +279,16 @@ export function mergeSettings(row: any): StoreSettings {
   out.footer_links = out.footer_links.filter((l: any) => l && typeof l.label === 'string')
     .map((l: any) => ({ label: l.label, url: String(l.url || '') }));
   if (!out.delivery_rates || typeof out.delivery_rates !== 'object' || Array.isArray(out.delivery_rates)) out.delivery_rates = {};
+  if (!out.delivery_countries || typeof out.delivery_countries !== 'object' || Array.isArray(out.delivery_countries)) out.delivery_countries = {};
+  out.ship_abroad = !!out.ship_abroad;
+  out.delivery_abroad_other = Math.max(0, Number(out.delivery_abroad_other) || 0);
+  out.currencies_enabled = !!out.currencies_enabled;
+  if (!Array.isArray(out.currencies)) out.currencies = defaultSettings.currencies;
+  out.currencies = out.currencies
+    .filter((c: any) => c && /^[A-Z]{3}$/.test(String(c.code || '')) && c.code !== 'PKR')
+    .map((c: any) => ({ code: String(c.code), symbol: String(c.symbol || c.code), rate: Math.max(0, Number(c.rate) || 0) }));
+  out.currency_auto = out.currency_auto !== false;
+  out.currency_markup = Math.min(20, Math.max(0, Number(out.currency_markup) || 0));
   return out as StoreSettings;
 }
 
@@ -479,7 +509,13 @@ export function writeShopCache(data: any) {
 
 // Delivery charge for an order (the database calculates the same in place_order)
 // Karachi city has its own charge; every other city uses its province's charge (or the default one).
-export function deliveryChargeFor(st: StoreSettings, province: string, city: string, subtotal: number): number {
+// Abroad: the country's own charge, or the "other countries" charge; -1 = no delivery to that country.
+export function deliveryChargeFor(st: StoreSettings, province: string, city: string, subtotal: number, country = 'PK'): number {
+  if (country && country !== 'PK') {
+    const c = st.delivery_countries ? st.delivery_countries[country] : undefined;
+    if (c !== undefined && c !== null && !isNaN(Number(c))) return Number(c);
+    return st.ship_abroad ? st.delivery_abroad_other : -1;
+  }
   if (!city) return 0;
   if (st.free_delivery_over > 0 && subtotal >= st.free_delivery_over) return 0;
   if (city.trim().toLowerCase() === 'karachi') return st.delivery_karachi;
@@ -488,6 +524,8 @@ export function deliveryChargeFor(st: StoreSettings, province: string, city: str
 }
 
 // Sales tax (GST) on the goods amount. inclusive = prices already contain the tax.
+export type Currency = { code: string; symbol: string; rate: number }; // rate = Rs. for 1 unit
+
 export function gstFor(st: StoreSettings, goods: number): { rate: number; amount: number; inclusive: boolean } {
   if (!st.gst_enabled || !(st.gst_rate > 0)) return { rate: 0, amount: 0, inclusive: true };
   const r = st.gst_rate;

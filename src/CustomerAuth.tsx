@@ -3,16 +3,30 @@ import { supabase, supabaseUrl, supabaseAnonKey } from './supabaseClient';
 import { Eye, EyeOff, Package, User, LogOut, FileText, Lock } from 'lucide-react';
 import PkAddressFields from './PkAddressFields';
 import { TrackTimeline } from './Tracking';
-import { PkAddress, emptyPkAddress, checkPkAddress, mobileDigits } from './pakistan';
+import { PkAddress, emptyPkAddress, checkPkAddress, mobileDigits, fullPhoneDigits, intlDigits } from './pakistan';
 
 // The saved address of a customer (user_metadata) as a form value
-export const addressFromMeta = (m: any): PkAddress => ({
+export const addressFromMeta = (m: any): PkAddress => {
+  const abroad = !!m.country && m.country !== 'PK';
+  const code = abroad ? String(m.phone_code || '') : '92';
+  const phone = String(m.phone || '').replace(/\D/g, '');
+  return {
+  country: abroad ? m.country : 'PK',
+  country_name: abroad ? (m.country_name || m.country) : 'Pakistan',
+  phone_code: code,
   province: m.province || '',
   city: m.city || '',
   area: m.area || '',
   address: m.address || '',
   zip: m.zip || '',
-  mobile: mobileDigits(m.phone || '')
+  mobile: abroad ? intlDigits(phone.startsWith(code) ? phone.slice(code.length) : phone) : mobileDigits(m.phone || '')
+  };
+};
+
+// What is saved in the customer's account for his address
+const addrMeta = (a: PkAddress) => ({
+  phone: fullPhoneDigits(a), country: a.country || 'PK', country_name: a.country_name || 'Pakistan', phone_code: a.phone_code || '92',
+  province: a.province, city: a.city.trim(), area: a.area.trim(), address: a.address.trim(), zip: a.zip.trim()
 });
 
 // Customer accounts (Supabase Auth): Login / Register / Forgot password / New password, and "My Account".
@@ -106,7 +120,7 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '', onBack
       if (!/^\S+@\S+\.\S+$/.test(email.trim())) throw new Error('Please enter a valid email address.');
       const bad = checkPkAddress(addr);
       if (bad) throw new Error(bad);
-      const pd = '92' + mobileDigits(addr.mobile);
+      const pd = fullPhoneDigits(addr);
       if (password.length < 6) throw new Error('Password must be at least 6 characters.');
       if (password !== password2) throw new Error('The two passwords are not the same.');
       const { data: taken } = await supabase.rpc('phone_registered', { p_phone: pd });
@@ -115,7 +129,7 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '', onBack
         email: email.trim(),
         password,
         options: {
-          data: { name: name.trim(), phone: pd, province: addr.province, city: addr.city, area: addr.area.trim(), address: addr.address.trim(), zip: addr.zip.trim() },
+          data: { name: name.trim(), ...addrMeta(addr) },
           emailRedirectTo: window.location.origin
         }
       });
@@ -239,7 +253,7 @@ export function AuthPage({ storeName, mode, setMode, onDone, notice = '', onBack
                 <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@email.com" type="email" autoComplete="email" className={box} />
               </div>
               <div className="border-t pt-4">
-                <p className="text-sm font-semibold text-slate-800 mb-3">Delivery address (Pakistan)</p>
+                <p className="text-sm font-semibold text-slate-800 mb-3">Delivery address</p>
                 <PkAddressFields value={addr} onChange={setAddr} />
               </div>
               <div>
@@ -313,7 +327,7 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
     const bad = checkPkAddress(addr);
     if (bad) { setMsg(bad); return; }
     const { error } = await supabase.auth.updateUser({
-      data: { name: name.trim(), phone: '92' + mobileDigits(addr.mobile), province: addr.province, city: addr.city, area: addr.area.trim(), address: addr.address.trim(), zip: addr.zip.trim() }
+      data: { name: name.trim(), ...addrMeta(addr) }
     });
     setMsg(error ? 'Could not save: ' + error.message : 'Profile saved.');
   };

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabaseClient';
+import { price } from './currency';
 
 // ---------------------------------------------------------------------------
 // Deals (bundles): several products sold together for one special price.
@@ -45,7 +46,8 @@ export interface DealProduct {
   variant_label?: string;
 }
 
-const money = (n: number) => 'Rs. ' + Math.round(Number(n) || 0).toLocaleString('en-PK');
+// shown in the customer's chosen currency (Rs. in the admin)
+const money = (n: number) => price(Math.round(Number(n) || 0));
 
 const variantOf = (p: DealProduct | undefined, name?: string | null) =>
   p && name && Array.isArray(p.variants) ? p.variants.find((v) => v && v.name === name) : undefined;

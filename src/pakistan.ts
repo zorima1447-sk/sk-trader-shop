@@ -134,18 +134,33 @@ export const mobileDigits = (v: string) => {
 export const isValidMobile = (v: string) => /^3\d{9}$/.test(mobileDigits(v));
 
 export interface PkAddress {
-  province: string;
+  country: string;      // ISO code, 'PK' = Pakistan
+  country_name: string; // e.g. 'United Arab Emirates'
+  phone_code: string;   // digits, e.g. '92', '971'
+  province: string;     // province (Pakistan) or state / emirate / county (abroad)
   city: string;
   area: string;     // chosen from the list, or typed when "Other area" is chosen
   address: string;  // house / shop / street
   zip: string;
-  mobile: string;   // 10 digits after +92
+  mobile: string;   // Pakistan: 10 digits after +92. Abroad: the local number without the country code
 }
 
-export const emptyPkAddress = (): PkAddress => ({ province: '', city: '', area: '', address: '', zip: '', mobile: '' });
+export const isPk = (a: { country?: string }) => !a.country || a.country === 'PK';
+export const intlDigits = (v: string) => (v || '').replace(/\D/g, '').replace(/^0+/, '').slice(0, 15);
+// Full phone with country code, digits only: 923001234567 / 971501234567
+export const fullPhoneDigits = (a: PkAddress) => (isPk(a) ? '92' + mobileDigits(a.mobile) : (a.phone_code || '') + intlDigits(a.mobile));
+
+export const emptyPkAddress = (): PkAddress => ({ country: 'PK', country_name: 'Pakistan', phone_code: '92', province: '', city: '', area: '', address: '', zip: '', mobile: '' });
 
 // Returns a message for the first missing / wrong field, or '' when everything is fine.
 export function checkPkAddress(a: PkAddress): string {
+  if (!isPk(a)) {
+    const d = intlDigits(a.mobile);
+    if (d.length < 6) return 'Please enter a valid mobile number.';
+    if (!a.city.trim()) return 'Please enter your city.';
+    if (!a.address.trim()) return 'Please enter your house / flat and street address.';
+    return '';
+  }
   if (!isValidMobile(a.mobile)) return 'Please enter a valid mobile number: +92 3XX XXXXXXX.';
   if (!a.province) return 'Please select your province.';
   if (!a.city) return 'Please select your city.';
@@ -156,7 +171,7 @@ export function checkPkAddress(a: PkAddress): string {
 }
 
 export const fullPkAddress = (a: PkAddress) =>
-  [a.address.trim(), a.area.trim(), a.city, a.province, 'Pakistan', a.zip ? `Postal Code: ${a.zip.trim()}` : ''].filter(Boolean).join(', ');
+  [a.address.trim(), a.area.trim(), a.city, a.province, isPk(a) ? 'Pakistan' : (a.country_name || a.country), a.zip ? `Postal Code: ${a.zip.trim()}` : ''].filter(Boolean).join(', ');
 
 // All city names (for admin filters) and a helper that finds the city in an older address text
 export const ALL_CITIES = Object.values(PAKISTAN).flatMap(p => Object.keys(p)).sort();
