@@ -125,7 +125,7 @@ export default async function middleware(req) {
 
     // ---- the blog list ----
     if (blogList) {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=slug,title,description,cover_url&kind=eq.blog&published=eq.true&order=sort_order.asc,created_at.desc`, { headers: H });
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=slug,title,description,cover_url&kind=eq.blog&published=eq.true&order=sort_order.asc,publish_at.desc.nullslast,created_at.desc`, { headers: H });
       const list = r.ok ? await r.json() : [];
       html = setTags(html, { title: 'Hair & Beauty Tips - Blog | SK TRADER', desc: 'Hair care, skin care and beauty tips from SK Trader Karachi: hair fall, dandruff, hair colour, masks and more.', link: `${SITE}/blog`, img: `${SITE}/api/logo`, type: 'website' });
       html = addContent(html, `<h1>Hair &amp; Beauty Tips</h1>${(list || []).map((p) => `<article><h2><a href="/blog/${esc(p.slug)}">${esc(p.title)}</a></h2><p>${esc(p.description || '')}</p></article>`).join('')}`);
@@ -135,7 +135,7 @@ export default async function middleware(req) {
     // ---- an info page or a blog article ----
     const kind = m ? 'blog' : 'page';
     const q = `slug=eq.${encodeURIComponent(slug)}&kind=eq.${kind}&published=eq.true`;
-    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at,translations&${q}`, { headers: H });
+    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at,publish_at,translations&${q}`, { headers: H });
     if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at&${q}`, { headers: H });
     const rows = r.ok ? await r.json() : [];
     const p0 = rows && rows[0];
@@ -160,7 +160,7 @@ export default async function middleware(req) {
     if (kind === 'blog') {
       html = addLd(html, {
         '@context': 'https://schema.org', '@type': 'BlogPosting', headline: p.title, description: desc, image: [img],
-        datePublished: p.created_at, dateModified: p.updated_at || p.created_at, mainEntityOfPage: link, inLanguage: 'ur-PK',
+        datePublished: p.publish_at || p.created_at, dateModified: p.updated_at || p.created_at, mainEntityOfPage: link, inLanguage: 'ur-PK',
         author: { '@type': 'Organization', name: 'SK TRADER', url: SITE },
         publisher: { '@type': 'Organization', name: 'SK TRADER', logo: { '@type': 'ImageObject', url: `${SITE}/api/logo` } },
       });

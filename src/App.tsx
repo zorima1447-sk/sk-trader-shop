@@ -182,7 +182,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v27.0 (28-Oct-2026)';
+const BUILD = 'v28.0 (28-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -3842,6 +3842,9 @@ export default function App() {
                 <div className="p-3 border-t border-slate-800 space-y-2">
                   <button onClick={() => { setCurrentView('store'); setAdminMenuOpen(false); }} className="w-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white py-2 rounded cursor-pointer">
                     View my shop
+                  </button>
+                  <button onClick={() => { setAdminMenuOpen(false); goPath('/blog'); }} className="w-full text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white py-2 rounded cursor-pointer">
+                    Open my blog ↗
                   </button>
                   <button onClick={adminLogout} className="w-full text-xs font-semibold bg-red-600 hover:bg-red-700 text-white py-2 rounded flex items-center justify-center gap-1.5 cursor-pointer">
                     <LogOut className="w-3.5 h-3.5" /> Logout

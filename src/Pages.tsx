@@ -26,6 +26,7 @@ export interface Post {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  publish_at?: string | null;   // future time = scheduled (published automatically at that time)
   translations?: Translations | null;
 }
 
@@ -96,12 +97,18 @@ export const postPath = (p: Pick<Post, 'kind' | 'slug'>) => (p.kind === 'blog' ?
 export const slugify = (t: string) =>
   t.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
 
+// visible to readers: published and its publish time has come
+export const isLive = (p: Pick<Post, 'published' | 'publish_at'>) => !!p.published && (!p.publish_at || new Date(p.publish_at).getTime() <= Date.now());
+export const postDate = (p: Pick<Post, 'publish_at' | 'created_at'>) => p.publish_at || p.created_at;
+
 export async function fetchPosts(all = false): Promise<Post[]> {
   let q = supabase.from('site_posts').select('*');
   if (!all) q = q.eq('published', true);
   const { data, error } = await q.order('sort_order', { ascending: true }).order('created_at', { ascending: false });
   if (error) return [];
-  return (data || []) as Post[];
+  const list = (data || []) as Post[];
+  // newest article first (by its publish date); scheduled ones stay hidden until their time
+  return (all ? list : list.filter(isLive)).sort((a, b) => (a.kind !== b.kind ? 0 : a.sort_order - b.sort_order || new Date(postDate(b)).getTime() - new Date(postDate(a)).getTime()));
 }
 
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -343,7 +350,7 @@ export function PageView({ post, posts, products, store, onOpenProduct, onNaviga
       <h1 lang={LANGS[cur].html} dir={rtl ? 'rtl' : undefined} className={`site-heading text-2xl sm:text-4xl font-black text-slate-900 leading-tight ${rtl ? 'urdu-text' : ''}`}>{tx.title}</h1>
       {isBlog && (
         <p className="text-xs text-slate-500 mt-2">
-          {store.name} · {fmtDate(post.created_at)} · {readMinutes(post.body || '')} min read
+          {store.name} · {fmtDate(postDate(post))} · {readMinutes(tx.body || '')} min read
         </p>
       )}
       {post.cover_url && <img src={post.cover_url} alt={post.title} className="w-full rounded-2xl mt-5 object-cover max-h-[28rem] bg-slate-100" />}
@@ -492,6 +499,13 @@ export function splitHtml(html: string, max: number): string[] {
   return out.length ? out : [html];
 }
 
+// ISO time -> value for <input type="datetime-local"> (the admin's own clock)
+export function toLocalInput(iso: string) {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 type Stat = { id: string; views: number; readers: number; views_all: number; likes: number; comments: number; pending: number };
 
 export function PagesAdmin({ settings, onSaveAds, onChanged }: {
@@ -507,6 +521,38 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
   const [slugTouched, setSlugTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState('');
+  const [pubMode, setPubMode] = useState<'now' | 'schedule' | 'draft'>('now');
+  const [pubAt, setPubAt] = useState('');
+  const [autoStart, setAutoStart] = useState(() => toLocalInput(new Date(Date.now() + 86400000).toISOString()).slice(0, 10));
+  const [autoTime, setAutoTime] = useState('10:00');
+  const openEdit = (p: Partial<Post>) => {
+    setSlugTouched(false); setMsg('');
+    const future = !!p.publish_at && new Date(p.publish_at).getTime() > Date.now();
+    setPubMode(p.published === false ? 'draft' : future ? 'schedule' : 'now');
+    setPubAt(p.publish_at ? toLocalInput(p.publish_at) : '');
+    setEdit(p);
+  };
+  const publishNow = async (p: Post) => {
+    const { error } = await supabase.from('site_posts').update({ published: true, publish_at: new Date().toISOString() }).eq('id', p.id);
+    if (error) { setMsg(error.message); return; }
+    setMsg(`"${p.title}" is now live.`); load(); onChanged();
+  };
+  // one article per day: every blog article that is not live yet gets the next free day
+  const autoSchedule = async () => {
+    const waiting = (posts || []).filter((p) => p.kind === 'blog' && !isLive(p))
+      .sort((a, b) => (a.publish_at || '9').localeCompare(b.publish_at || '9') || a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at));
+    if (!waiting.length) { setMsg('All articles are already live - nothing to schedule.'); return; }
+    if (!window.confirm(`Schedule ${waiting.length} article(s): one per day from ${autoStart} at ${autoTime}?`)) return;
+    const [hh, mm] = autoTime.split(':').map(Number);
+    for (let i = 0; i < waiting.length; i++) {
+      const d = new Date(`${autoStart}T00:00`);
+      d.setDate(d.getDate() + i); d.setHours(hh || 10, mm || 0, 0, 0);
+      const { error } = await supabase.from('site_posts').update({ published: true, publish_at: d.toISOString() }).eq('id', waiting[i].id);
+      if (error) { setMsg(error.message + (/publish_at/.test(error.message) ? ' (run supabase_v28.sql)' : '')); return; }
+    }
+    setMsg(`${waiting.length} article(s) scheduled - one will appear on the website every day at ${autoTime}.`);
+    load(); onChanged();
+  };
   const [msg, setMsg] = useState('');
   const [ads, setAds] = useState(settings);
   useEffect(() => setAds(settings), [settings.adsense_client, settings.ads_place, settings.adsense_slot]);
@@ -601,11 +647,20 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
       cover_url: (edit.cover_url || '').trim() || null,
       body: sanitizeHtml(edit.body || ''),
       published: edit.published !== false,
+      publish_at: pubMode === 'schedule'
+        ? (pubAt ? new Date(pubAt).toISOString() : null)
+        : (edit.publish_at && new Date(edit.publish_at).getTime() <= Date.now() ? edit.publish_at : (edit.published !== false ? new Date().toISOString() : (edit.publish_at || null))),
       sort_order: Number(edit.sort_order) || 0,
       translations: t,
       updated_at: new Date().toISOString(),
     };
     let res = edit.id ? await supabase.from('site_posts').update(row).eq('id', edit.id) : await supabase.from('site_posts').insert([row]);
+    if (res.error && /publish_at/.test(res.error.message)) {
+      // database not updated yet (supabase_v28.sql): save without the schedule
+      delete row.publish_at;
+      res = edit.id ? await supabase.from('site_posts').update(row).eq('id', edit.id) : await supabase.from('site_posts').insert([row]);
+      if (!res.error && pubMode === 'schedule') setMsg('Saved and published now - scheduling needs supabase_v28.sql.');
+    }
     if (res.error && /translations/.test(res.error.message)) {
       // database not updated yet (supabase_v23.sql): save without the translations
       delete row.translations;
@@ -721,9 +776,15 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer">
-            <input type="checkbox" checked={edit.published !== false} onChange={(e) => setEdit({ ...edit, published: e.target.checked })} /> Published (visible on the website)
-          </label>
+          <div className="w-full rounded-xl border bg-slate-50 p-3 space-y-2">
+            <p className="text-xs font-bold text-slate-700">When should readers see it?</p>
+            <label className="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" checked={pubMode === 'now'} onChange={() => { setPubMode('now'); setEdit({ ...edit, published: true }); }} /> Publish now</label>
+            <label className="flex flex-wrap items-center gap-2 text-sm cursor-pointer">
+              <input type="radio" checked={pubMode === 'schedule'} onChange={() => { setPubMode('schedule'); setEdit({ ...edit, published: true }); if (!pubAt) setPubAt(toLocalInput(new Date(Date.now() + 86400000).toISOString())); }} /> Publish automatically on
+              <input type="datetime-local" className={input + ' w-auto'} value={pubAt} onChange={(e) => { setPubAt(e.target.value); setPubMode('schedule'); setEdit({ ...edit, published: true }); }} />
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" checked={pubMode === 'draft'} onChange={() => { setPubMode('draft'); setEdit({ ...edit, published: false }); }} /> Draft (hidden, not published)</label>
+          </div>
           <label className="flex items-center gap-2 text-sm text-slate-700">Order <input className={input + ' w-20'} inputMode="numeric" value={String(edit.sort_order || 0)} onChange={(e) => setEdit({ ...edit, sort_order: Number(e.target.value.replace(/[^0-9-]/g, '')) || 0 })} /></label>
         </div>
         {msg && <p className="text-sm text-red-600">{msg}</p>}
@@ -742,14 +803,19 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
       <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b last:border-0">
         {p.kind === 'blog' && (p.cover_url ? <img src={p.cover_url} alt="" className="w-14 h-10 rounded object-cover" /> : <div className="w-14 h-10 rounded bg-amber-100" />)}
         <div className="flex-1 min-w-[12rem]">
-          <p className="font-semibold text-slate-800">{p.title} {!p.published && <span className="text-[10px] font-bold bg-slate-200 text-slate-600 rounded px-1.5 py-0.5 ml-1">HIDDEN</span>}</p>
+          <p className="font-semibold text-slate-800">{p.title}{' '}
+            {!p.published ? <span className="text-[10px] font-bold bg-slate-200 text-slate-600 rounded px-1.5 py-0.5 ml-1">DRAFT</span>
+              : !isLive(p) ? <span className="text-[10px] font-bold bg-violet-100 text-violet-700 rounded px-1.5 py-0.5 ml-1">SCHEDULED · {new Date(p.publish_at as string).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+              : <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded px-1.5 py-0.5 ml-1">LIVE</span>}
+          </p>
           <a href={postPath(p)} target="_blank" rel="noreferrer" className="text-xs text-amber-700 underline">sktraderpk.com{postPath(p)}</a>
           <p className="text-[11px] text-slate-500 mt-0.5">
             {tl.map((k) => LANGS[k].name).join(' · ')}
             {st && <> · 👁 {st.views_all} views · ♥ {st.likes} · 💬 {st.comments}{st.pending ? <b className="text-amber-700"> ({st.pending} waiting)</b> : null}</>}
           </p>
         </div>
-        <button onClick={() => { setSlugTouched(false); setMsg(''); setTab(origLang(p)); setEdit({ ...p, translations: { _orig: origLang(p), ...(p.translations || {}) } }); }} className="px-3 py-1.5 rounded-lg border text-sm font-semibold cursor-pointer">Edit</button>
+        <button onClick={() => { setTab(origLang(p)); openEdit({ ...p, translations: { _orig: origLang(p), ...(p.translations || {}) } }); }} className="px-3 py-1.5 rounded-lg border text-sm font-semibold cursor-pointer">Edit</button>
+        {!isLive(p) && <button onClick={() => publishNow(p)} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-bold cursor-pointer">Publish now</button>}
         <button onClick={() => remove(p)} className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-sm font-semibold cursor-pointer">Delete</button>
       </div>
     );
@@ -760,11 +826,20 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
       {msg && <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-sm">{msg}</div>}
       <div className="bg-white rounded-3xl p-5 border shadow-sm">
         <div className="flex items-center justify-between gap-2 border-b pb-2 mb-2">
-          <h3 className="text-lg font-extrabold text-slate-900">Blog articles ({blog.length})</h3>
-          <button onClick={() => { setSlugTouched(false); setMsg(''); setTab('roman'); setEdit(emptyPost('blog')); }} className="px-4 py-2 rounded-xl bg-amber-600 text-white text-sm font-bold cursor-pointer">+ New article</button>
+          <h3 className="text-lg font-extrabold text-slate-900">Blog articles ({blog.length}) <a href="/blog" target="_blank" rel="noreferrer" className="ml-2 text-xs font-bold text-amber-700 underline">Open blog ↗</a></h3>
+          <button onClick={() => { setTab('roman'); openEdit(emptyPost('blog')); }} className="px-4 py-2 rounded-xl bg-amber-600 text-white text-sm font-bold cursor-pointer">+ New article</button>
         </div>
         {posts === null ? <p className="text-slate-400 text-sm">Loading…</p> : blog.length ? blog.map(row) : <p className="text-sm text-slate-400">No articles yet.</p>}
         <p className="text-[11px] text-slate-500 mt-3">Write 1-2 articles every week about problems people search on Google (hair fall, dandruff, hair colour, skin care). Each article brings visitors and shows your products.</p>
+        <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+          <p className="text-sm font-bold text-violet-900">⏰ Auto publish: one article per day</p>
+          <p className="text-[11px] text-violet-800 mb-2">All articles that are not live yet (drafts and scheduled) get one day each. They appear on the website by themselves at that time - nothing else to do.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs">Start <input type="date" className={input + ' w-auto'} value={autoStart} onChange={(e) => setAutoStart(e.target.value)} /></label>
+            <label className="text-xs">Time <input type="time" className={input + ' w-auto'} value={autoTime} onChange={(e) => setAutoTime(e.target.value)} /></label>
+            <button onClick={autoSchedule} className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold cursor-pointer">Schedule</button>
+          </div>
+        </div>
       </div>
 
       <div className="bg-white rounded-3xl p-5 border shadow-sm">
@@ -789,7 +864,7 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
       <div className="bg-white rounded-3xl p-5 border shadow-sm">
         <div className="flex items-center justify-between gap-2 border-b pb-2 mb-2">
           <h3 className="text-lg font-extrabold text-slate-900">Pages ({pages.length})</h3>
-          <button onClick={() => { setSlugTouched(false); setMsg(''); setTab('en'); setEdit(emptyPost('page')); }} className="px-4 py-2 rounded-xl border text-sm font-bold cursor-pointer">+ New page</button>
+          <button onClick={() => { setTab('en'); openEdit(emptyPost('page')); }} className="px-4 py-2 rounded-xl border text-sm font-bold cursor-pointer">+ New page</button>
         </div>
         {posts === null ? <p className="text-slate-400 text-sm">Loading…</p> : pages.map(row)}
         <p className="text-[11px] text-slate-500 mt-3">All published pages are linked in the website footer automatically.</p>

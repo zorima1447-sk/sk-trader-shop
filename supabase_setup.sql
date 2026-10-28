@@ -1025,7 +1025,8 @@ create table if not exists public.site_posts (
 alter table public.site_posts enable row level security;
 drop policy if exists "site_posts read" on public.site_posts;
 drop policy if exists "site_posts admin" on public.site_posts;
-create policy "site_posts read" on public.site_posts for select using (published or public.is_admin());
+alter table public.site_posts add column if not exists publish_at timestamptz;   -- empty = at once; a future time = scheduled
+create policy "site_posts read" on public.site_posts for select using ((published and (publish_at is null or publish_at <= now())) or public.is_admin());
 create policy "site_posts admin" on public.site_posts for all using (public.is_admin()) with check (public.is_admin());
 grant select on public.site_posts to anon, authenticated;
 grant insert, update, delete on public.site_posts to anon, authenticated;
@@ -1172,7 +1173,7 @@ as $$
 declare
   p public.site_posts;
 begin
-  select * into p from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published;
+  select * into p from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published and (publish_at is null or publish_at <= now());
   if p.id is null then return null; end if;
   return json_build_object(
     'views', (select count(*) from public.site_events e where e.event = 'post_view' and e.path like '/blog/' || p.slug || '%'),
@@ -1196,7 +1197,7 @@ declare
   liked boolean;
 begin
   if length(v) < 6 then raise exception 'Please allow the website to save data in your browser.'; end if;
-  select id into pid from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published;
+  select id into pid from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published and (publish_at is null or publish_at <= now());
   if pid is null then raise exception 'Article not found.'; end if;
   if exists (select 1 from public.post_likes where post_id = pid and visitor_id = v) then
     delete from public.post_likes where post_id = pid and visitor_id = v; liked := false;
@@ -1222,7 +1223,7 @@ begin
   if nm = '' then raise exception 'Please write your name.'; end if;
   if length(bd) < 3 then raise exception 'Please write your comment.'; end if;
   if bd ~* '(https?://|www\.)' then raise exception 'Links are not allowed in comments.'; end if;
-  select id into pid from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published;
+  select id into pid from public.site_posts where slug = lower(p_slug) and kind = 'blog' and published and (publish_at is null or publish_at <= now());
   if pid is null then raise exception 'Article not found.'; end if;
   if (select count(*) from public.post_comments where visitor_id = v and created_at > now() - interval '1 hour') >= 3 then
     raise exception 'Too many comments. Please try again later.';
@@ -1244,7 +1245,7 @@ as $$
     (select count(*) from public.post_comments c where c.post_id = p.id and c.approved),
     exists (select 1 from public.post_likes l where l.post_id = p.id and l.visitor_id = coalesce(p_visitor, ''))
   from public.site_posts p
-  where p.kind = 'blog' and p.published
+  where p.kind = 'blog' and p.published and (p.publish_at is null or p.publish_at <= now())
 $$;
 grant execute on function public.post_counts(text) to anon, authenticated;
 
