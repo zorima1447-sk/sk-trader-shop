@@ -1248,6 +1248,50 @@ as $$
 $$;
 grant execute on function public.post_counts(text) to anon, authenticated;
 
+-- Blog readers: where they came from (platform, website / link) and their city - per article and for the whole blog
+create or replace function public.admin_blog_traffic(p_days int default 30)
+returns json
+language plpgsql stable security definer
+set search_path = public
+as $$
+declare
+  since timestamptz := now() - make_interval(days => greatest(1, least(coalesce(p_days, 30), 3650)));
+begin
+  if not public.is_admin() then raise exception 'Admin login required.'; end if;
+  return (
+    with ev as (
+      select e.*, substring(e.path from '^/blog/([a-z0-9-]+)') as slug,
+             nullif(lower(substring(coalesce(e.referrer, '') from '^https?://(?:www\.|m\.|l\.|lm\.)?([^/:?#]+)')), '') as ref_site
+      from public.site_events e
+      where e.event = 'post_view' and e.created_at >= since
+    ),
+    ev2 as (
+      select ev.*,
+        case when ref_site is null then null
+             when ref_site like '%sktraderpk.com%' or ref_site like '%vercel.app%' then '(inside the website)'
+             else ref_site end as ref_name
+      from ev where slug is not null
+    )
+    select json_build_object(
+      'all', json_build_object(
+        'sources', (select coalesce(json_agg(x order by x.n desc), '[]'::json) from (select coalesce(source, 'direct') as name, count(distinct visitor_id) as n from ev2 group by 1) x),
+        'cities', (select coalesce(json_agg(x order by x.n desc), '[]'::json) from (select coalesce(city, 'Unknown') as name, count(distinct visitor_id) as n from ev2 group by 1 order by 2 desc limit 15) x),
+        'referrers', (select coalesce(json_agg(x order by x.n desc), '[]'::json) from (select ref_name as name, count(*) as n from ev2 where ref_name is not null group by 1 order by 2 desc limit 15) x),
+        'devices', (select coalesce(json_agg(x order by x.n desc), '[]'::json) from (select coalesce(device, 'unknown') as name, count(distinct visitor_id) as n from ev2 group by 1) x)
+      ),
+      'posts', (select coalesce(json_agg(y), '[]'::json) from (
+        select s.slug,
+          (select json_agg(x order by x.n desc) from (select coalesce(source, 'direct') as name, count(*) as n from ev2 where ev2.slug = s.slug group by 1) x) as sources,
+          (select json_agg(x order by x.n desc) from (select coalesce(city, 'Unknown') as name, count(*) as n from ev2 where ev2.slug = s.slug group by 1 order by 2 desc limit 8) x) as cities,
+          (select json_agg(x order by x.n desc) from (select ref_name as name, count(*) as n from ev2 where ev2.slug = s.slug and ref_name is not null group by 1 order by 2 desc limit 8) x) as referrers,
+          (select json_agg(x order by x.at desc) from (select created_at as at, coalesce(city, '') as city, coalesce(source, 'direct') as source, coalesce(ref_name, '') as ref, left(coalesce(referrer, ''), 300) as link, coalesce(device, '') as device, coalesce(user_name, user_email, '') as who
+                                                        from ev2 where ev2.slug = s.slug order by created_at desc limit 15) x) as recent
+        from (select distinct slug from ev2) s) y)
+    )
+  );
+end $$;
+grant execute on function public.admin_blog_traffic(int) to anon, authenticated;
+
 -- Admin: numbers per article (Visitors Report and Blog & Pages)
 create or replace function public.admin_blog_stats(p_days int default 30)
 returns json
@@ -1269,6 +1313,55 @@ begin
     from public.site_posts p where p.kind = 'blog') x);
 end $$;
 grant execute on function public.admin_blog_stats(int) to anon, authenticated;
+
+-- Admin: where the readers of ONE article come from (platform, website link, city, device)
+create or replace function public.admin_blog_detail(p_slug text, p_days int default 30)
+returns json
+language plpgsql stable security definer
+set search_path = public
+as $$
+declare
+  since timestamptz := now() - make_interval(days => greatest(1, least(coalesce(p_days, 30), 3650)));
+  res json;
+begin
+  if not public.is_admin() then raise exception 'Admin login required.'; end if;
+  with ev as (
+    select * from public.site_events
+    where event = 'post_view' and path like '/blog/' || lower(p_slug) || '%' and created_at >= since
+  )
+  select json_build_object(
+    'views', (select count(*) from ev),
+    'readers', (select count(distinct visitor_id) from ev),
+    'sources', (select coalesce(json_agg(x order by x.readers desc), '[]'::json) from (
+        select coalesce(nullif(source, ''), 'direct') as name, count(distinct visitor_id) as readers, count(*) as views
+        from ev group by 1) x),
+    'links', (select coalesce(json_agg(x order by x.views desc), '[]'::json) from (
+        select lower(substring(referrer from '^https?://(?:www\.)?([^/?#]+)')) as site,
+               min(referrer) as example, count(*) as views, count(distinct visitor_id) as readers
+        from ev
+        where coalesce(referrer, '') ~ '^https?://' and referrer !~* '^https?://(www\.)?sktraderpk\.com'
+        group by 1 order by 3 desc limit 20) x),
+    'campaigns', (select coalesce(json_agg(x order by x.views desc), '[]'::json) from (
+        select substring(path from '[?&]utm_campaign=([^&#]+)') as name, count(*) as views
+        from ev where path ~ '[?&]utm_campaign=' group by 1 order by 2 desc limit 20) x),
+    'languages', (select coalesce(json_agg(x order by x.views desc), '[]'::json) from (
+        select coalesce(substring(path from '[?&]lang=([a-z]+)'), 'original') as name, count(*) as views
+        from ev group by 1) x),
+    'cities', (select coalesce(json_agg(x order by x.readers desc), '[]'::json) from (
+        select coalesce(city, 'Unknown') as name, max(country) as country, count(distinct visitor_id) as readers
+        from ev group by 1 order by 3 desc limit 25) x),
+    'devices', (select coalesce(json_agg(x order by x.readers desc), '[]'::json) from (
+        select coalesce(device, 'unknown') as name, count(distinct visitor_id) as readers from ev group by 1) x),
+    'daily', (select coalesce(json_agg(x order by x.day), '[]'::json) from (
+        select to_char((created_at at time zone 'Asia/Karachi')::date, 'YYYY-MM-DD') as day, count(*) as views
+        from ev group by 1) x),
+    'recent', (select coalesce(json_agg(x order by x.created_at desc), '[]'::json) from (
+        select created_at, city, country, device, source, referrer, user_name, user_email
+        from ev order by created_at desc limit 40) x)
+  ) into res;
+  return res;
+end $$;
+grant execute on function public.admin_blog_detail(text, int) to anon, authenticated;
 
 -- Admin: all comments
 create or replace function public.admin_comments()

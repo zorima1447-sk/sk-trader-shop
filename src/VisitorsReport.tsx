@@ -63,12 +63,47 @@ function Bars({ rows, total }: { rows: { name: string; value: number }[]; total:
   );
 }
 
+// One article: platforms, websites / links, cities and the latest readers
+function PostTraffic({ t }: { t: Row }) {
+  const list = (rows: Row[] | null, label?: (x: string) => string) => (rows && rows.length
+    ? <ul className="space-y-0.5">{rows.map((r) => <li key={r.name} className="flex justify-between gap-2"><span className="truncate">{label ? label(r.name) : r.name}</span><b>{n(r.n)}</b></li>)}</ul>
+    : <p className="text-slate-400">–</p>);
+  return (
+    <div className="text-xs space-y-3">
+      <div className="grid sm:grid-cols-3 gap-4">
+        <div><p className="font-bold text-slate-700 mb-1">Platform</p>{list(t.sources, (x) => SOURCE_LABEL[x] || x)}</div>
+        <div><p className="font-bold text-slate-700 mb-1">Website / link</p>{list(t.referrers)}</div>
+        <div><p className="font-bold text-slate-700 mb-1">City</p>{list(t.cities)}</div>
+      </div>
+      {(t.recent || []).length > 0 && (
+        <div>
+          <p className="font-bold text-slate-700 mb-1">Latest readers</p>
+          <div className="divide-y bg-white rounded-lg border">
+            {(t.recent as Row[]).map((r, i) => (
+              <div key={i} className="px-2 py-1 flex flex-wrap gap-x-3 gap-y-0.5 items-center">
+                <span className="text-slate-400 w-20 shrink-0">{ago(r.at)}</span>
+                <span className="font-semibold">{r.who || 'A reader'}{r.city ? ` · ${r.city}` : ''}</span>
+                <span>via {SOURCE_LABEL[r.source] || r.source}</span>
+                {r.device && <span className="text-slate-400">{r.device}</span>}
+                {r.link && <a href={r.link} target="_blank" rel="noreferrer" className="text-sky-700 underline truncate max-w-[18rem]" title={r.link}>{r.ref || r.link}</a>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id: string) => void }) {
   const [days, setDays] = useState(7);
   const [data, setData] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [blog, setBlog] = useState<Row[] | null>(null);
+  const [traffic, setTraffic] = useState<Row | null>(null);
+  const [openPost, setOpenPost] = useState('');
+  const [printing, setPrinting] = useState(false);
 
   const load = async (d = days) => {
     setLoading(true); setError('');
@@ -83,15 +118,22 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
     setData(res as Stats);
     const b = await supabase.rpc('admin_blog_stats', { p_days: d });
     setBlog(b.error ? null : ((b.data as any[]) || []));
+    const tr = await supabase.rpc('admin_blog_traffic', { p_days: d });
+    setTraffic(tr.error ? null : (tr.data as any));
   };
 
   // Download PDF: opens the report alone in a print window -> "Save as PDF"
   const downloadPdf = () => {
+    // open the window at once (so the browser allows it), show every article's details, then fill it
+    const w = window.open('', '_blank');
+    setPrinting(true);
+    setTimeout(() => { writeReport(w); setPrinting(false); }, 200);
+  };
+  const writeReport = (w: Window | null) => {
     const el = document.getElementById('visitors-report');
     if (!el) return;
     const name = `SK-Trader-Visitors-Report-${(PERIODS.find((p) => p.d === days)?.label || days + ' days').replace(/\s/g, '')}-${new Date().toISOString().slice(0, 10)}`;
     const css = Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map((e) => e.outerHTML).join('');
-    const w = window.open('', '_blank');
     if (!w) {
       // pop-ups blocked: print this page (only the report is printed)
       document.body.classList.add('print-report');
@@ -275,21 +317,51 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
                     <th className="py-2 px-2 text-right">All-time views</th><th className="py-2 px-2 text-right">Likes</th><th className="py-2 pl-2 text-right">Comments</th>
                   </tr></thead>
                   <tbody>
-                    {blog.map((b) => (
-                      <tr key={b.id} className="border-b last:border-0">
-                        <td className="py-2 pr-2"><a href={`/blog/${b.slug}`} target="_blank" rel="noreferrer" className="font-medium text-slate-800 hover:underline">{b.title}</a>{!b.published && <span className="ml-1 text-[10px] text-slate-400">(hidden)</span>}</td>
+                    {blog.map((b) => {
+                      const t = (traffic?.posts || []).find((x: Row) => x.slug === b.slug);
+                      const isOpen = openPost === b.slug;
+                      return (
+                      <React.Fragment key={b.id}>
+                      <tr className="border-b last:border-0">
+                        <td className="py-2 pr-2">
+                          <a href={`/blog/${b.slug}`} target="_blank" rel="noreferrer" className="font-medium text-slate-800 hover:underline">{b.title}</a>{!b.published && <span className="ml-1 text-[10px] text-slate-400">(hidden)</span>}
+                          {t && <button onClick={() => setOpenPost(isOpen ? '' : b.slug)} className="no-print block text-xs font-bold text-amber-700 mt-0.5">{isOpen ? '▲ Hide details' : '▼ Where did readers come from?'}</button>}
+                        </td>
                         <td className="py-2 px-2 text-right font-semibold">{n(b.views)}</td>
                         <td className="py-2 px-2 text-right">{n(b.readers)}</td>
                         <td className="py-2 px-2 text-right">{n(b.views_all)}</td>
                         <td className="py-2 px-2 text-right">♥ {n(b.likes)}</td>
                         <td className="py-2 pl-2 text-right">{n(b.comments)}{Number(b.pending) > 0 && <span className="text-amber-700 text-xs"> (+{b.pending} waiting)</span>}</td>
                       </tr>
-                    ))}
+                      {t && (isOpen || printing) && (
+                        <tr className="border-b bg-slate-50/60">
+                          <td colSpan={6} className="p-3">
+                            <PostTraffic t={t} />
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
+                    );})}
                   </tbody>
                 </table>
               </div>
             )}
           </Card>
+
+          {traffic && (traffic.all?.sources || []).length > 0 && (
+            <div className="grid md:grid-cols-3 gap-4">
+              <Card title="Blog readers came from">
+                <Bars total={(traffic.all.sources || []).reduce((a: number, r: Row) => a + Number(r.n || 0), 0)} rows={(traffic.all.sources || []).map((r: Row) => ({ name: SOURCE_LABEL[r.name] || r.name, value: Number(r.n) }))} />
+              </Card>
+              <Card title="Websites / links that sent readers">
+                {(traffic.all.referrers || []).length === 0 ? <p className="text-sm text-slate-400">No links yet (people typed the address or opened it from an app).</p>
+                  : <Bars total={(traffic.all.referrers || []).reduce((a: number, r: Row) => a + Number(r.n || 0), 0)} rows={(traffic.all.referrers || []).map((r: Row) => ({ name: r.name, value: Number(r.n) }))} />}
+              </Card>
+              <Card title="Blog readers' cities">
+                <Bars total={(traffic.all.cities || []).reduce((a: number, r: Row) => a + Number(r.n || 0), 0)} rows={(traffic.all.cities || []).map((r: Row) => ({ name: r.name, value: Number(r.n) }))} />
+              </Card>
+            </div>
+          )}
 
           <Card title="Tips to get more visitors">
             <ul className="text-sm text-slate-600 space-y-1.5 list-disc pl-5">
