@@ -14,8 +14,8 @@ export default async function handler() {
   let posts = [];
   try {
     const h = { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` };
-    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at,translations&published=eq.true&order=sort_order.asc`, { headers: h });
-    if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at&published=eq.true&order=sort_order.asc`, { headers: h });
+    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,body,title,updated_at,translations&published=eq.true&order=sort_order.asc`, { headers: h });
+    if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,body,title,updated_at&published=eq.true&order=sort_order.asc`, { headers: h });
     if (r.ok) posts = await r.json();
   } catch { /* no pages yet */ }
   try {
@@ -31,8 +31,9 @@ export default async function handler() {
     `  <url><loc>${SITE}/blog</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>`,
     ...posts.map((p) => {
       const path = p.kind === 'blog' ? `/blog/${p.slug}` : `/${p.slug}`;
-      const img = p.cover_url && /^https?:\/\//.test(p.cover_url)
-        ? `<image:image><image:loc>${esc(p.cover_url)}</image:loc><image:title>${esc(p.title)}</image:title></image:image>` : '';
+      const pic = p.cover_url || ((/<img[^>]+src=["']([^"']+)["']/i.exec(p.body || '') || [])[1] || '');
+      const img = /^https?:\/\//.test(pic)
+        ? `<image:image><image:loc>${esc(pic)}</image:loc><image:title>${esc(p.title)}</image:title></image:image>` : '';
       const mod = p.updated_at ? `<lastmod>${String(p.updated_at).slice(0, 10)}</lastmod>` : '';
       const tr = p.translations && typeof p.translations === 'object' ? p.translations : {};
       const extra = ['roman', 'en', 'ur', 'hi'].filter((k) => k !== tr._orig && tr[k] && tr[k].body)

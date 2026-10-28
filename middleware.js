@@ -4,6 +4,12 @@
 // Info pages (/about ...) and blog articles (/blog/...) are also written into the page itself,
 // so Google (and AdSense) can read them. The AdSense code is added when its ID is saved.
 // Any problem -> the normal page is shown, nothing breaks.
+function coverOf(p) {
+  if (p.cover_url) return p.cover_url;
+  const m = /<img[^>]+src=["']([^"']+)["']/i.exec(p.body || '');
+  return m ? m[1] : '';
+}
+
 export const config = { matcher: ['/', '/blog', '/blog/:slug*', '/:slug'] };
 
 const SITE = 'https://www.sktraderpk.com';
@@ -155,8 +161,9 @@ export default async function middleware(req) {
     }
     html = html.replace(/<html lang="[^"]*"/, `<html lang="${LANG_HTML[lang] || 'en'}"${lang === 'ur' ? ' dir="rtl"' : ''}`);
     const desc = (p.description || plain(p.body)).slice(0, 180);
-    const img = p.cover_url && /^https?:\/\//.test(p.cover_url) ? p.cover_url : `${SITE}/api/logo`;
-    html = setTags(html, { title: `${p.title} | SK TRADER`, desc, link, img, type: kind === 'blog' ? 'article' : 'website', big: !!p.cover_url });
+    const pic = coverOf(p);
+    const img = /^https?:\/\//.test(pic) ? pic : `${SITE}/api/logo`;
+    html = setTags(html, { title: `${p.title} | SK TRADER`, desc, link, img, type: kind === 'blog' ? 'article' : 'website', big: !!pic });
     if (kind === 'blog') {
       html = addLd(html, {
         '@context': 'https://schema.org', '@type': 'BlogPosting', headline: p.title, description: desc, image: [img],
@@ -172,7 +179,7 @@ export default async function middleware(req) {
         ],
       });
     }
-    const cover = p.cover_url ? `<img src="${esc(p.cover_url)}" alt="${esc(p.title)}" style="max-width:100%;border-radius:12px" />` : '';
+    const cover = p.cover_url && !(p.body || '').includes(p.cover_url) ? `<img src="${esc(p.cover_url)}" alt="${esc(p.title)}" style="max-width:100%;border-radius:12px" />` : '';
     html = addContent(html, `<h1>${esc(p.title)}</h1>${cover}${cleanBody(p.body)}`);
     return page(addAds(html, ads, true));
   } catch {

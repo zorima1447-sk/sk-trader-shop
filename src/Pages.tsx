@@ -14,6 +14,13 @@ import { BrandIcon } from './SocialIcons';
 // with matching products from the shop.
 // ---------------------------------------------------------------------------
 
+/** Card/thumbnail picture: the main picture, or else the first picture inside the article. */
+export function coverOf(p: { cover_url?: string | null; body?: string | null }): string {
+  if (p.cover_url && p.cover_url.trim()) return p.cover_url.trim();
+  const m = /<img[^>]+src=["']([^"']+)["']/i.exec(p.body || '');
+  return m ? m[1] : '';
+}
+
 export interface Post {
   id: string;
   kind: 'page' | 'blog';
@@ -353,7 +360,7 @@ export function PageView({ post, posts, products, store, onOpenProduct, onNaviga
           {store.name} · {fmtDate(postDate(post))} · {readMinutes(tx.body || '')} min read
         </p>
       )}
-      {post.cover_url && <img src={post.cover_url} alt={post.title} className="w-full rounded-2xl mt-5 object-cover max-h-[28rem] bg-slate-100" />}
+      {post.cover_url && !(post.body || '').includes(post.cover_url) && <img src={post.cover_url} alt={post.title} className="w-full rounded-2xl mt-5 object-cover max-h-[28rem] bg-slate-100" />}
       <div className="mt-6 bg-white rounded-2xl border p-5 sm:p-8">
         <div lang={LANGS[cur].html}><PostBody html={tx.body} products={products} onOpenProduct={onOpenProduct} ads={ads} rtl={rtl} /></div>
         {isBlog && <AdUnit ads={ads} />}
@@ -415,8 +422,8 @@ function BlogCards({ posts, onNavigate }: { posts: Post[]; onNavigate: (path: st
         return (
           <div key={p.id} className="bg-white rounded-2xl border overflow-hidden hover:shadow-lg transition flex flex-col">
             <a href={postPath(p)} onClick={open} className="block">
-              {p.cover_url
-                ? <img src={p.cover_url} alt={p.title} loading="lazy" className="w-full aspect-[16/9] object-cover bg-slate-100" />
+              {coverOf(p)
+                ? <img src={coverOf(p)} alt={p.title} loading="lazy" className="w-full aspect-[16/9] object-cover bg-slate-100" />
                 : <div className="w-full aspect-[16/9] bg-gradient-to-br from-amber-100 via-rose-50 to-amber-200 flex items-center justify-center text-4xl">💇‍♀️</div>}
             </a>
             <div className="p-4 flex-1 flex flex-col">
@@ -764,7 +771,14 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
                 }} />
               </label>
               {edit.cover_url && <button type="button" onClick={() => setEdit({ ...edit, cover_url: '' })} className="text-xs text-red-600 underline cursor-pointer">Remove</button>}
+              {!edit.cover_url && coverOf({ body: edit.body }) && (
+                <>
+                  <img src={coverOf({ body: edit.body })} alt="" className="h-20 rounded-lg border object-cover opacity-80" />
+                  <button type="button" onClick={() => setEdit({ ...edit, cover_url: coverOf({ body: edit.body }) })} className="text-xs text-blue-700 underline cursor-pointer">Use this as main picture</button>
+                </>
+              )}
             </div>
+            <p className="text-xs text-slate-500 mt-1">Ye picture blog list ke card aur Facebook/WhatsApp share par dikhti hai. Agar yahan picture na lagayen to article ke andar wali pehli picture khud card par lag jayegi.</p>
           </div>
         )}
         <div dir={LANGS[tab].rtl ? 'rtl' : undefined}>
@@ -801,7 +815,7 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
     const tl = postLangs(p);
     return (
       <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b last:border-0">
-        {p.kind === 'blog' && (p.cover_url ? <img src={p.cover_url} alt="" className="w-14 h-10 rounded object-cover" /> : <div className="w-14 h-10 rounded bg-amber-100" />)}
+        {p.kind === 'blog' && (coverOf(p) ? <img src={coverOf(p)} alt="" className="w-14 h-10 rounded object-cover" /> : <div className="w-14 h-10 rounded bg-amber-100" />)}
         <div className="flex-1 min-w-[12rem]">
           <p className="font-semibold text-slate-800">{p.title}{' '}
             {!p.published ? <span className="text-[10px] font-bold bg-slate-200 text-slate-600 rounded px-1.5 py-0.5 ml-1">DRAFT</span>
