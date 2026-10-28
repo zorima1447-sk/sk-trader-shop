@@ -176,28 +176,42 @@ function YouTubeEmbed({ url }: { url: string }) {
 }
 
 // Share an article: WhatsApp, Facebook, Instagram (phone share menu / copy link), copy link
-function ShareButtons({ title, link }: { title: string; link: string }) {
+const isPhone = () => {
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (/Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1);
+};
+
+export function ShareButtons({ title, link, small = false }: { title: string; link: string; small?: boolean }) {
   const [note, setNote] = useState('');
   const copy = async () => {
-    try { await navigator.clipboard.writeText(link); return true; } catch { return false; }
+    try { await navigator.clipboard.writeText(link); return true; } catch { /* old browser */ }
+    try {
+      const t = document.createElement('textarea'); t.value = link; document.body.appendChild(t); t.select();
+      const ok = document.execCommand('copy'); t.remove(); return ok;
+    } catch { return false; }
   };
   const insta = async () => {
-    // Instagram has no share link for websites: on phones the share menu offers Instagram (Story / Direct)
+    // Instagram has no "share this link" page for websites.
+    // Phone: the phone's share menu lists the Instagram app (Story / Direct message).
     const nav: any = navigator;
-    if (nav.share) {
-      try { await nav.share({ title, text: title, url: link }); return; } catch { /* cancelled */ return; }
+    if (isPhone() && nav.share) {
+      try { await nav.share({ title, text: title, url: link }); } catch { /* closed */ }
+      return;
     }
-    const ok = await copy();
-    setNote(ok ? 'Link copied - paste it in your Instagram story (link sticker), bio or a message.' : link);
+    // Computer: open Instagram at once (before anything else, so the browser does not block it) and copy the link
     window.open('https://www.instagram.com/', '_blank', 'noopener');
+    const ok = await copy();
+    setNote(ok ? 'Instagram opened in a new tab and the link is copied - paste it in your post caption, story (link sticker), bio or a message.' : `Copy this link for Instagram: ${link}`);
   };
-  const btn = 'w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm hover:scale-110 transition-transform cursor-pointer';
+  const size = small ? 'w-8 h-8' : 'w-10 h-10';
+  const icon = small ? 'w-4 h-4' : 'w-5 h-5';
+  const btn = `${size} rounded-full flex items-center justify-center text-white shadow-sm hover:scale-110 transition-transform cursor-pointer`;
   return (
     <span className="flex flex-wrap items-center gap-2">
-      <a href={`https://wa.me/?text=${encodeURIComponent(`${title}\n${link}`)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#25D366' }} title="Share on WhatsApp" aria-label="Share on WhatsApp"><BrandIcon net="whatsapp" className="w-5 h-5" /></a>
-      <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#1877F2' }} title="Share on Facebook" aria-label="Share on Facebook"><BrandIcon net="facebook" className="w-5 h-5" /></a>
-      <button type="button" onClick={insta} className={btn} style={{ background: 'linear-gradient(45deg,#F58529,#DD2A7B,#8134AF,#515BD4)' }} title="Share on Instagram" aria-label="Share on Instagram"><BrandIcon net="instagram" className="w-5 h-5" /></button>
-      <button type="button" onClick={async () => setNote((await copy()) ? 'Link copied!' : link)} className="h-10 px-3 rounded-full border bg-white text-slate-700 text-sm font-bold hover:bg-slate-50 cursor-pointer" title="Copy link">🔗 Copy link</button>
+      <a href={`https://wa.me/?text=${encodeURIComponent(`${title}\n${link}`)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#25D366' }} title="Share on WhatsApp" aria-label="Share on WhatsApp"><BrandIcon net="whatsapp" className={icon} /></a>
+      <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#1877F2' }} title="Share on Facebook" aria-label="Share on Facebook"><BrandIcon net="facebook" className={icon} /></a>
+      <button type="button" onClick={insta} className={btn} style={{ background: 'linear-gradient(45deg,#F58529,#DD2A7B,#8134AF,#515BD4)' }} title="Share on Instagram" aria-label="Share on Instagram"><BrandIcon net="instagram" className={icon} /></button>
+      <button type="button" onClick={async () => setNote((await copy()) ? 'Link copied!' : link)} className={`${small ? 'h-8 px-2.5 text-xs' : 'h-10 px-3 text-sm'} rounded-full border bg-white text-slate-700 font-bold hover:bg-slate-50 cursor-pointer`} title="Copy link">🔗{small ? '' : ' Copy link'}</button>
       {note && <span className="w-full text-xs text-slate-600">{note}</span>}
     </span>
   );
@@ -242,7 +256,7 @@ function PostSocial({ slug, defaultName }: { slug: string; defaultName?: string 
         <span className="text-sm text-slate-500">👁 {Number(info.views).toLocaleString('en-PK')} views</span>
         <span className="text-sm text-slate-500">💬 {info.comments.length} comments</span>
       </div>
-      <h2 className="text-lg font-black text-slate-900 mt-5 mb-2">Comments</h2>
+      <h2 id="comments" className="text-lg font-black text-slate-900 mt-5 mb-2 scroll-mt-24">Comments</h2>
       {info.comments.length === 0 && <p className="text-sm text-slate-400">No comments yet. Be the first!</p>}
       <div className="space-y-3">
         {info.comments.map((c, i) => (
@@ -368,21 +382,53 @@ export function PageView({ post, posts, products, store, onOpenProduct, onNaviga
   );
 }
 
+type Counts = Record<string, { views: number; likes: number; comments: number; liked: boolean }>;
+
 function BlogCards({ posts, onNavigate }: { posts: Post[]; onNavigate: (path: string) => void }) {
+  const [counts, setCounts] = useState<Counts>({});
+  const [shareOpen, setShareOpen] = useState('');
+  const vid = visitorId();
+  useEffect(() => {
+    supabase.rpc('post_counts', { p_visitor: vid }).then(({ data, error }: any) => {
+      if (!error && Array.isArray(data)) setCounts(Object.fromEntries(data.map((x: any) => [x.slug, { views: Number(x.views) || 0, likes: Number(x.likes) || 0, comments: Number(x.comments) || 0, liked: !!x.liked }])));
+    });
+  }, [posts.length]);
+  const like = async (slug: string) => {
+    const c = counts[slug] || { views: 0, likes: 0, comments: 0, liked: false };
+    setCounts({ ...counts, [slug]: { ...c, liked: !c.liked, likes: c.likes + (c.liked ? -1 : 1) } });
+    const { data, error } = await supabase.rpc('post_like', { p_slug: slug, p_visitor: vid });
+    if (!error && data) setCounts((x) => ({ ...x, [slug]: { ...(x[slug] || c), ...(data as any) } }));
+  };
   return (
     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {posts.map((p) => (
-        <a key={p.id} href={postPath(p)} onClick={(e) => { e.preventDefault(); onNavigate(postPath(p)); }} className="bg-white rounded-2xl border overflow-hidden hover:shadow-lg transition block">
-          {p.cover_url
-            ? <img src={p.cover_url} alt={p.title} loading="lazy" className="w-full aspect-[16/9] object-cover bg-slate-100" />
-            : <div className="w-full aspect-[16/9] bg-gradient-to-br from-amber-100 via-rose-50 to-amber-200 flex items-center justify-center text-4xl">💇‍♀️</div>}
-          <div className="p-4">
-            <h3 className="font-bold text-slate-900 leading-snug line-clamp-2">{p.title}</h3>
-            {p.description && <p className="text-sm text-slate-500 mt-1 line-clamp-3">{p.description}</p>}
-            <p className="text-xs text-amber-700 font-bold mt-2">Read more →</p>
+      {posts.map((p) => {
+        const c = counts[p.slug];
+        const open = (e: React.MouseEvent) => { e.preventDefault(); onNavigate(postPath(p)); };
+        const link = `https://www.sktraderpk.com${postPath(p)}`;
+        return (
+          <div key={p.id} className="bg-white rounded-2xl border overflow-hidden hover:shadow-lg transition flex flex-col">
+            <a href={postPath(p)} onClick={open} className="block">
+              {p.cover_url
+                ? <img src={p.cover_url} alt={p.title} loading="lazy" className="w-full aspect-[16/9] object-cover bg-slate-100" />
+                : <div className="w-full aspect-[16/9] bg-gradient-to-br from-amber-100 via-rose-50 to-amber-200 flex items-center justify-center text-4xl">💇‍♀️</div>}
+            </a>
+            <div className="p-4 flex-1 flex flex-col">
+              <a href={postPath(p)} onClick={open}><h3 className="font-bold text-slate-900 leading-snug line-clamp-2 hover:text-amber-700">{p.title}</h3></a>
+              {p.description && <p className="text-sm text-slate-500 mt-1 line-clamp-3">{p.description}</p>}
+              <a href={postPath(p)} onClick={open} className="text-xs text-amber-700 font-bold mt-2">Read more →</a>
+              <div className="mt-auto pt-3 border-t flex items-center gap-3 text-sm text-slate-500">
+                <span title="Views">👁 {c ? c.views.toLocaleString('en-PK') : '–'}</span>
+                <button type="button" onClick={() => like(p.slug)} className={`flex items-center gap-1 font-semibold cursor-pointer ${c?.liked ? 'text-rose-600' : 'hover:text-rose-600'}`} aria-pressed={!!c?.liked} title={c?.liked ? 'Unlike' : 'Like'}>
+                  {c?.liked ? '♥' : '♡'} {c ? c.likes : '–'}
+                </button>
+                <a href={`${postPath(p)}#comments`} onClick={(e) => { e.preventDefault(); onNavigate(postPath(p)); setTimeout(() => document.getElementById('comments')?.scrollIntoView({ behavior: 'smooth' }), 400); }} className="hover:text-slate-800" title="Comments">💬 {c ? c.comments : '–'}</a>
+                <button type="button" onClick={() => setShareOpen(shareOpen === p.id ? '' : p.id)} className="ml-auto px-2.5 py-1 rounded-full border text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer">↗ Share</button>
+              </div>
+              {shareOpen === p.id && <div className="pt-2"><ShareButtons title={p.title} link={link} small /></div>}
+            </div>
           </div>
-        </a>
-      ))}
+        );
+      })}
     </div>
   );
 }
