@@ -2,7 +2,7 @@
 // Sends small events to /api/track (Vercel adds the city). Never blocks or breaks the shop.
 import { supabase, getAdminToken } from './supabaseClient';
 
-type Ev = 'visit' | 'product_view' | 'add_to_cart' | 'search' | 'checkout' | 'order';
+type Ev = 'visit' | 'product_view' | 'add_to_cart' | 'search' | 'checkout' | 'order' | 'post_view';
 
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
@@ -79,6 +79,9 @@ export async function track(event: Ev, extra: { product_id?: string; query?: str
 // searches: only count what the visitor finally typed (after a pause)
 let searchTimer: any = null;
 let lastSearch = '';
+// one random id per browser (also used for blog likes)
+export const visitorId = () => store('local', 'skt_vid');
+
 export function trackSearch(q: string) {
   clearTimeout(searchTimer);
   const t = (q || '').trim();

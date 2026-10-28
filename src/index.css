@@ -57,3 +57,19 @@ html { scroll-behavior: smooth; }
 .article-text h3 { font-size: 1.15rem; font-weight: 700; margin: 1.2rem 0 0.4rem; color: #0f172a; }
 .article-text ul, .article-text ol { margin: 0 0 1rem; }
 .article-text li { margin: 0.25rem 0; }
+.urdu-text { font-family: 'Noto Nastaliq Urdu', 'Jameel Noori Nastaleeq', serif; line-height: 2.3; }
+.urdu-text h1, .urdu-text h2, .urdu-text h3 { line-height: 2; }
+
+/* Visitors Report -> Download PDF (browser "Save as PDF") */
+@media print {
+  body.print-report * { visibility: hidden !important; }
+  body.print-report #visitors-report, body.print-report #visitors-report * { visibility: visible !important; }
+  body.print-report #visitors-report { position: absolute; left: 0; top: 0; width: 100%; padding: 0 8mm; }
+  body.print-report .no-print { display: none !important; }
+  body.print-report .print-only { display: block !important; }
+  body.print-report #visitors-report .shadow-sm { box-shadow: none !important; }
+  body.print-report #visitors-report .max-h-80, body.print-report #visitors-report .max-h-96 { max-height: none !important; overflow: visible !important; }
+  body.print-report #visitors-report > * { break-inside: avoid; }
+  @page { size: A4; margin: 10mm; }
+}
+.print-only { display: none; }

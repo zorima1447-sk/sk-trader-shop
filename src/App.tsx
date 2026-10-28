@@ -17,6 +17,7 @@ import { ShopIcon } from './icons';
 import { track, trackSearch } from './analytics';
 import VisitorsReport from './VisitorsReport';
 import { Post, PageView, BlogList, PagesAdmin, fetchPosts, routeFromPath, postPath } from './Pages';
+import { ReturnsAdmin } from './Returns';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
@@ -466,7 +467,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals' | 'visitors' | 'pages'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals' | 'visitors' | 'pages' | 'returns'>('dashboard');
   const [deals, setDeals] = useState<Deal[]>(BOOT_CACHE?.deals || []);
   const refreshDeals = () => loadDeals(true).then(setDeals);
 
@@ -586,15 +587,17 @@ export default function App() {
   }, [quickView, settings.store_name, currentView, pageSlug, posts]);
 
   // Google AdSense code (Admin > Blog & Pages). The server adds it too; this covers pages opened inside the shop.
+  // "Only blog & info pages": no ads on the shop, product pages and checkout.
   useEffect(() => {
     const id = settings.adsense_client;
-    if (!id || currentView === 'admin' || document.querySelector('script[src*="adsbygoogle.js"]')) return;
+    const allowed = settings.ads_place === 'all' ? currentView !== 'admin' : (currentView === 'page' || currentView === 'blog');
+    if (!id || !allowed || document.querySelector('script[src*="adsbygoogle.js"]')) return;
     const sc = document.createElement('script');
     sc.async = true;
     sc.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${id}`;
     sc.crossOrigin = 'anonymous';
     document.head.appendChild(sc);
-  }, [settings.adsense_client, currentView]);
+  }, [settings.adsense_client, settings.ads_place, currentView]);
 
   // Customer login state (also handles the "set a new password" link from the email)
   useEffect(() => {
@@ -651,10 +654,13 @@ export default function App() {
   }, [authUser, isCartOpen]);
 
   // Cash on Delivery only inside Karachi (Settings > Delivery Charges)
+  const pageAds = { client: settings.adsense_client, slot: settings.adsense_slot, on: true };
+
   // Footer: info pages + blog (fixed links work even before the pages are loaded)
   const footerLinks: { label: string; path: string }[] = (() => {
     const base = [
       { slug: 'about', label: 'About Us' }, { slug: 'contact', label: 'Contact Us' },
+      { slug: 'returns', label: 'Returns & Refunds' },
       { slug: 'privacy-policy', label: 'Privacy Policy' }, { slug: 'terms-and-conditions', label: 'Terms & Conditions' },
     ];
     const pagesList = posts ? posts.filter(x => x.kind === 'page').map(x => ({ label: (base.find(b => b.slug === x.slug)?.label) || x.title, path: postPath(x) }))
@@ -991,6 +997,11 @@ export default function App() {
 
   // Customer login accounts (Register / Login on the website)
   const [accounts, setAccounts] = useState<any[] | null>(null);
+  const [returnCount, setReturnCount] = useState(0);
+  useEffect(() => {
+    if (!isAdminLoggedIn) return;
+    supabase.from('return_requests').select('id').eq('status', 'Requested').then(({ data, error }: any) => { if (!error) setReturnCount((data || []).length); });
+  }, [isAdminLoggedIn]);
   const [accQuery, setAccQuery] = useState('');
   async function fetchAccounts() {
     const { data, error } = await supabase.rpc('admin_customer_accounts');
@@ -1977,6 +1988,7 @@ export default function App() {
     { title: 'Orders', items: [
       { id: 'orders', label: 'Orders', icon: FileText, open: () => { setNewOrderCount(0); fetchOrders(); }, badge: () => newOrderCount },
       { id: 'payments', label: 'Payments', icon: Wallet, open: () => fetchOrders() },
+      { id: 'returns', label: 'Returns', icon: RefreshCw, badge: () => returnCount },
       { id: 'customers', label: 'Customers', icon: Users, open: () => fetchCustomers() },
       { id: 'reviews', label: 'Reviews', icon: Star, open: () => fetchReviews() }
     ] },
@@ -3705,9 +3717,11 @@ export default function App() {
           onOpenProduct={(pp) => { const real = products.find(x => x.id === pp.id); setCurrentView('store'); if (real) openProduct(real); }}
           onNavigate={goPath}
           onShop={() => goPath('/')}
+          ads={pageAds}
+          customerName={authUser ? String((authUser.user_metadata && authUser.user_metadata.name) || '') : ''}
         />
       )}
-      {currentView === 'blog' && <BlogList posts={posts} storeName={settings.store_name} onNavigate={goPath} onShop={() => goPath('/')} />}
+      {currentView === 'blog' && <BlogList posts={posts} storeName={settings.store_name} onNavigate={goPath} onShop={() => goPath('/')} ads={pageAds} />}
 
       {/* Public "Track Order" page */}
       {currentView === 'track' && (
@@ -4975,12 +4989,27 @@ export default function App() {
           {/* BLOG & PAGES */}
           {adminTab === 'pages' && (
             <PagesAdmin
-              adsense={settings.adsense_client}
+              settings={{ adsense_client: settings.adsense_client, ads_place: settings.ads_place, adsense_slot: settings.adsense_slot }}
               onChanged={() => fetchPosts().then(setPosts)}
-              onSaveAdsense={async (v) => {
-                const { error } = await supabase.from('store_settings').update({ adsense_client: v || null }).eq('id', 1);
+              onSaveAds={async (v) => {
+                const { error } = await supabase.from('store_settings').update({ adsense_client: v.adsense_client || null, ads_place: v.ads_place, adsense_slot: v.adsense_slot || null }).eq('id', 1);
                 if (error) return false;
-                setSettings(prev => ({ ...prev, adsense_client: v }));
+                setSettings(prev => ({ ...prev, ...v }));
+                return true;
+              }}
+            />
+          )}
+
+          {/* RETURNS */}
+          {adminTab === 'returns' && (
+            <ReturnsAdmin
+              returnDays={settings.return_days}
+              storeName={settings.store_name}
+              onCount={setReturnCount}
+              onSaveDays={async (n) => {
+                const { error } = await supabase.from('store_settings').update({ return_days: n }).eq('id', 1);
+                if (error) return false;
+                setSettings(prev => ({ ...prev, return_days: n }));
                 return true;
               }}
             />

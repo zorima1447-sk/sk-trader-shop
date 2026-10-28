@@ -68,6 +68,7 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
   const [data, setData] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [blog, setBlog] = useState<Row[] | null>(null);
 
   const load = async (d = days) => {
     setLoading(true); setError('');
@@ -80,7 +81,32 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
       return;
     }
     setData(res as Stats);
+    const b = await supabase.rpc('admin_blog_stats', { p_days: d });
+    setBlog(b.error ? null : ((b.data as any[]) || []));
   };
+
+  // Download PDF: opens the report alone in a print window -> "Save as PDF"
+  const downloadPdf = () => {
+    const el = document.getElementById('visitors-report');
+    if (!el) return;
+    const name = `SK-Trader-Visitors-Report-${(PERIODS.find((p) => p.d === days)?.label || days + ' days').replace(/\s/g, '')}-${new Date().toISOString().slice(0, 10)}`;
+    const css = Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map((e) => e.outerHTML).join('');
+    const w = window.open('', '_blank');
+    if (!w) {
+      // pop-ups blocked: print this page (only the report is printed)
+      document.body.classList.add('print-report');
+      const done = () => { document.body.classList.remove('print-report'); window.removeEventListener('afterprint', done); };
+      window.addEventListener('afterprint', done);
+      window.print();
+      return;
+    }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>${name}</title>${css}
+      <style>body{background:#fff;padding:16px;font-family:system-ui,sans-serif}.no-print{display:none!important}.print-only{display:block!important}
+      .max-h-80,.max-h-96{max-height:none!important;overflow:visible!important}#visitors-report>*{break-inside:avoid}@page{size:A4;margin:10mm}</style>
+      </head><body>${el.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print()},400)};<\/script></body></html>`);
+    w.document.close();
+  };
+
   useEffect(() => { load(days); /* eslint-disable-next-line */ }, [days]);
 
   const t = data?.totals || {};
@@ -100,8 +126,12 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
   const cityTotal = (data?.cities || []).reduce((a, r) => a + Number(r.visitors || 0), 0);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-5" id="visitors-report">
+      <div className="print-only">
+        <h1 style={{ fontSize: 22, fontWeight: 900 }}>SK TRADER - Visitors Report</h1>
+        <p style={{ fontSize: 12, color: '#475569' }}>Period: {PERIODS.find((p) => p.d === days)?.label} · Printed {new Date().toLocaleString('en-GB')} · sktraderpk.com</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <div>
           <p className="text-sm text-slate-500">Who visits your shop, where they come from, and what they look at. Your own admin visits are not counted.</p>
         </div>
@@ -111,6 +141,7 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
               className={`px-3 py-1.5 rounded-lg text-sm font-semibold border ${days === p.d ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}>{p.label}</button>
           ))}
           <button onClick={() => load()} className="px-3 py-1.5 rounded-lg text-sm font-semibold border bg-white text-slate-700 border-slate-200 hover:bg-slate-50">{loading ? 'Loading…' : 'Refresh'}</button>
+          <button onClick={downloadPdf} disabled={!data} className="px-3 py-1.5 rounded-lg text-sm font-bold bg-slate-900 text-white disabled:opacity-40">⬇ Download PDF</button>
         </div>
       </div>
 
@@ -229,6 +260,32 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
                     <span className="text-xs text-slate-400 whitespace-nowrap">{ago(r.created_at)}</span>
                   </div>
                 ))}
+              </div>
+            )}
+          </Card>
+
+          <Card title="Blog articles" note="views in this period · readers · likes · comments">
+            {blog === null ? <p className="text-sm text-slate-400">Run supabase_v23.sql once to see blog numbers.</p>
+              : blog.length === 0 ? <p className="text-sm text-slate-400">No articles yet.</p> : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-xs uppercase text-slate-500 border-b">
+                    <th className="py-2 pr-2">Article</th><th className="py-2 px-2 text-right">Views</th><th className="py-2 px-2 text-right">Readers</th>
+                    <th className="py-2 px-2 text-right">All-time views</th><th className="py-2 px-2 text-right">Likes</th><th className="py-2 pl-2 text-right">Comments</th>
+                  </tr></thead>
+                  <tbody>
+                    {blog.map((b) => (
+                      <tr key={b.id} className="border-b last:border-0">
+                        <td className="py-2 pr-2"><a href={`/blog/${b.slug}`} target="_blank" rel="noreferrer" className="font-medium text-slate-800 hover:underline">{b.title}</a>{!b.published && <span className="ml-1 text-[10px] text-slate-400">(hidden)</span>}</td>
+                        <td className="py-2 px-2 text-right font-semibold">{n(b.views)}</td>
+                        <td className="py-2 px-2 text-right">{n(b.readers)}</td>
+                        <td className="py-2 px-2 text-right">{n(b.views_all)}</td>
+                        <td className="py-2 px-2 text-right">♥ {n(b.likes)}</td>
+                        <td className="py-2 pl-2 text-right">{n(b.comments)}{Number(b.pending) > 0 && <span className="text-amber-700 text-xs"> (+{b.pending} waiting)</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </Card>

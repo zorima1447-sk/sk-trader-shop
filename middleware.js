@@ -18,18 +18,19 @@ const plain = (html) => String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nb
 const H = { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` };
 const RESERVED = new Set(['index.html', 'api', 'assets']);
 
-// AdSense ID, kept for 5 minutes
-let adsCache = { id: '', at: 0 };
-async function adsenseId() {
-  if (Date.now() - adsCache.at < 300000) return adsCache.id;
-  let id = '';
+// AdSense ID and where ads may appear, kept for 5 minutes
+let adsCache = { id: '', place: 'blog', at: 0 };
+async function adsenseInfo() {
+  if (Date.now() - adsCache.at < 300000) return adsCache;
+  let id = '', place = 'blog';
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/store_settings?select=adsense_client&id=eq.1`, { headers: H });
-    if (r.ok) { const j = await r.json(); id = (j && j[0] && j[0].adsense_client) || ''; }
+    let r = await fetch(`${SUPABASE_URL}/rest/v1/store_settings?select=adsense_client,ads_place&id=eq.1`, { headers: H });
+    if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/store_settings?select=adsense_client&id=eq.1`, { headers: H });
+    if (r.ok) { const j = await r.json(); id = (j && j[0] && j[0].adsense_client) || ''; place = (j && j[0] && j[0].ads_place) === 'all' ? 'all' : 'blog'; }
   } catch { /* none */ }
-  if (!/^ca-pub-\d{10,20}$/.test(id)) id = '';
-  adsCache = { id, at: Date.now() };
-  return id;
+  const m = String(id).trim().toLowerCase().match(/^(?:ca-)?pub-(\d{10,20})$/);
+  adsCache = { id: m ? `ca-pub-${m[1]}` : '', place, at: Date.now() };
+  return adsCache;
 }
 
 function setTags(html, t) {
@@ -53,13 +54,18 @@ function setTags(html, t) {
 }
 
 const addLd = (html, ld) => html.replace('</head>', `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>\n</head>`);
-const addAds = (html, id) => (id && !html.includes('adsbygoogle.js')
-  ? html.replace('</head>', `<meta name="google-adsense-account" content="${id}" />\n<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${id}" crossorigin="anonymous"></script>\n</head>`)
-  : html);
+// full = load the ad code; otherwise only the account tag (AdSense site verification) is added
+const addAds = (html, ads, full = true) => {
+  if (!ads || !ads.id || html.includes('google-adsense-account')) return html;
+  const tag = `<meta name="google-adsense-account" content="${ads.id}" />`;
+  const code = full ? `\n<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ads.id}" crossorigin="anonymous"></script>` : '';
+  return html.replace('</head>', `${tag}${code}\n</head>`);
+};
+const LANG_HTML = { roman: 'ur-Latn', en: 'en', ur: 'ur', hi: 'hi' };
 // readable content for Google inside the page (React replaces it when the shop starts)
 const addContent = (html, inner) => html.replace('<div id="root"></div>',
   `<div id="root"><main style="max-width:760px;margin:0 auto;padding:24px 16px;font-family:system-ui,sans-serif;line-height:1.7;color:#1e293b">${inner}</main></div>`);
-const cleanBody = (b) => String(b || '').replace(/<(script|style|iframe)[\s\S]*?<\/\1>/gi, '').replace(/\son\w+="[^"]*"/gi, '').replace(/\[\[\s*products\s*:[^\]]*\]\]/gi, '');
+const cleanBody = (b) => String(b || '').replace(/<(script|style|iframe)[\s\S]*?<\/\1>/gi, '').replace(/\son\w+="[^"]*"/gi, '').replace(/\[\[\s*(products\s*:[^\]]*|ad)\s*\]\]/gi, '');
 const page = (html) => new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=0, s-maxage=300' } });
 
 export default async function middleware(req) {
@@ -76,7 +82,7 @@ export default async function middleware(req) {
     if (path !== '/' && !blogList && !slug) return pass();
 
     const [ads, pageRes] = await Promise.all([
-      adsenseId(),
+      adsenseInfo(),
       fetch(new URL('/index.html', url), { headers: { 'user-agent': req.headers.get('user-agent') || '' } }),
     ]);
     if (!pageRes.ok) return pass();
@@ -84,15 +90,16 @@ export default async function middleware(req) {
     if (!html.includes('</head>')) return pass();
 
     // ---- the shop home page ----
-    if (path === '/' && !isProduct) return ads ? page(addAds(html, ads)) : pass();
+    const shopAds = ads.place === 'all'; // ads on shop pages too?
+    if (path === '/' && !isProduct) return ads.id ? page(addAds(html, ads, shopAds)) : pass();
 
     // ---- a product link ----
     if (isProduct) {
       const pr = await fetch(`${SUPABASE_URL}/rest/v1/products?select=id,name,description,image_url,price,discounted_price,stock_quantity,category_name&id=eq.${id}`, { headers: H });
-      if (!pr.ok) return ads ? page(addAds(html, ads)) : pass();
+      if (!pr.ok) return ads.id ? page(addAds(html, ads, shopAds)) : pass();
       const rows = await pr.json();
       const p = rows && rows[0];
-      if (!p) return ads ? page(addAds(html, ads)) : pass();
+      if (!p) return ads.id ? page(addAds(html, ads, shopAds)) : pass();
       const price = Number(p.discounted_price || p.price || 0);
       const title = `${p.name}${price ? ` - Rs ${price.toLocaleString('en-PK')}` : ''} | SK TRADER`;
       const desc = (plain(p.description) || `Buy ${p.name} online at SK TRADER Karachi. Original product, delivery across Pakistan, Cash on Delivery.`).slice(0, 180);
@@ -110,7 +117,7 @@ export default async function middleware(req) {
           seller: { '@type': 'Organization', name: 'SK TRADER' },
         },
       });
-      return page(addAds(html, ads));
+      return page(addAds(html, ads, shopAds));
     }
 
     // ---- the blog list ----
@@ -119,16 +126,31 @@ export default async function middleware(req) {
       const list = r.ok ? await r.json() : [];
       html = setTags(html, { title: 'Hair & Beauty Tips - Blog | SK TRADER', desc: 'Hair care, skin care and beauty tips from SK Trader Karachi: hair fall, dandruff, hair colour, masks and more.', link: `${SITE}/blog`, img: `${SITE}/api/logo`, type: 'website' });
       html = addContent(html, `<h1>Hair &amp; Beauty Tips</h1>${(list || []).map((p) => `<article><h2><a href="/blog/${esc(p.slug)}">${esc(p.title)}</a></h2><p>${esc(p.description || '')}</p></article>`).join('')}`);
-      return page(addAds(html, ads));
+      return page(addAds(html, ads, true));
     }
 
     // ---- an info page or a blog article ----
     const kind = m ? 'blog' : 'page';
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at&slug=eq.${encodeURIComponent(slug)}&kind=eq.${kind}&published=eq.true`, { headers: H });
+    const q = `slug=eq.${encodeURIComponent(slug)}&kind=eq.${kind}&published=eq.true`;
+    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at,translations&${q}`, { headers: H });
+    if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,title,description,cover_url,body,created_at,updated_at&${q}`, { headers: H });
     const rows = r.ok ? await r.json() : [];
-    const p = rows && rows[0];
-    if (!p) return ads ? page(addAds(html, ads)) : pass();
-    const link = `${SITE}${kind === 'blog' ? '/blog/' : '/'}${p.slug}`;
+    const p0 = rows && rows[0];
+    if (!p0) return ads.id ? page(addAds(html, ads, true)) : pass();
+    // language versions (?lang=en / ur / hi)
+    const tr = (p0.translations && typeof p0.translations === 'object') ? p0.translations : {};
+    const orig = tr._orig || (kind === 'blog' ? 'roman' : 'en');
+    const langs = [orig, ...['roman', 'en', 'ur', 'hi'].filter((k) => k !== orig && tr[k] && tr[k].body)];
+    const want = url.searchParams.get('lang') || '';
+    const lang = langs.includes(want) ? want : orig;
+    const t = lang !== orig ? tr[lang] : null;
+    const p = t ? { ...p0, title: t.title || p0.title, description: t.description || p0.description, body: t.body } : p0;
+    const base = `${SITE}${kind === 'blog' ? '/blog/' : '/'}${p.slug}`;
+    const link = lang === orig ? base : `${base}?lang=${lang}`;
+    if (langs.length > 1) {
+      html = html.replace('</head>', langs.map((k) => `<link rel="alternate" hreflang="${LANG_HTML[k] || k}" href="${k === orig ? base : `${base}?lang=${k}`}" />`).join('\n') + `\n<link rel="alternate" hreflang="x-default" href="${base}" />\n</head>`);
+    }
+    html = html.replace(/<html lang="[^"]*"/, `<html lang="${LANG_HTML[lang] || 'en'}"${lang === 'ur' ? ' dir="rtl"' : ''}`);
     const desc = (p.description || plain(p.body)).slice(0, 180);
     const img = p.cover_url && /^https?:\/\//.test(p.cover_url) ? p.cover_url : `${SITE}/api/logo`;
     html = setTags(html, { title: `${p.title} | SK TRADER`, desc, link, img, type: kind === 'blog' ? 'article' : 'website', big: !!p.cover_url });
@@ -149,7 +171,7 @@ export default async function middleware(req) {
     }
     const cover = p.cover_url ? `<img src="${esc(p.cover_url)}" alt="${esc(p.title)}" style="max-width:100%;border-radius:12px" />` : '';
     html = addContent(html, `<h1>${esc(p.title)}</h1>${cover}${cleanBody(p.body)}`);
-    return page(addAds(html, ads));
+    return page(addAds(html, ads, true));
   } catch {
     return pass();
   }

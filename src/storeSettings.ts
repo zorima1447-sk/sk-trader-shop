@@ -67,6 +67,9 @@ export interface StoreSettings {
   currency_auto: boolean;      // use today's exchange rates automatically
   currency_markup: number;     // % added to the rate (bank / card charges)
   adsense_client: string;      // Google AdSense publisher ID, e.g. ca-pub-1234567890123456
+  ads_place: 'blog' | 'all';   // where Google ads may appear
+  adsense_slot: string;        // optional ad unit ID for the ad inside articles
+  return_days: number;         // days to request a return
   cod_karachi_only: boolean;   // Cash on Delivery only for Karachi; other cities must pay online
   invoice_prefix: string;      // order numbers look like SK-261022-1005
   gst_enabled: boolean;        // charge / show sales tax (GST) on invoices
@@ -170,6 +173,9 @@ export const defaultSettings: StoreSettings = {
   currency_auto: true,
   currency_markup: 0,
   adsense_client: '',
+  ads_place: 'blog',
+  adsense_slot: '',
+  return_days: 7,
   cod_karachi_only: true,
   invoice_prefix: 'SK',
   gst_enabled: false,
@@ -291,7 +297,10 @@ export function mergeSettings(row: any): StoreSettings {
     .map((c: any) => ({ code: String(c.code), symbol: String(c.symbol || c.code), rate: Math.max(0, Number(c.rate) || 0) }));
   out.currency_auto = out.currency_auto !== false;
   out.currency_markup = Math.min(20, Math.max(0, Number(out.currency_markup) || 0));
-  out.adsense_client = /^ca-pub-\d{10,20}$/.test(String(out.adsense_client || '')) ? out.adsense_client : '';
+  out.adsense_client = normAdsense(out.adsense_client);
+  out.ads_place = out.ads_place === 'all' ? 'all' : 'blog';
+  out.adsense_slot = /^\d{6,20}$/.test(String(out.adsense_slot || '')) ? String(out.adsense_slot) : '';
+  out.return_days = Math.min(60, Math.max(1, Number(out.return_days) || 7));
   return out as StoreSettings;
 }
 
@@ -527,6 +536,13 @@ export function deliveryChargeFor(st: StoreSettings, province: string, city: str
 }
 
 // Sales tax (GST) on the goods amount. inclusive = prices already contain the tax.
+// AdSense publisher ID: "pub-123..." or "ca-pub-123..." -> "ca-pub-123..." ('' when not valid)
+export function normAdsense(v: any): string {
+  const t = String(v || '').trim().toLowerCase().replace(/\s+/g, '');
+  const m = t.match(/^(?:ca-)?pub-(\d{10,20})$/);
+  return m ? `ca-pub-${m[1]}` : '';
+}
+
 export type Currency = { code: string; symbol: string; rate: number }; // rate = Rs. for 1 unit
 
 export function gstFor(st: StoreSettings, goods: number): { rate: number; amount: number; inclusive: boolean } {

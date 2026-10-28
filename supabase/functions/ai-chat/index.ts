@@ -498,6 +498,59 @@ async function runBuiltin(mode: string, history: Hist, ctx: Ctx) {
   return { reply: `Mujhe samajh nahi aaya. Product ka naam likhiye (jaise "shampoo"), delivery ke liye apna shehar, ya order number + mobile ke aakhri 4 hindse. Ya hum se rabta karein: ${contact || 'WhatsApp button'}.` };
 }
 
+// ======================= blog translation (Admin > Blog & Pages) =======================
+const LANG_NAMES: Record<string, string> = {
+  en: 'English',
+  ur: 'Urdu in Urdu script (Nastaliq, right-to-left)',
+  hi: 'Hindi in Devanagari script',
+  roman: 'Roman Urdu (Urdu written in English letters)',
+};
+
+async function aiJson(prompt: string): Promise<any> {
+  const gemini = Deno.env.get('GEMINI_API_KEY');
+  const groq = Deno.env.get('GROQ_API_KEY');
+  if (gemini) {
+    const models = [Deno.env.get('GEMINI_MODEL'), 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest'].filter(Boolean) as string[];
+    for (const m of models) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(gemini)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const t = j?.candidates?.[0]?.content?.parts?.map((x: any) => x.text || '').join('') || '';
+      try { return JSON.parse(t); } catch { continue; }
+    }
+  }
+  if (groq) {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groq}` },
+      body: JSON.stringify({ model: Deno.env.get('GROQ_MODEL') || 'llama-3.3-70b-versatile', temperature: 0.2, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (r.ok) { const j = await r.json(); try { return JSON.parse(j.choices[0].message.content); } catch { /* fall through */ } }
+  }
+  throw new Error('No AI key (GEMINI_API_KEY) or the AI service is busy. Try again in a minute.');
+}
+
+async function translatePost(body: any) {
+  const lang = String(body.lang || '');
+  if (!LANG_NAMES[lang]) return { error: 'Unknown language.' };
+  const src = { title: String(body.title || '').slice(0, 300), description: String(body.description || '').slice(0, 500), body: String(body.body || '').slice(0, 60000) };
+  const prompt = `Translate this blog article of a beauty and hair care shop in Pakistan into ${LANG_NAMES[lang]}.
+Rules:
+- Keep ALL HTML tags and attributes exactly as they are; translate only the visible text.
+- Keep lines like [[products: ...]] unchanged except the part after "|" (the box heading), which you translate.
+- Keep brand and product names (e.g. Freecia, SK Trader, Signature) in their original spelling.
+- Natural, simple language that normal people in Pakistan / India understand. No extra text.
+Return JSON only: {"title": "...", "description": "...", "body": "..."}
+
+Article JSON:
+${JSON.stringify(src)}`;
+  const out = await aiJson(prompt);
+  if (!out || typeof out.body !== 'string' || !out.body.trim()) return { error: 'The translation came back empty. Please try again.' };
+  return { title: String(out.title || ''), description: String(out.description || ''), body: String(out.body) };
+}
+
 // ======================= request handler =======================
 Deno.serve(async (req) => {
   // Answer the browser's permission check; allow whatever headers the website asks for
@@ -508,6 +561,15 @@ Deno.serve(async (req) => {
   }
   try {
     const body = await req.json().catch(() => ({}));
+    if (body.mode === 'translate') {
+      const sbT = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+      const token = req.headers.get('x-admin-token') || '';
+      const { data: ok } = token
+        ? await sbT.from('admin_sessions').select('profile_id').eq('token', token).gt('expires_at', new Date().toISOString()).limit(1)
+        : { data: null };
+      if (!ok || !ok.length) return json({ error: 'Admin login required.' });
+      try { return json(await translatePost(body)); } catch (e) { return json({ error: String((e as any)?.message || e) }); }
+    }
     const mode = body.mode === 'admin' ? 'admin' : 'customer';
     const site = String(body.site_url || '').replace(/\/$/, '');
     const history: Hist = (Array.isArray(body.messages) ? body.messages : [])

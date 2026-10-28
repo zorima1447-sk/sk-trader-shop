@@ -45,7 +45,7 @@ declare
   nm text;
   ev text := left(coalesce(p ->> 'event', ''), 20);
 begin
-  if ev not in ('visit', 'product_view', 'add_to_cart', 'search', 'checkout', 'order') then return; end if;
+  if ev not in ('visit', 'product_view', 'add_to_cart', 'search', 'checkout', 'order', 'post_view') then return; end if;
   if uid is not null then
     select u.email, nullif(coalesce(u.raw_user_meta_data ->> 'name', ''), '') into em, nm from auth.users u where u.id = uid;
   end if;

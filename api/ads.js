@@ -15,7 +15,8 @@ export default async function handler() {
     if (r.ok) {
       const rows = await r.json();
       const id = rows && rows[0] && rows[0].adsense_client;
-      if (id && /^ca-pub-\d{10,20}$/.test(id)) body = `google.com, ${id.replace(/^ca-/, '')}, DIRECT, f08c47fec0942fa0\n`;
+      const m = String(id || '').trim().toLowerCase().match(/^(?:ca-)?pub-(\d{10,20})$/);
+      if (m) body = `google.com, pub-${m[1]}, DIRECT, f08c47fec0942fa0\n`;
     }
   } catch { /* keep the empty file */ }
   return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=300, s-maxage=600' } });

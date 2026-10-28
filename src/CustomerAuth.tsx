@@ -419,6 +419,9 @@ export function AccountPage({ user, onShop, onLogout }: { user: any; onShop: () 
                         <a href={`/?invoice=${o.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-sky-600 hover:underline">
                           <FileText className="w-3.5 h-3.5" /> Invoice
                         </a>
+                        {o.status !== 'Cancelled' && (
+                          <a href={`/returns?order=${encodeURIComponent(o.invoice_no)}`} className="text-rose-600 hover:underline">Return</a>
+                        )}
                       </span>
                     </div>
                   </div>

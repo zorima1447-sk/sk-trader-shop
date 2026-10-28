@@ -13,9 +13,9 @@ export default async function handler() {
   let products = [];
   let posts = [];
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at&published=eq.true&order=sort_order.asc`, {
-      headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` },
-    });
+    const h = { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` };
+    let r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at,translations&published=eq.true&order=sort_order.asc`, { headers: h });
+    if (!r.ok) r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at&published=eq.true&order=sort_order.asc`, { headers: h });
     if (r.ok) posts = await r.json();
   } catch { /* no pages yet */ }
   try {
@@ -34,7 +34,10 @@ export default async function handler() {
       const img = p.cover_url && /^https?:\/\//.test(p.cover_url)
         ? `<image:image><image:loc>${esc(p.cover_url)}</image:loc><image:title>${esc(p.title)}</image:title></image:image>` : '';
       const mod = p.updated_at ? `<lastmod>${String(p.updated_at).slice(0, 10)}</lastmod>` : '';
-      return `  <url><loc>${SITE}${esc(path)}</loc>${mod}<changefreq>${p.kind === 'blog' ? 'monthly' : 'yearly'}</changefreq><priority>${p.kind === 'blog' ? '0.7' : '0.4'}</priority>${img}</url>`;
+      const tr = p.translations && typeof p.translations === 'object' ? p.translations : {};
+      const extra = ['roman', 'en', 'ur', 'hi'].filter((k) => k !== tr._orig && tr[k] && tr[k].body)
+        .map((k) => `\n  <url><loc>${SITE}${esc(path)}?lang=${k}</loc>${mod}<changefreq>monthly</changefreq><priority>0.6</priority></url>`).join('');
+      return `  <url><loc>${SITE}${esc(path)}</loc>${mod}<changefreq>${p.kind === 'blog' ? 'monthly' : 'yearly'}</changefreq><priority>${p.kind === 'blog' ? '0.7' : '0.4'}</priority>${img}</url>${extra}`;
     }),
     ...products.map((p) => {
       const img = p.image_url && /^https?:\/\//.test(p.image_url)
