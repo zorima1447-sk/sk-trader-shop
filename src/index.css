@@ -45,3 +45,15 @@ html { scroll-behavior: smooth; }
 .brand-track { animation: brand-scroll 25s linear infinite; }
 .brand-slider:hover .brand-track { animation-play-state: paused; }
 .brand-slider { -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
+
+/* Blog articles and info pages (About, Privacy ...) */
+.rich-text a { color: #b45309; text-decoration: underline; }
+.rich-text img { max-width: 100%; height: auto; border-radius: 0.75rem; margin: 0.75rem 0; }
+.rich-text blockquote { border-left: 4px solid #f59e0b; background: #fffbeb; padding: 0.6rem 1rem; margin: 0.75rem 0; border-radius: 0.5rem; }
+.rich-text hr { border: 0; border-top: 1px solid #e2e8f0; margin: 1rem 0; }
+.article-text { font-size: 1.02rem; line-height: 1.75; color: #1e293b; }
+.article-text p { margin: 0 0 1rem; }
+.article-text h2 { font-size: 1.45rem; font-weight: 800; margin: 1.6rem 0 0.6rem; line-height: 1.3; color: #0f172a; }
+.article-text h3 { font-size: 1.15rem; font-weight: 700; margin: 1.2rem 0 0.4rem; color: #0f172a; }
+.article-text ul, .article-text ol { margin: 0 0 1rem; }
+.article-text li { margin: 0.25rem 0; }

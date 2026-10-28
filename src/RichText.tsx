@@ -8,13 +8,16 @@ import React, { useEffect, useRef, useState } from 'react';
 // formatting can ever reach the shop page.
 // ---------------------------------------------------------------------------
 
-const ALLOWED_TAGS = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'BR', 'P', 'DIV', 'SPAN', 'FONT', 'UL', 'OL', 'LI', 'H2', 'H3']);
+const ALLOWED_TAGS = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'BR', 'P', 'DIV', 'SPAN', 'FONT', 'UL', 'OL', 'LI', 'H2', 'H3', 'A', 'IMG', 'BLOCKQUOTE', 'HR']);
+// links: web pages, email, phone and pages of this shop only
+const SAFE_HREF = /^(https?:\/\/|mailto:|tel:|\/(?!\/)|#)/i;
+const SAFE_SRC = /^(https:\/\/|\/(?!\/))/i;
 const ALLOWED_STYLES = ['color', 'background-color', 'font-size', 'font-weight', 'font-style', 'text-decoration', 'text-decoration-line', 'text-align'];
 const FONT_SIZE_MAP: Record<string, string> = { '1': '11px', '2': '13px', '3': '15px', '4': '18px', '5': '22px', '6': '28px', '7': '36px' };
 
 const escapeHtml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-export const isHtml = (t: string) => /<\/?(b|strong|i|em|u|s|br|p|div|span|font|ul|ol|li|h2|h3)\b/i.test(t || '');
+export const isHtml = (t: string) => /<\/?(b|strong|i|em|u|s|br|p|div|span|font|ul|ol|li|h2|h3|a|img|blockquote|hr)\b/i.test(t || '');
 
 // Old plain text -> HTML (keeps the line breaks)
 export function toHtml(text: string): string {
@@ -69,6 +72,24 @@ function cleanNode(node: Node, doc: Document): Node | null {
     if (extra) styles.push(extra);
     if (styles.length) span.setAttribute('style', styles.join('; '));
     out = span;
+  } else if (tag === 'IMG') {
+    const src = (el.getAttribute('src') || '').trim();
+    if (!SAFE_SRC.test(src)) return null;
+    const img = doc.createElement('img');
+    img.setAttribute('src', src);
+    img.setAttribute('alt', (el.getAttribute('alt') || '').slice(0, 200));
+    img.setAttribute('loading', 'lazy');
+    return img;
+  } else if (tag === 'A') {
+    const href = (el.getAttribute('href') || '').trim();
+    if (!SAFE_HREF.test(href)) {
+      out = doc.createDocumentFragment();
+    } else {
+      const a = doc.createElement('a');
+      a.setAttribute('href', href);
+      if (/^https?:/i.test(href) && !/^https?:\/\/(www\.)?sktraderpk\.com/i.test(href)) { a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener'); }
+      out = a;
+    }
   } else {
     const copy = doc.createElement(tag.toLowerCase());
     const st = cleanStyle(el.getAttribute('style') || '');
@@ -97,7 +118,7 @@ export function sanitizeHtml(html: string): string {
   });
   const res = box.innerHTML.trim();
   // an "empty" editor still leaves <br> or empty blocks behind
-  return htmlToText(res).trim() ? res : '';
+  return htmlToText(res).trim() || /<img\b/i.test(res) ? res : '';
 }
 
 // ---------------- shop page ----------------
@@ -121,7 +142,11 @@ const SIZES: { label: string; value: string }[] = [
   { label: 'Giant', value: '7' }
 ];
 
-export function RichTextEditor({ value, onChange, placeholder }: { value: string; onChange: (html: string) => void; placeholder?: string }) {
+export function RichTextEditor({ value, onChange, placeholder, article, onUploadImage }: {
+  value: string; onChange: (html: string) => void; placeholder?: string;
+  article?: boolean;                                   // blog / page editor: headings, links, pictures, product box
+  onUploadImage?: (file: File) => Promise<string>;     // returns the picture's web address
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const last = useRef<string>('');
   const saved = useRef<Range | null>(null);
@@ -209,7 +234,39 @@ export function RichTextEditor({ value, onChange, placeholder }: { value: string
     </div>
   );
 
-  const empty = !htmlToText(value || '').trim();
+  const empty = !htmlToText(value || '').trim() && !/<img\b/i.test(value || '');
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const addLink = () => {
+    keepSelection();
+    const url = window.prompt('Link address (e.g. https://www.sktraderpk.com/blog or /about):', 'https://');
+    if (!url || !SAFE_HREF.test(url.trim())) return;
+    cmd('createLink', url.trim());
+  };
+  const addProducts = () => {
+    keepSelection();
+    const kw = window.prompt('Product box: type words of the products to show (e.g. shampoo, mask). Optional: add | and a heading.', 'shampoo, mask | Recommended for you');
+    if (!kw || !kw.trim()) return;
+    restoreSelection();
+    document.execCommand('insertParagraph');
+    document.execCommand('insertText', false, `[[products: ${kw.trim().replace(/\]/g, '')}]]`);
+    document.execCommand('insertParagraph');
+    keepSelection();
+    emit();
+  };
+  const pickImage = async (f: File | undefined) => {
+    if (!f || !onUploadImage) return;
+    setUploading(true);
+    try {
+      const url = await onUploadImage(f);
+      if (url) cmd('insertImage', url);
+    } catch (e: any) {
+      window.alert('Picture could not be uploaded: ' + (e?.message || e));
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
 
   return (
     <div className="border rounded-xl bg-white focus-within:border-amber-500">
@@ -246,6 +303,18 @@ export function RichTextEditor({ value, onChange, placeholder }: { value: string
         {btn('↔', 'Align centre', () => cmd('justifyCenter'))}
         {btn('⇥', 'Align right', () => cmd('justifyRight'))}
         {btn('Clear', 'Remove formatting', () => cmd('removeFormat'), false, 'text-xs')}
+        {article && (
+          <>
+            <span className="w-px h-6 bg-slate-200 mx-0.5" />
+            {btn('H2', 'Heading', () => cmd('formatBlock', 'H2'), false, 'text-xs font-black')}
+            {btn('H3', 'Small heading', () => cmd('formatBlock', 'H3'), false, 'text-xs font-bold')}
+            {btn('¶', 'Normal text', () => cmd('formatBlock', 'P'), false, 'text-xs')}
+            {btn('🔗 Link', 'Add a link to the selected text', addLink, false, 'text-xs')}
+            {onUploadImage && btn(uploading ? '…' : '🖼 Picture', 'Add a picture here', () => { keepSelection(); fileRef.current?.click(); }, false, 'text-xs')}
+            {btn('🛍 Products', 'Add a product box here', addProducts, false, 'text-xs')}
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => pickImage(e.target.files?.[0])} />
+          </>
+        )}
       </div>
       <div className="relative">
         {empty && placeholder && <div className="absolute top-2.5 left-3.5 text-sm text-slate-400 pointer-events-none">{placeholder}</div>}
@@ -263,7 +332,7 @@ export function RichTextEditor({ value, onChange, placeholder }: { value: string
             const t = e.clipboardData.getData('text/plain');
             document.execCommand('insertText', false, t);
           }}
-          className="rich-text min-h-[8rem] max-h-[24rem] overflow-y-auto px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none"
+          className={`rich-text ${article ? 'article-text min-h-[20rem] max-h-[40rem]' : 'min-h-[8rem] max-h-[24rem]'} overflow-y-auto px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none`}
         />
       </div>
       <p className="text-[10px] text-slate-400 px-3 pb-2">Select text, then press B / I / U, choose a size or a colour.</p>

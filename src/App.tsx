@@ -16,6 +16,7 @@ import { price, approx, setActiveCurrency, shopCurrencies, savedCurrency, saveCu
 import { ShopIcon } from './icons';
 import { track, trackSearch } from './analytics';
 import VisitorsReport from './VisitorsReport';
+import { Post, PageView, BlogList, PagesAdmin, fetchPosts, routeFromPath, postPath } from './Pages';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
@@ -179,7 +180,7 @@ interface PaymentAccount {
 }
 
 // Shown in the login page, admin header and footer. If you cannot see it, an old version is deployed.
-const BUILD = 'v21.0 (25-Oct-2026)';
+const BUILD = 'v22.0 (28-Oct-2026)';
 
 const BG_PRESETS: Record<string, string> = {
   gold: 'from-slate-950 via-slate-900 to-amber-900',
@@ -312,9 +313,33 @@ const money = (n: number | string | null | undefined) => 'Rs. ' + Number(n || 0)
 
 export default function App() {
   // a link like  /?track=SK-261022-1005  opens the Track Order page
-  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin' | 'auth' | 'account' | 'track'>(
-    () => (new URLSearchParams(window.location.search).has('track') ? 'track' : 'store')
+  const [currentView, setCurrentView] = useState<'store' | 'login' | 'admin' | 'auth' | 'account' | 'track' | 'page' | 'blog'>(
+    () => (new URLSearchParams(window.location.search).has('track') ? 'track' : (routeFromPath(window.location.pathname)?.view || 'store'))
   );
+  // Info pages and blog (/about, /privacy-policy, /blog/...)
+  const [pageSlug, setPageSlug] = useState<string>(() => routeFromPath(window.location.pathname)?.slug || '');
+  const [posts, setPosts] = useState<Post[] | null>(null);
+  const goPath = (path: string) => {
+    const r = routeFromPath(path);
+    try { window.history.pushState({ page: path }, '', path); } catch { /* ignore */ }
+    if (r) { setPageSlug(r.slug); setCurrentView(r.view); } else setCurrentView('store');
+    window.scrollTo({ top: 0 });
+  };
+  useEffect(() => {
+    const onPop = () => {
+      const r = routeFromPath(window.location.pathname);
+      if (r) { setPageSlug(r.slug); setCurrentView(r.view); }
+      else setCurrentView(v => (v === 'page' || v === 'blog' ? 'store' : v));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    // leaving a page: the address bar goes back to the shop
+    if (currentView !== 'page' && currentView !== 'blog' && routeFromPath(window.location.pathname)) {
+      try { window.history.replaceState(null, '', '/' + window.location.search); } catch { /* ignore */ }
+    }
+  }, [currentView]);
   const [courierEdit, setCourierEdit] = useState<{ order: Order; courier: string; tracking_no: string; tracking_url: string; ship: boolean } | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('look');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
@@ -441,7 +466,7 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loggedInUserRole, setLoggedInUserRole] = useState('Super Admin');
   const [loggedInUserName, setLoggedInUserName] = useState('');
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals' | 'visitors'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'ai' | 'products' | 'categories' | 'orders' | 'users' | 'accounts' | 'notifications' | 'payments' | 'reviews' | 'customers' | 'slides' | 'settings' | 'deals' | 'visitors' | 'pages'>('dashboard');
   const [deals, setDeals] = useState<Deal[]>(BOOT_CACHE?.deals || []);
   const refreshDeals = () => loadDeals(true).then(setDeals);
 
@@ -532,6 +557,7 @@ export default function App() {
     });
     fetchPaymentAccounts();
     fetchReviews();
+    fetchPosts().then(setPosts);
     track('visit');
   }, []);
 
@@ -547,11 +573,28 @@ export default function App() {
       const pr = Number(quickView.discounted_price || quickView.price || 0);
       document.title = `${quickView.name}${pr ? ` - Rs ${pr.toLocaleString('en-PK')}` : ''} | ${name}`;
       canon?.setAttribute('href', `https://www.sktraderpk.com/?product=${quickView.id}`);
+    } else if (currentView === 'page' || currentView === 'blog') {
+      const post = currentView === 'page' ? (posts || []).find(x => x.slug === pageSlug) : null;
+      document.title = currentView === 'blog' ? `Hair & Beauty Tips - Blog | ${name}` : post ? `${post.title} | ${name}` : name;
+      canon?.setAttribute('href', `https://www.sktraderpk.com${currentView === 'blog' ? '/blog' : post ? postPath(post) : '/'}`);
+      const md = document.querySelector('meta[name="description"]');
+      if (post?.description) md?.setAttribute('content', post.description);
     } else {
       document.title = home;
       canon?.setAttribute('href', 'https://www.sktraderpk.com/');
     }
-  }, [quickView, settings.store_name]);
+  }, [quickView, settings.store_name, currentView, pageSlug, posts]);
+
+  // Google AdSense code (Admin > Blog & Pages). The server adds it too; this covers pages opened inside the shop.
+  useEffect(() => {
+    const id = settings.adsense_client;
+    if (!id || currentView === 'admin' || document.querySelector('script[src*="adsbygoogle.js"]')) return;
+    const sc = document.createElement('script');
+    sc.async = true;
+    sc.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${id}`;
+    sc.crossOrigin = 'anonymous';
+    document.head.appendChild(sc);
+  }, [settings.adsense_client, currentView]);
 
   // Customer login state (also handles the "set a new password" link from the email)
   useEffect(() => {
@@ -608,6 +651,16 @@ export default function App() {
   }, [authUser, isCartOpen]);
 
   // Cash on Delivery only inside Karachi (Settings > Delivery Charges)
+  // Footer: info pages + blog (fixed links work even before the pages are loaded)
+  const footerLinks: { label: string; path: string }[] = (() => {
+    const base = [
+      { slug: 'about', label: 'About Us' }, { slug: 'contact', label: 'Contact Us' },
+      { slug: 'privacy-policy', label: 'Privacy Policy' }, { slug: 'terms-and-conditions', label: 'Terms & Conditions' },
+    ];
+    const pagesList = posts ? posts.filter(x => x.kind === 'page').map(x => ({ label: (base.find(b => b.slug === x.slug)?.label) || x.title, path: postPath(x) }))
+      : base.map(b => ({ label: b.label, path: '/' + b.slug }));
+    return [...pagesList, { label: 'Blog - Hair & Beauty Tips', path: '/blog' }];
+  })();
   const abroad = !isPk(shipAddr);
   const codAllowed = !abroad && (!settings.cod_karachi_only || !shipAddr.city || shipAddr.city.trim().toLowerCase() === 'karachi');
 
@@ -1933,7 +1986,8 @@ export default function App() {
     ] },
     { title: 'Store Design', items: [
       { id: 'slides', label: 'Home Banner', icon: ImageIcon, open: () => fetchSlides() },
-      { id: 'settings:look', label: 'Theme & Look', icon: Settings }
+      { id: 'settings:look', label: 'Theme & Look', icon: Settings },
+      { id: 'pages', label: 'Blog & Pages', icon: FileText }
     ] },
     { title: 'Settings', items: [
       { id: 'settings:profile', label: 'Store Profile', icon: Building },
@@ -2599,7 +2653,7 @@ export default function App() {
             style={settings.footer_color ? { backgroundColor: settings.footer_color } : undefined}
             data-build={BUILD}
           >
-            <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
+            <div className="max-w-7xl mx-auto px-4 py-10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-8 text-sm">
               <div>
                 <div className="flex items-center space-x-2 mb-2">
                   {settings.logo_url && <img src={settings.logo_url} alt="" className="h-8 w-8 object-contain rounded" />}
@@ -2633,6 +2687,14 @@ export default function App() {
                         ? <a href={/^(https?:|mailto:|tel:|\/|#)/i.test(l.url.trim()) ? l.url.trim() : 'https://' + l.url.trim()} target={/^https?:/i.test(l.url.trim()) || !/^(mailto:|tel:|\/|#)/i.test(l.url.trim()) ? '_blank' : undefined} rel="noreferrer" className="hover:text-amber-400">{l.label}</a>
                         : <span>{l.label}</span>}
                     </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className={`${footHead} font-black mb-2`}>Information</h4>
+                <ul className="space-y-1 text-xs">
+                  {footerLinks.map(l => (
+                    <li key={l.path}><a href={l.path} onClick={(e) => { e.preventDefault(); goPath(l.path); }} className="hover:text-amber-400">{l.label}</a></li>
                   ))}
                 </ul>
               </div>
@@ -3632,6 +3694,20 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Info pages (About, Contact, Privacy, Terms) and blog articles */}
+      {currentView === 'page' && (
+        <PageView
+          post={posts === null ? undefined : (posts.find(x => x.slug === pageSlug) || null)}
+          posts={posts || []}
+          products={products as any}
+          store={{ name: settings.store_name, phone: settings.phone, whatsapp: settings.whatsapp, email: settings.email, address: settings.address }}
+          onOpenProduct={(pp) => { const real = products.find(x => x.id === pp.id); setCurrentView('store'); if (real) openProduct(real); }}
+          onNavigate={goPath}
+          onShop={() => goPath('/')}
+        />
+      )}
+      {currentView === 'blog' && <BlogList posts={posts} storeName={settings.store_name} onNavigate={goPath} onShop={() => goPath('/')} />}
 
       {/* Public "Track Order" page */}
       {currentView === 'track' && (
@@ -4896,6 +4972,20 @@ export default function App() {
             </div>
           )}
 
+          {/* BLOG & PAGES */}
+          {adminTab === 'pages' && (
+            <PagesAdmin
+              adsense={settings.adsense_client}
+              onChanged={() => fetchPosts().then(setPosts)}
+              onSaveAdsense={async (v) => {
+                const { error } = await supabase.from('store_settings').update({ adsense_client: v || null }).eq('id', 1);
+                if (error) return false;
+                setSettings(prev => ({ ...prev, adsense_client: v }));
+                return true;
+              }}
+            />
+          )}
+
           {/* VISITORS REPORT */}
           {adminTab === 'visitors' && <VisitorsReport />}
 
@@ -5221,6 +5311,10 @@ export default function App() {
           className={`site-bottom-footer ${settings.footer_color ? '' : 'bg-slate-900'} ${footLight ? 'text-slate-700' : 'text-slate-400'} py-6 text-center border-t border-slate-800 text-sm mt-12`}
           style={settings.footer_color ? { backgroundColor: settings.footer_color } : undefined}
         >
+          <nav className="flex flex-wrap justify-center gap-x-4 gap-y-1 mb-2 text-xs">
+            <a href="/" onClick={(e) => { e.preventDefault(); goPath('/'); }} className="hover:text-amber-400">Shop</a>
+            {footerLinks.map(l => <a key={l.path} href={l.path} onClick={(e) => { e.preventDefault(); goPath(l.path); }} className="hover:text-amber-400">{l.label}</a>)}
+          </nav>
           &copy; {new Date().getFullYear()} {settings.store_name}. All Rights Reserved.
         </footer>
       )}

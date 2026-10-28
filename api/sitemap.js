@@ -11,6 +11,13 @@ const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 
 export default async function handler() {
   let products = [];
+  let posts = [];
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/site_posts?select=kind,slug,cover_url,title,updated_at&published=eq.true&order=sort_order.asc`, {
+      headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` },
+    });
+    if (r.ok) posts = await r.json();
+  } catch { /* no pages yet */ }
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/products?select=id,name,image_url,created_at&order=created_at.desc&limit=5000`, {
       headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` },
@@ -21,6 +28,14 @@ export default async function handler() {
   const today = new Date().toISOString().slice(0, 10);
   const urls = [
     `  <url><loc>${SITE}/</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+    `  <url><loc>${SITE}/blog</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>`,
+    ...posts.map((p) => {
+      const path = p.kind === 'blog' ? `/blog/${p.slug}` : `/${p.slug}`;
+      const img = p.cover_url && /^https?:\/\//.test(p.cover_url)
+        ? `<image:image><image:loc>${esc(p.cover_url)}</image:loc><image:title>${esc(p.title)}</image:title></image:image>` : '';
+      const mod = p.updated_at ? `<lastmod>${String(p.updated_at).slice(0, 10)}</lastmod>` : '';
+      return `  <url><loc>${SITE}${esc(path)}</loc>${mod}<changefreq>${p.kind === 'blog' ? 'monthly' : 'yearly'}</changefreq><priority>${p.kind === 'blog' ? '0.7' : '0.4'}</priority>${img}</url>`;
+    }),
     ...products.map((p) => {
       const img = p.image_url && /^https?:\/\//.test(p.image_url)
         ? `<image:image><image:loc>${esc(p.image_url)}</image:loc><image:title>${esc(p.name)}</image:title></image:image>` : '';
