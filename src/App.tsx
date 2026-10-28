@@ -18,6 +18,7 @@ import { track, trackSearch } from './analytics';
 import VisitorsReport from './VisitorsReport';
 import { Post, PageView, BlogList, PagesAdmin, fetchPosts, routeFromPath, postPath } from './Pages';
 import { ReturnsAdmin } from './Returns';
+import { SocialIcons, socialLinks } from './SocialIcons';
 import { 
   ShoppingCart, Package, CheckCircle2, Phone, MapPin, User, Trash2, Edit, Building, 
   Hash, CreditCard, Plus, Settings, Lock, Upload, Tag, ListFilter, DollarSign, 
@@ -2158,25 +2159,23 @@ export default function App() {
       )}
 
       {/* Thin top bar */}
-      {currentView === 'store' && settings.show_announcement && settings.announcement && (
+      {['store', 'page', 'blog', 'track'].includes(currentView) && ((settings.show_announcement && settings.announcement) || socialLinks(settings).length > 0) && (
         <div
           className={`${settings.topbar_color ? '' : 'bg-slate-50'} border-b text-[11px] ${settings.topbar_text_color ? '' : 'text-slate-600'}`}
           style={{ ...(settings.topbar_color ? { backgroundColor: settings.topbar_color } : {}), ...(settings.topbar_text_color ? { color: settings.topbar_text_color } : {}) }}
         >
           <div className="max-w-7xl mx-auto px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">
-            <span className="truncate">{settings.announcement}</span>
-            <div className="flex items-center gap-4 shrink-0 font-semibold">
+            <SocialIcons settings={settings} size="sm" className="sm:hidden shrink-0" />
+            <span className="truncate hidden sm:block">{settings.show_announcement ? settings.announcement : ''}</span>
+            <div className="flex items-center gap-3 sm:gap-4 shrink-0 font-semibold">
+              <a href="/blog" onClick={(e) => { e.preventDefault(); goPath('/blog'); }} className="hover:text-amber-600 cursor-pointer">Blog</a>
               <button onClick={() => setCurrentView('track')} className="hover:text-amber-600 cursor-pointer flex items-center gap-1">
                 <Truck className="w-3.5 h-3.5" /> Track Order
               </button>
               <span className="hidden md:contents">
-              {settings.whatsapp && (
-                <a href={waLink(settings.whatsapp, settings.wa_message || 'Hello')} target="_blank" rel="noreferrer" className="hover:text-amber-600">
-                  WhatsApp Help
-                </a>
-              )}
-              {settings.phone && <span>Call: {settings.phone}</span>}
+              {settings.phone && <a href={`tel:${settings.phone.replace(/[^0-9+]/g, '')}`} className="hover:text-amber-600">Call: {settings.phone}</a>}
               </span>
+              <SocialIcons settings={settings} size="sm" className="hidden sm:flex pl-3 border-l border-current/20" />
             </div>
           </div>
         </div>
@@ -2245,6 +2244,18 @@ export default function App() {
                   : <Lock className={`w-5 h-5 sm:w-6 sm:h-6 ${H.icon}`} />}
                 {isAdminLoggedIn && currentView !== 'admin' && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400" />}
               </button>
+
+              {/* Blog link in the header (every page) */}
+              {currentView !== 'admin' && (
+                <a
+                  href="/blog"
+                  onClick={(e) => { e.preventDefault(); goPath('/blog'); }}
+                  className={`flex items-center gap-1 px-2 py-2 rounded-lg ${H.hover} transition text-xs sm:text-sm font-bold ${H.name} ${currentView === 'blog' ? 'underline underline-offset-4' : ''}`}
+                  title="Hair & Beauty Tips"
+                >
+                  <FileText className={`w-5 h-5 ${H.icon} hidden sm:inline`} /> Blog
+                </a>
+              )}
 
               {currentView !== 'admin' && (
                 <button
@@ -2677,11 +2688,10 @@ export default function App() {
                   {settings.phone && <p>Phone: {settings.phone}</p>}
                   {settings.email && <p>Email: {settings.email}</p>}
                 </div>
-                {(settings.facebook || settings.instagram || settings.tiktok) && (
-                  <div className="flex gap-3 mt-3 text-xs font-bold">
-                    {settings.facebook && <a href={settings.facebook} target="_blank" rel="noreferrer" className="hover:text-amber-400">Facebook</a>}
-                    {settings.instagram && <a href={settings.instagram} target="_blank" rel="noreferrer" className="hover:text-amber-400">Instagram</a>}
-                    {settings.tiktok && <a href={settings.tiktok} target="_blank" rel="noreferrer" className="hover:text-amber-400">TikTok</a>}
+                {socialLinks(settings).length > 0 && (
+                  <div className="mt-4">
+                    <p className={`${footHead} text-xs font-black uppercase tracking-wider mb-2`}>Follow us</p>
+                    <SocialIcons settings={settings} />
                   </div>
                 )}
               </div>
@@ -5340,6 +5350,7 @@ export default function App() {
           className={`site-bottom-footer ${settings.footer_color ? '' : 'bg-slate-900'} ${footLight ? 'text-slate-700' : 'text-slate-400'} py-6 text-center border-t border-slate-800 text-sm mt-12`}
           style={settings.footer_color ? { backgroundColor: settings.footer_color } : undefined}
         >
+          <SocialIcons settings={settings} className="justify-center mb-3" />
           <nav className="flex flex-wrap justify-center gap-x-4 gap-y-1 mb-2 text-xs">
             <a href="/" onClick={(e) => { e.preventDefault(); goPath('/'); }} className="hover:text-amber-400">Shop</a>
             {footerLinks.map(l => <a key={l.path} href={l.path} onClick={(e) => { e.preventDefault(); goPath(l.path); }} className="hover:text-amber-400">{l.label}</a>)}

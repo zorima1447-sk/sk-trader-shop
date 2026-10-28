@@ -43,6 +43,7 @@ export interface StoreSettings {
   facebook: string;
   instagram: string;
   tiktok: string;
+  youtube: string;            // YouTube channel link (footer)
   announcement: string;
   show_announcement: boolean;
   accent: string;
@@ -138,6 +139,7 @@ export const defaultSettings: StoreSettings = {
   facebook: '',
   instagram: '',
   tiktok: '',
+  youtube: '',
   announcement: 'Original Products  |  Cash on Delivery Available  |  Fast Delivery Across Pakistan',
   show_announcement: true,
   accent: 'amber',
@@ -297,6 +299,7 @@ export function mergeSettings(row: any): StoreSettings {
     .map((c: any) => ({ code: String(c.code), symbol: String(c.symbol || c.code), rate: Math.max(0, Number(c.rate) || 0) }));
   out.currency_auto = out.currency_auto !== false;
   out.currency_markup = Math.min(20, Math.max(0, Number(out.currency_markup) || 0));
+  out.youtube = typeof out.youtube === 'string' ? out.youtube : '';
   out.adsense_client = normAdsense(out.adsense_client);
   out.ads_place = out.ads_place === 'all' ? 'all' : 'blog';
   out.adsense_slot = /^\d{6,20}$/.test(String(out.adsense_slot || '')) ? String(out.adsense_slot) : '';

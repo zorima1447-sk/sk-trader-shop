@@ -80,8 +80,22 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
-    const { error } = await supabase.from('store_settings').upsert({ id: 1, ...f, updated_at: new Date().toISOString() });
+    // If the database does not have a new setting yet (SQL file not run), save everything else
+    const row: any = { id: 1, ...f, updated_at: new Date().toISOString() };
+    const skipped: string[] = [];
+    let { error } = await supabase.from('store_settings').upsert(row);
+    for (let i = 0; error && i < 15; i++) {
+      const m = /Could not find the '([^']+)' column/i.exec(error.message);
+      if (!m || !(m[1] in row)) break;
+      skipped.push(m[1]); delete row[m[1]];
+      ({ error } = await supabase.from('store_settings').upsert(row));
+    }
     setBusy(false);
+    if (!error && skipped.length) {
+      onSaved(f);
+      alert('Settings saved. Some new options (' + skipped.join(', ') + ') need the latest SQL file in Supabase > SQL Editor before they are kept.');
+      return;
+    }
     if (error) {
       alert('Database error (settings save):\n' + error.message + (/column/i.test(error.message) ? '\n\nRun the latest supabase_setup.sql in Supabase > SQL Editor, then save again.' : ''));
       return;
@@ -348,6 +362,10 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
             <label className={label}>Address</label>
             <textarea rows={2} className={input} value={f.address} onChange={(e) => set('address', e.target.value)} />
           </div>
+          <div className="md:col-span-2 -mb-2 pt-2 border-t">
+            <p className="text-sm font-bold text-slate-800">Social media</p>
+            <p className="text-[11px] text-slate-500">Every link you fill in shows as a round icon at the top of the website and in the footer (WhatsApp too). Leave a box empty to hide that icon.</p>
+          </div>
           <div>
             <label className={label}>Facebook page link</label>
             <input className={input} value={f.facebook} onChange={(e) => set('facebook', e.target.value)} placeholder="https://facebook.com/yourpage" />
@@ -359,6 +377,10 @@ export default function SettingsPanel({ tab: fixedTab, settings, accounts, onSav
           <div>
             <label className={label}>TikTok link</label>
             <input className={input} value={f.tiktok} onChange={(e) => set('tiktok', e.target.value)} placeholder="https://tiktok.com/@yourpage" />
+          </div>
+          <div>
+            <label className={label}>YouTube channel link</label>
+            <input className={input} value={f.youtube} onChange={(e) => set('youtube', e.target.value)} placeholder="https://youtube.com/@yourchannel" />
           </div>
 
           <div className="md:col-span-2 p-4 bg-slate-50 rounded-2xl border space-y-4">

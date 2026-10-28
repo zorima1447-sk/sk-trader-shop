@@ -254,6 +254,17 @@ export function RichTextEditor({ value, onChange, placeholder, article, onUpload
     keepSelection();
     emit();
   };
+  const addVideo = () => {
+    keepSelection();
+    const url = window.prompt('YouTube video link (e.g. https://youtu.be/xxxx or https://www.youtube.com/watch?v=xxxx):', 'https://');
+    if (!url || !/(youtube\.com|youtu\.be)\//i.test(url)) return;
+    restoreSelection();
+    document.execCommand('insertParagraph');
+    document.execCommand('insertText', false, `[[youtube: ${url.trim().replace(/\]/g, '')}]]`);
+    document.execCommand('insertParagraph');
+    keepSelection();
+    emit();
+  };
   const pickImage = async (f: File | undefined) => {
     if (!f || !onUploadImage) return;
     setUploading(true);
@@ -312,6 +323,7 @@ export function RichTextEditor({ value, onChange, placeholder, article, onUpload
             {btn('🔗 Link', 'Add a link to the selected text', addLink, false, 'text-xs')}
             {onUploadImage && btn(uploading ? '…' : '🖼 Picture', 'Add a picture here', () => { keepSelection(); fileRef.current?.click(); }, false, 'text-xs')}
             {btn('🛍 Products', 'Add a product box here', addProducts, false, 'text-xs')}
+            {btn('▶ YouTube', 'Add a YouTube video here', addVideo, false, 'text-xs')}
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => pickImage(e.target.files?.[0])} />
           </>
         )}

@@ -305,6 +305,7 @@ alter table public.store_settings
   add column if not exists delivery_other numeric,
   add column if not exists free_delivery_over numeric,
   add column if not exists delivery_rates jsonb,    -- {"Punjab": 250, "Sindh": 200, ...}
+  add column if not exists youtube text,
   add column if not exists delivery_countries jsonb, -- {"AE": 4500, "GB": 6000, ...} charge per country (Rs.)
   add column if not exists ship_abroad boolean,      -- deliver to countries that are not in the list above
   add column if not exists delivery_abroad_other numeric,

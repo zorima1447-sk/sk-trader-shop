@@ -65,7 +65,10 @@ const LANG_HTML = { roman: 'ur-Latn', en: 'en', ur: 'ur', hi: 'hi' };
 // readable content for Google inside the page (React replaces it when the shop starts)
 const addContent = (html, inner) => html.replace('<div id="root"></div>',
   `<div id="root"><main style="max-width:760px;margin:0 auto;padding:24px 16px;font-family:system-ui,sans-serif;line-height:1.7;color:#1e293b">${inner}</main></div>`);
-const cleanBody = (b) => String(b || '').replace(/<(script|style|iframe)[\s\S]*?<\/\1>/gi, '').replace(/\son\w+="[^"]*"/gi, '').replace(/\[\[\s*(products\s*:[^\]]*|ad)\s*\]\]/gi, '');
+const cleanBody = (b) => String(b || '')
+  .replace(/<(script|style|iframe)[\s\S]*?<\/\1>/gi, '').replace(/\son\w+="[^"]*"/gi, '')
+  .replace(/\[\[\s*youtube\s*:\s*([^\]]*)\]\]/gi, (m, u) => { const id = (String(u).match(/(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/) || [])[1]; return id ? `<a href="https://www.youtube.com/watch?v=${id}">Watch the video on YouTube</a>` : ''; })
+  .replace(/\[\[\s*(products\s*:[^\]]*|ad)\s*\]\]/gi, '');
 const page = (html) => new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=0, s-maxage=300' } });
 
 export default async function middleware(req) {

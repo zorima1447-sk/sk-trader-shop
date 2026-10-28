@@ -102,8 +102,9 @@ export default function VisitorsReport({ onOpenProduct }: { onOpenProduct?: (id:
     }
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>${name}</title>${css}
       <style>body{background:#fff;padding:16px;font-family:system-ui,sans-serif}.no-print{display:none!important}.print-only{display:block!important}
-      .max-h-80,.max-h-96{max-height:none!important;overflow:visible!important}#visitors-report>*{break-inside:avoid}@page{size:A4;margin:10mm}</style>
-      </head><body>${el.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print()},400)};<\/script></body></html>`);
+      .max-h-80,.max-h-96{max-height:none!important;overflow:visible!important}#visitors-report>*{break-inside:avoid}@page{size:A4;margin:10mm}
+      @media print{body *{visibility:visible!important}#visitors-report{position:static!important}}</style>
+      </head><body class="report-window">${el.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print()},400)};<\/script></body></html>`);
     w.document.close();
   };
 

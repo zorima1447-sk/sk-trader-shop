@@ -4,6 +4,7 @@ import { RichTextEditor, sanitizeHtml, htmlToText } from './RichText';
 import { price } from './currency';
 import { track, visitorId } from './analytics';
 import { ReturnForm } from './Returns';
+import { BrandIcon } from './SocialIcons';
 
 // ---------------------------------------------------------------------------
 // Info pages (About, Contact, Privacy Policy, Terms) and the Blog.
@@ -135,16 +136,70 @@ function ProductBox({ spec, products, onOpenProduct }: { spec: string; products:
 // Article text with product boxes in between
 export function PostBody({ html, products, onOpenProduct, ads, rtl }: { html: string; products: ShopProduct[]; onOpenProduct: (p: ShopProduct) => void; ads?: Ads; rtl?: boolean }) {
   const clean = sanitizeHtml(html || '');
-  // [[products: ...]] = product box, [[ad]] = a Google ad at this place
-  const parts = clean.split(/\[\[\s*(products\s*:[^\]]*|ad)\s*\]\]/i);
+  // [[products: ...]] = product box, [[ad]] = a Google ad, [[youtube: link]] = a video at this place
+  const parts = clean.split(/\[\[\s*(products\s*:[^\]]*|youtube\s*:[^\]]*|ad)\s*\]\]/i);
   return (
     <div className={`rich-text article-text ${rtl ? 'urdu-text' : ''}`} dir={rtl ? 'rtl' : undefined}>
       {parts.map((part, i) => i % 2 === 1
         ? (/^ad$/i.test(part.trim())
           ? <div key={i} dir="ltr"><AdUnit ads={ads} /></div>
+          : /^youtube\s*:/i.test(part.trim())
+          ? <YouTubeEmbed key={i} url={part.replace(/^\s*youtube\s*:/i, '').replace(/&amp;/g, '&').trim()} />
           : <div key={i} dir="ltr"><ProductBox spec={part.replace(/^products\s*:/i, '').replace(/&amp;/g, '&')} products={products} onOpenProduct={onOpenProduct} /></div>)
         : <div key={i} dangerouslySetInnerHTML={{ __html: part }} />)}
     </div>
+  );
+}
+
+// YouTube video inside an article (privacy-friendly player)
+export const youtubeId = (url: string) => {
+  const m = String(url || '').match(/(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : '';
+};
+function YouTubeEmbed({ url }: { url: string }) {
+  const id = youtubeId(url);
+  if (!id) return null;
+  return (
+    <div className="my-6" dir="ltr">
+      <div className="relative w-full overflow-hidden rounded-xl bg-black" style={{ paddingTop: '56.25%' }}>
+        <iframe
+          src={`https://www.youtube-nocookie.com/embed/${id}`}
+          title="YouTube video"
+          loading="lazy"
+          allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+          className="absolute inset-0 w-full h-full border-0"
+        />
+      </div>
+    </div>
+  );
+}
+
+// Share an article: WhatsApp, Facebook, Instagram (phone share menu / copy link), copy link
+function ShareButtons({ title, link }: { title: string; link: string }) {
+  const [note, setNote] = useState('');
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(link); return true; } catch { return false; }
+  };
+  const insta = async () => {
+    // Instagram has no share link for websites: on phones the share menu offers Instagram (Story / Direct)
+    const nav: any = navigator;
+    if (nav.share) {
+      try { await nav.share({ title, text: title, url: link }); return; } catch { /* cancelled */ return; }
+    }
+    const ok = await copy();
+    setNote(ok ? 'Link copied - paste it in your Instagram story (link sticker), bio or a message.' : link);
+    window.open('https://www.instagram.com/', '_blank', 'noopener');
+  };
+  const btn = 'w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm hover:scale-110 transition-transform cursor-pointer';
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <a href={`https://wa.me/?text=${encodeURIComponent(`${title}\n${link}`)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#25D366' }} title="Share on WhatsApp" aria-label="Share on WhatsApp"><BrandIcon net="whatsapp" className="w-5 h-5" /></a>
+      <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}`} target="_blank" rel="noreferrer" className={btn} style={{ background: '#1877F2' }} title="Share on Facebook" aria-label="Share on Facebook"><BrandIcon net="facebook" className="w-5 h-5" /></a>
+      <button type="button" onClick={insta} className={btn} style={{ background: 'linear-gradient(45deg,#F58529,#DD2A7B,#8134AF,#515BD4)' }} title="Share on Instagram" aria-label="Share on Instagram"><BrandIcon net="instagram" className="w-5 h-5" /></button>
+      <button type="button" onClick={async () => setNote((await copy()) ? 'Link copied!' : link)} className="h-10 px-3 rounded-full border bg-white text-slate-700 text-sm font-bold hover:bg-slate-50 cursor-pointer" title="Copy link">🔗 Copy link</button>
+      {note && <span className="w-full text-xs text-slate-600">{note}</span>}
+    </span>
   );
 }
 
@@ -298,8 +353,7 @@ export function PageView({ post, posts, products, store, onOpenProduct, onNaviga
       {isBlog && (
         <div className="flex flex-wrap items-center gap-2 mt-5">
           <span className="text-sm font-semibold text-slate-600">Share:</span>
-          <a href={`https://wa.me/?text=${encodeURIComponent(`${tx.title}\n${link}`)}`} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-bold">WhatsApp</a>
-          <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}`} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-bold">Facebook</a>
+          <ShareButtons title={tx.title} link={link} />
           <button onClick={onShop} className="ml-auto px-4 py-2 rounded-xl bg-amber-600 text-white text-sm font-bold cursor-pointer">Visit the shop →</button>
         </div>
       )}
@@ -379,6 +433,19 @@ async function uploadBlogImage(file: File): Promise<string> {
 
 const emptyPost = (kind: 'page' | 'blog'): Partial<Post> => ({ kind, slug: '', title: '', description: '', cover_url: '', body: '', published: true, sort_order: 0, translations: { _orig: kind === 'blog' ? 'roman' : 'en' } });
 
+// Cuts article HTML into pieces of about `max` characters, only between paragraphs / headings / lists
+export function splitHtml(html: string, max: number): string[] {
+  const blocks = String(html || '').split(/(?<=<\/(?:p|h2|h3|ul|ol|blockquote|div)>)/i).filter((b) => b.trim());
+  const out: string[] = [];
+  let cur = '';
+  for (const b of blocks) {
+    if (cur && cur.length + b.length > max) { out.push(cur); cur = ''; }
+    cur += b;
+  }
+  if (cur.trim()) out.push(cur);
+  return out.length ? out : [html];
+}
+
 type Stat = { id: string; views: number; readers: number; views_all: number; likes: number; comments: number; pending: number };
 
 export function PagesAdmin({ settings, onSaveAds, onChanged }: {
@@ -432,17 +499,40 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
     return { ...x, translations: t };
   });
 
+  // AI translation, a few paragraphs at a time (a long article in one go takes too long)
   const translate = async (k: LangKey) => {
     if (!edit || !(edit.body || '').trim()) { setMsg('Write the original text first.'); return; }
     if (trOf(k).body && !window.confirm(`Replace the current ${LANGS[k].name} text with a new AI translation?`)) return;
-    setAiBusy(k); setMsg('');
-    const { data, error } = await supabase.functions.invoke('ai-chat', { body: { mode: 'translate', lang: k, title: edit.title, description: edit.description, body: edit.body } });
-    setAiBusy('');
-    const d: any = data;
-    if (error || !d || d.error) { setMsg('Translation failed: ' + ((d && d.error) || (error && error.message) || 'unknown') + ' (the ai-chat function must be updated - see the notes)'); return; }
-    setTr(k, { title: d.title, description: d.description, body: sanitizeHtml(d.body) });
-    setTab(k);
-    setMsg(`${LANGS[k].name} translation added - please read it once, then Save.`);
+    const chunks = splitHtml(edit.body || '', 1800);
+    setMsg('');
+    const call = async (body: string, withHead: boolean) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data, error } = await supabase.functions.invoke('ai-chat', {
+          body: { mode: 'translate', lang: k, title: withHead ? edit.title : '', description: withHead ? edit.description : '', body },
+        });
+        const d: any = data;
+        if (!error && d && !d.error && typeof d.body === 'string') return d;
+        if (attempt === 2) throw new Error((d && d.error) || (error && error.message) || 'unknown error');
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    };
+    try {
+      const out: string[] = [];
+      let head: any = null;
+      for (let n = 0; n < chunks.length; n++) {
+        setAiBusy(`${k}:${n + 1}/${chunks.length}`);
+        const d = await call(chunks[n], n === 0);
+        if (n === 0) head = d;
+        out.push(d.body);
+      }
+      setTr(k, { title: head?.title || '', description: head?.description || '', body: sanitizeHtml(out.join('\n')) });
+      setTab(k);
+      setMsg(`${LANGS[k].name} translation added - please read it once, then Save.`);
+    } catch (e: any) {
+      setMsg('Translation failed: ' + (e?.message || e) + '. Please try again in a minute (the free AI is sometimes busy).');
+    } finally {
+      setAiBusy('');
+    }
   };
 
   const save = async () => {
@@ -544,7 +634,7 @@ export function PagesAdmin({ settings, onSaveAds, onChanged }: {
           })}
           {!isOrig && (
             <button type="button" disabled={!!aiBusy} onClick={() => translate(tab)} className="ml-auto mb-1 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-bold disabled:opacity-50 cursor-pointer">
-              {aiBusy === tab ? 'Translating… (up to 1 min)' : `✨ Translate to ${LANGS[tab].name} with AI`}
+              {aiBusy.startsWith(tab + ':') ? `Translating… part ${aiBusy.split(':')[1]}` : `✨ Translate to ${LANGS[tab].name} with AI`}
             </button>
           )}
         </div>
